@@ -1,0 +1,88 @@
+{
+  "version": "1.0",
+  "lastUpdated": "2026-05-27",
+  "welcome": {
+    "title": "Find the AI Coach That Fits You",
+    "subtitle": "Answer 3 quick questions and we'll match you with the AI coach best suited to your needs right now.",
+    "bullets": [
+      "Quick and easy to answer",
+      "Personalized to your needs right now",
+      "Helps you start with the right AI coach"
+    ],
+    "startButton": "Match Me with an AI Coach"
+  },
+  "questions": [
+    {
+      "id": "mood",
+      "label": "IMMEDIATE NEED STATE",
+      "title": "What would feel most helpful to you right now?",
+      "type": "radio",
+      "options": [
+        { "text": "A place to talk openly without being judged", "value": "OpenToTalk", "weights": { "Supportive": 3, "Nurturing": 2, "Exploratory": 1 } },
+        { "text": "Help figuring out my next step", "value": "Guidance", "weights": { "Directive": 3, "Guidance": 2, "Exploratory": 1 } },
+        { "text": "A confidence boost", "value": "NeedConfidence", "weights": { "Empowering": 3, "Strengths": 2 } },
+        { "text": "To feel understood", "value": "FeelUnderstood", "weights": { "Nurturing": 3, "Supportive": 2, "Strengths": 1 } }
+      ]
+    },
+    {
+      "id": "readiness",
+      "label": "READINESS LEVEL",
+      "title": "Where are you at with this right now?",
+      "type": "radio",
+      "options": [
+        { "text": "I'm ready to take action", "value": "ReadyToAct", "weights": { "Directive": 3, "Empowering": 2, "Guidance": 1 } },
+        { "text": "I think it through", "value": "ThinkItThrough", "weights": { "Exploratory": 3, "Discovery": 2, "Guidance": 1 } },
+        { "text": "I'm not ready to take action yet", "value": "NotReadyYet", "weights": { "Supportive": 3, "Nurturing": 2, "Strengths": 1 } }
+      ]
+    },
+    {
+      "id": "clarity",
+      "label": "CLARITY LEVEL",
+      "title": "How clear are you about what's going on in your life right now?",
+      "type": "radio",
+      "options": [
+        { "text": "I'm clear about what's going on", "value": "Clear", "weights": { "Empowering": 2, "Strengths": 2, "Directive": 1 } },
+        { "text": "I mostly understand it, but need to think it through", "value": "MostlyClear", "weights": { "Guidance": 2, "Exploratory": 2, "Discovery": 1 } },
+        { "text": "I'm pretty confused and need help sorting it out", "value": "Confused", "weights": { "Supportive": 2, "Nurturing": 2, "Discovery": 1 } }
+      ]
+    }
+  ],
+  "routes": {
+    "OpenToTalk|ReadyToAct|Clear": ["Empowering", "Exploratory"],
+    "OpenToTalk|ReadyToAct|MostlyClear": ["Exploratory", "Empowering"],
+    "OpenToTalk|ReadyToAct|Confused": ["Discovery", "Directive"],
+    "OpenToTalk|ThinkItThrough|Clear": ["Exploratory", "Empowering"],
+    "OpenToTalk|ThinkItThrough|MostlyClear": ["Discovery", "Directive"],
+    "OpenToTalk|ThinkItThrough|Confused": ["Exploratory", "Empowering"],
+    "OpenToTalk|NotReadyYet|Clear": ["Supportive", "Empowering"],
+    "OpenToTalk|NotReadyYet|MostlyClear": ["Nurturing", "Strengths"],
+    "OpenToTalk|NotReadyYet|Confused": ["Supportive", "Empowering"],
+    "Guidance|ReadyToAct|Clear": ["Directive", "Exploratory"],
+    "Guidance|ReadyToAct|MostlyClear": ["Guidance", "Directive"],
+    "Guidance|ReadyToAct|Confused": ["Guidance", "Directive"],
+    "Guidance|ThinkItThrough|Clear": ["Guidance", "Directive"],
+    "Guidance|ThinkItThrough|MostlyClear": ["Guidance", "Directive"],
+    "Guidance|ThinkItThrough|Confused": ["Exploratory", "Empowering"],
+    "Guidance|NotReadyYet|Clear": ["Supportive", "Empowering"],
+    "Guidance|NotReadyYet|MostlyClear": ["Nurturing", "Strengths"],
+    "Guidance|NotReadyYet|Confused": ["Nurturing", "Strengths"],
+    "NeedConfidence|ReadyToAct|Clear": ["Empowering", "Exploratory"],
+    "NeedConfidence|ReadyToAct|MostlyClear": ["Empowering", "Exploratory"],
+    "NeedConfidence|ReadyToAct|Confused": ["Strengths", "Empowering"],
+    "NeedConfidence|ThinkItThrough|Clear": ["Strengths", "Empowering"],
+    "NeedConfidence|ThinkItThrough|MostlyClear": ["Strengths", "Empowering"],
+    "NeedConfidence|ThinkItThrough|Confused": ["Exploratory", "Directive"],
+    "NeedConfidence|NotReadyYet|Clear": ["Strengths", "Empowering"],
+    "NeedConfidence|NotReadyYet|MostlyClear": ["Nurturing", "Strengths"],
+    "NeedConfidence|NotReadyYet|Confused": ["Supportive", "Empowering"],
+    "FeelUnderstood|ReadyToAct|Clear": ["Strengths", "Empowering"],
+    "FeelUnderstood|ReadyToAct|MostlyClear": ["Nurturing", "Strengths"],
+    "FeelUnderstood|ReadyToAct|Confused": ["Supportive", "Empowering"],
+    "FeelUnderstood|ThinkItThrough|Clear": ["Nurturing", "Strengths"],
+    "FeelUnderstood|ThinkItThrough|MostlyClear": ["Nurturing", "Strengths"],
+    "FeelUnderstood|ThinkItThrough|Confused": ["Supportive", "Empowering"],
+    "FeelUnderstood|NotReadyYet|Clear": ["Nurturing", "Strengths"],
+    "FeelUnderstood|NotReadyYet|MostlyClear": ["Nurturing", "Strengths"],
+    "FeelUnderstood|NotReadyYet|Confused": ["Supportive", "Empowering"]
+  }
+}

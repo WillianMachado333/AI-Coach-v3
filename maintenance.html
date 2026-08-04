@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Coach - Temporarily Unavailable</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #fff;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            min-height: 100vh;
+            color: #333;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+            padding-top: 15vh;
+            max-width: 400px;
+        }
+        .loader-img {
+            width: 240px;
+            height: auto;
+            margin-bottom: 1.5rem;
+        }
+        h1 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+            color: #1a1a1a;
+        }
+        p {
+            font-size: 0.9rem;
+            color: #666;
+            line-height: 1.5;
+            margin-bottom: 1.5rem;
+        }
+        .retry-btn {
+            display: inline-block;
+            padding: 0.75rem 2rem;
+            border-radius: 0.75rem;
+            background: #79c9d2;
+            color: #fff;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .retry-btn:hover {
+            opacity: 0.85;
+        }
+        .retry-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .countdown {
+            font-size: 0.8rem;
+            color: #999;
+            margin-top: 0.75rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <video autoplay muted loop playsinline class="loader-img">
+            <source src="underConstruction.webm" type="video/webm">
+            <source src="underConstruction.mp4" type="video/mp4">
+            <img src="spinningLoader.gif" alt="Under construction">
+        </video>
+        <h1>AI Coach temporarily unavailable</h1>
+        <p>We're having trouble connecting to our AI services. This is usually brief. Please try again in a moment.</p>
+        <button class="retry-btn" id="retryBtn" onclick="retryConnection()">Try again</button>
+        <div class="countdown" id="countdown"></div>
+    </div>
+
+    <script>
+        // Auto-retry countdown
+        var retrySeconds = 15;
+        var countdownEl = document.getElementById('countdown');
+        var retryBtn = document.getElementById('retryBtn');
+        var timer;
+
+        function startCountdown() {
+            var remaining = retrySeconds;
+            countdownEl.textContent = 'Auto-retry in ' + remaining + 's';
+            timer = setInterval(function () {
+                remaining--;
+                if (remaining <= 0) {
+                    clearInterval(timer);
+                    retryConnection();
+                } else {
+                    countdownEl.textContent = 'Auto-retry in ' + remaining + 's';
+                }
+            }, 1000);
+        }
+
+        function retryConnection() {
+            clearInterval(timer);
+            retryBtn.disabled = true;
+            retryBtn.textContent = 'Connecting...';
+            countdownEl.textContent = '';
+
+            // Navigate back to index.html preserving URL params
+            var params = new URLSearchParams(window.location.search);
+            // Remove any maintenance-specific params if we add them later
+            var target = 'index.html';
+            if (params.toString()) {
+                target += '?' + params.toString();
+            }
+            window.location.href = target;
+        }
+
+        startCountdown();
+    </script>
+</body>
+</html>

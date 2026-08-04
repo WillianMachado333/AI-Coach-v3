@@ -1,0 +1,12 @@
+{
+  "name": "agenterica",
+  "version": "1.0.0",
+  "description": "AgentErica Voice Chat Bot",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1"
+  }
+}

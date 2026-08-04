@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentErica - Iframe Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+        }
+        
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .iframe-container {
+            height: 90vh;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+            position: relative;
+            transition: all 0.2s ease;
+        }
+
+        .iframe-container.mobile {
+            width: 420px;
+            max-width: 100%;
+            margin: 0 auto 0 auto;
+            border-radius: 24px;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.2);
+            height: 820px;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 16px;
+            align-items: start;
+        }
+
+        @media (max-width: 1024px) {
+            .layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .sidebar {
+            background: white;
+            border-radius: 10px;
+            padding: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            height: 90vh;
+            overflow: auto;
+        }
+
+        .sidebar h3 {
+            margin-bottom: 8px;
+            color: #333;
+            font-size: 16px;
+        }
+
+        .sidebar .section {
+            margin-bottom: 12px;
+        }
+
+        .sidebar pre {
+            background: #0b1221;
+            color: #cce1ff;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            line-height: 1.4;
+            overflow: auto;
+            max-height: 70vh;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+
+        .iframe-container.web {
+            width: 100%;
+        }
+        
+        .iframe-container iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+            display: block;
+        }
+        
+        .test-controls {
+            background: white;
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .test-controls h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        .test-controls label {
+            display: block;
+            margin-bottom: 8px;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .test-controls input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        
+        .test-controls button {
+            background: #69bb8d;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+        
+        .test-controls button:hover {
+            background: #4a9d6f;
+        }
+        
+        .info {
+            background: #e8f5ed;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #4a9d6f;
+        }
+
+        .mode-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .mode-buttons button {
+            flex: 1;
+            padding: 10px 12px;
+        }
+
+        /* --- Behavior tuning panel (test harness only) --- */
+        .tune-panel {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid #e9e9e9;
+        }
+
+        .tune-panel .row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+
+        .tune-panel .row label {
+            font-size: 12px;
+            color: #444;
+            flex: 1 0 120px;
+        }
+
+        .tune-panel input[type="text"] {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 13px;
+            flex: 1 1 200px;
+        }
+
+        .tune-panel textarea {
+            width: 100%;
+            min-height: 90px;
+            resize: vertical;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.35;
+            background: #fbfbfd;
+        }
+
+        .tune-panel .actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 8px;
+        }
+
+        .tune-panel .actions button {
+            background: #2b6cb0;
+        }
+
+        .tune-panel .actions button.secondary {
+            background: #4a5568;
+        }
+
+        .tune-status {
+            font-size: 12px;
+            color: #333;
+            margin-top: 8px;
+            padding: 8px;
+            border-radius: 8px;
+            background: #f3f6ff;
+            border: 1px solid #dde7ff;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🧪 AgentErica - Iframe Test</h1>
+        <p>This page tests the AgentErica application embedded in an iframe. Use the controls below to test different configurations.</p>
+    </div>
+    
+    <div class="layout">
+        <div>
+            <div class="iframe-container">
+                <iframe 
+                    class="Z8YsjS" 
+                    title="Embedded Content" 
+                    name="htmlComp-iframe" 
+                    width="100%" 
+                    height="100%" 
+                    allow="microphone; autoplay; fullscreen" 
+                    allowfullscreen
+                    frameborder="0"
+                    data-src="" 
+                    src="https://apps.talenttransformation.com/agentErica/index.html"
+                    id="ericaIframe">
+                </iframe>
+            </div>
+            
+            <div class="test-controls">
+                <h3>Test Controls</h3>
+
+                <div class="mode-buttons">
+                    <button onclick="setMode('web')">💻 Web mode</button>
+                    <button onclick="setMode('mobile')">📱 Mobile mode</button>
+                </div>
+                
+                <label for="emailInput">Email (for auto-preparation):</label>
+                <input type="email" id="emailInput" placeholder="test@example.com" value="">
+                
+                <label for="userIdInput">User ID (for conversation history):</label>
+                <input type="text" id="userIdInput" placeholder="01effb7f-c679-43a9-beff-ee85fdac6465" value="">
+                
+                <div>
+                    <button onclick="updateIframe()">🔄 Reload Iframe</button>
+                    <button onclick="testLocal()">🏠 Test Local (localhost:8000)</button>
+                    <button onclick="testProduction()">🌐 Test Production</button>
+                </div>
+                
+                <div class="info">
+                    <strong>Current URL:</strong> <span id="currentUrl">https://apps.talenttransformation.com/agentErica/index.html</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar">
+            <h3>Current settings sent to OpenAI</h3>
+            <div class="section">
+                <button onclick="requestSettings()">Refresh</button>
+            </div>
+            <div class="section">
+                <pre id="settingsView">Waiting for settings...</pre>
+            </div>
+
+            <div class="tune-panel">
+                <h3>Behavior tuning (test harness)</h3>
+                <div class="section">
+                    <div class="row">
+                        <label><input type="checkbox" id="tuneEnabled" checked> Enable tuning mode</label>
+                        <input type="text" id="tuneToken" placeholder="Optional token (for boss demos)">
+                    </div>
+                    <div class="row">
+                        <button class="secondary" onclick="loadTuningState()">Load from agent</button>
+                        <button class="secondary" onclick="resetTuningEdits()">Reset edits</button>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <label>Agent Guidance (coach-specific)</label>
+                    <textarea id="tuneAgentGuidance" placeholder="agentGuidance"></textarea>
+                </div>
+
+                <div class="section">
+                    <label>Character (coach name)</label>
+                    <textarea id="tuneCharacter" placeholder="character (e.g., Omar)"></textarea>
+                </div>
+
+                <div class="section">
+                    <label>Label (coach label/title)</label>
+                    <textarea id="tuneLabel" placeholder="label (e.g., Pattern-Reflecting Coach)"></textarea>
+                </div>
+
+                <div class="section">
+                    <label>User Facing Context</label>
+                    <textarea id="tuneUserFacingContext" placeholder="userFacingContext"></textarea>
+                </div>
+
+                <div class="section">
+                    <label>Coaching Style (JSON object)</label>
+                    <textarea id="tuneCoachingStyle" placeholder='{"primaryObjective":"...","description":"..."}'></textarea>
+                </div>
+
+                <div class="section">
+                    <label>Voice Profile (JSON object)</label>
+                    <textarea id="tuneVoiceProfile" placeholder='{"tone":"...","pacing":"...","affect":"...","pauses":"...","emotion":"...","pronunciation":"..."}'></textarea>
+                </div>
+
+                <div class="section">
+                    <label>Behavioral Guardrails (JSON array)</label>
+                    <textarea id="tuneGuardrails" placeholder='[{"id":"...","type":"always_do","priority":"critical","directive":"..."}]'></textarea>
+                </div>
+
+                <div class="section">
+                    <label>Conversation Style (one per line)</label>
+                    <textarea id="tuneConversationStyle" placeholder="One example per line"></textarea>
+                </div>
+
+                <div class="section">
+                    <label>Global / Preparation Instructions (applies to all coaches)</label>
+                    <textarea id="tuneGlobalInstructions" placeholder="customInstructions (from ericaPreparation)"></textarea>
+                </div>
+
+                <div class="section">
+                    <label>Opening Line Prompt (optional)</label>
+                    <textarea id="tuneOpeningLinePrompt" placeholder="openingLinePrompt"></textarea>
+                </div>
+
+                <div class="actions">
+                    <button onclick="applyTuning()">Use instructions on agent</button>
+                    <button class="secondary" onclick="exportTuningJson()">Export JSON</button>
+                </div>
+                <div class="tune-status" id="tuneStatus">Tuning disabled.</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const iframe = document.getElementById('ericaIframe');
+        const iframeContainer = document.querySelector('.iframe-container');
+        const emailInput = document.getElementById('emailInput');
+        const userIdInput = document.getElementById('userIdInput');
+        const currentUrlSpan = document.getElementById('currentUrl');
+        const settingsView = document.getElementById('settingsView');
+        const tuneEnabled = document.getElementById('tuneEnabled');
+        const tuneToken = document.getElementById('tuneToken');
+        const tuneStatus = document.getElementById('tuneStatus');
+        const tuneAgentGuidance = document.getElementById('tuneAgentGuidance');
+        const tuneCharacter = document.getElementById('tuneCharacter');
+        const tuneLabel = document.getElementById('tuneLabel');
+        const tuneUserFacingContext = document.getElementById('tuneUserFacingContext');
+        const tuneCoachingStyle = document.getElementById('tuneCoachingStyle');
+        const tuneVoiceProfile = document.getElementById('tuneVoiceProfile');
+        const tuneGuardrails = document.getElementById('tuneGuardrails');
+        const tuneConversationStyle = document.getElementById('tuneConversationStyle');
+        const tuneGlobalInstructions = document.getElementById('tuneGlobalInstructions');
+        const tuneOpeningLinePrompt = document.getElementById('tuneOpeningLinePrompt');
+
+        // Keep last loaded state for export metadata
+        let lastTuningState = null;
+        
+        function buildUrl(baseUrl) {
+            const url = new URL(baseUrl);
+            const email = emailInput.value.trim();
+            const userId = userIdInput.value.trim();
+            
+            if (email) {
+                url.searchParams.set('email', email);
+            }
+            if (userId) {
+                url.searchParams.set('userId', userId);
+            }
+
+            // When tuning is enabled, ensure the iframe loads with tune=1
+            if (tuneEnabled && tuneEnabled.checked) {
+                url.searchParams.set('tune', '1');
+            } else {
+                url.searchParams.delete('tune');
+            }
+            
+            return url.toString();
+        }
+        
+        function updateIframe() {
+            const currentSrc = iframe.src;
+            const baseUrl = currentSrc.split('?')[0]; // Remove existing query params
+            const newUrl = buildUrl(baseUrl);
+            
+            iframe.src = newUrl;
+            currentUrlSpan.textContent = newUrl;
+        }
+
+        function requestSettings() {
+            // Ask the iframe to postMessage its current session/update payload
+            try {
+                iframe.contentWindow.postMessage({ type: 'request-settings' }, '*');
+            } catch (e) {
+                settingsView.textContent = 'Error requesting settings: ' + e.message;
+            }
+        }
+
+        function setTuneStatus(text) {
+            if (tuneStatus) tuneStatus.textContent = text;
+        }
+
+        function loadTuningState() {
+            if (!tuneEnabled.checked) {
+                setTuneStatus('Enable tuning mode and reload the iframe first (tune=1).');
+                return;
+            }
+            try {
+                iframe.contentWindow.postMessage({ type: 'erica-request-tuning-state' }, '*');
+                setTuneStatus('Requesting tuning state from agent...');
+            } catch (e) {
+                setTuneStatus('Error requesting tuning state: ' + e.message);
+            }
+        }
+
+        function resetTuningEdits() {
+            if (!lastTuningState) {
+                setTuneStatus('No tuning state loaded yet.');
+                return;
+            }
+            tuneAgentGuidance.value = lastTuningState.agentGuidance || '';
+            tuneCharacter.value = lastTuningState.character || '';
+            tuneLabel.value = lastTuningState.label || '';
+            tuneUserFacingContext.value = lastTuningState.userFacingContext || '';
+            tuneCoachingStyle.value = JSON.stringify(lastTuningState.coachingStyle || {}, null, 2);
+            tuneVoiceProfile.value = JSON.stringify(lastTuningState.voiceProfile || {}, null, 2);
+            tuneGuardrails.value = JSON.stringify(lastTuningState.behavioralGuardrails || [], null, 2);
+            tuneConversationStyle.value = (lastTuningState.conversationStyle || []).join('\n');
+            tuneGlobalInstructions.value = lastTuningState.customInstructions || '';
+            tuneOpeningLinePrompt.value = lastTuningState.openingLinePrompt || '';
+            setTuneStatus('Reset edits from agent state.');
+        }
+
+        function applyTuning() {
+            if (!tuneEnabled.checked) {
+                setTuneStatus('Enable tuning mode and reload the iframe first (tune=1).');
+                return;
+            }
+            let guardrails = [];
+            try {
+                guardrails = JSON.parse(tuneGuardrails.value || '[]');
+                if (!Array.isArray(guardrails)) throw new Error('Guardrails must be a JSON array');
+            } catch (e) {
+                setTuneStatus('Guardrails JSON error: ' + e.message);
+                return;
+            }
+            let coachingStyle = {};
+            try {
+                coachingStyle = JSON.parse(tuneCoachingStyle.value || '{}');
+                if (typeof coachingStyle !== 'object' || Array.isArray(coachingStyle) || coachingStyle === null) {
+                    throw new Error('Coaching Style must be a JSON object');
+                }
+            } catch (e) {
+                setTuneStatus('Coaching Style JSON error: ' + e.message);
+                return;
+            }
+            let voiceProfile = {};
+            try {
+                voiceProfile = JSON.parse(tuneVoiceProfile.value || '{}');
+                if (typeof voiceProfile !== 'object' || Array.isArray(voiceProfile) || voiceProfile === null) {
+                    throw new Error('Voice Profile must be a JSON object');
+                }
+            } catch (e) {
+                setTuneStatus('Voice Profile JSON error: ' + e.message);
+                return;
+            }
+            const conversationStyle = (tuneConversationStyle.value || '')
+                .split('\n')
+                .map(s => s.trim())
+                .filter(Boolean);
+
+            const payload = {
+                companionPatch: {
+                    agentGuidance: tuneAgentGuidance.value || '',
+                    character: tuneCharacter.value || '',
+                    label: tuneLabel.value || '',
+                    userFacingContext: tuneUserFacingContext.value || '',
+                    coachingStyle,
+                    voiceProfile,
+                    behavioralGuardrails: guardrails,
+                    conversationStyle
+                },
+                preparationPatch: {
+                    customInstructions: tuneGlobalInstructions.value || '',
+                    openingLinePrompt: tuneOpeningLinePrompt.value || ''
+                }
+            };
+
+            const token = (tuneToken.value || '').trim();
+            try {
+                iframe.contentWindow.postMessage(
+                    { type: 'erica-apply-overrides', payload, token },
+                    '*'
+                );
+                setTuneStatus('Applying overrides (session.update will be re-sent)...');
+            } catch (e) {
+                setTuneStatus('Error applying overrides: ' + e.message);
+            }
+        }
+
+        function exportTuningJson() {
+            if (!lastTuningState) {
+                setTuneStatus('Load tuning state first (Load from agent).');
+                return;
+            }
+            let guardrails = [];
+            try {
+                guardrails = JSON.parse(tuneGuardrails.value || '[]');
+                if (!Array.isArray(guardrails)) throw new Error('Guardrails must be a JSON array');
+            } catch (e) {
+                setTuneStatus('Guardrails JSON error: ' + e.message);
+                return;
+            }
+            let coachingStyle = {};
+            try {
+                coachingStyle = JSON.parse(tuneCoachingStyle.value || '{}');
+                if (typeof coachingStyle !== 'object' || Array.isArray(coachingStyle) || coachingStyle === null) {
+                    throw new Error('Coaching Style must be a JSON object');
+                }
+            } catch (e) {
+                setTuneStatus('Coaching Style JSON error: ' + e.message);
+                return;
+            }
+            let voiceProfile = {};
+            try {
+                voiceProfile = JSON.parse(tuneVoiceProfile.value || '{}');
+                if (typeof voiceProfile !== 'object' || Array.isArray(voiceProfile) || voiceProfile === null) {
+                    throw new Error('Voice Profile must be a JSON object');
+                }
+            } catch (e) {
+                setTuneStatus('Voice Profile JSON error: ' + e.message);
+                return;
+            }
+            const conversationStyle = (tuneConversationStyle.value || '')
+                .split('\n')
+                .map(s => s.trim())
+                .filter(Boolean);
+
+            const exportObj = {
+                exportVersion: 1,
+                exportedAt: new Date().toISOString(),
+                companionId: lastTuningState.companionId || null,
+                openaiVoice: lastTuningState.openaiVoice || null,
+                companionConfigurationPatch: {
+                    agentGuidance: tuneAgentGuidance.value || '',
+                    character: tuneCharacter.value || '',
+                    label: tuneLabel.value || '',
+                    userFacingContext: tuneUserFacingContext.value || '',
+                    coachingStyle,
+                    voiceProfile,
+                    behavioralGuardrails: guardrails,
+                    conversationStyle
+                },
+                preparationPatch: {
+                    // This is your global ericaPreparation "message"/policy layer
+                    customInstructions: tuneGlobalInstructions.value || '',
+                    openingLinePrompt: tuneOpeningLinePrompt.value || ''
+                }
+            };
+
+            const jsonText = JSON.stringify(exportObj, null, 2);
+            try {
+                navigator.clipboard.writeText(jsonText);
+            } catch (_) {}
+
+            // Download file
+            const blob = new Blob([jsonText], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            const id = exportObj.companionId || 'companion';
+            a.download = `erica-tuning-export-${id}-${Date.now()}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+
+            setTuneStatus('Exported JSON (copied to clipboard if allowed) and downloaded a .json file.');
+        }
+
+        function setMode(mode) {
+            if (!iframeContainer) return;
+            if (mode === 'mobile') {
+                iframeContainer.classList.add('mobile');
+                iframeContainer.classList.remove('web');
+            } else {
+                iframeContainer.classList.remove('mobile');
+                iframeContainer.classList.add('web');
+            }
+        }
+        
+        function testLocal() {
+            const newUrl = buildUrl('http://localhost:8000/index.html');
+            iframe.src = newUrl;
+            currentUrlSpan.textContent = newUrl;
+        }
+        
+        function testProduction() {
+            const newUrl = buildUrl('https://apps.talenttransformation.com/agentErica/index.html');
+            iframe.src = newUrl;
+            currentUrlSpan.textContent = newUrl;
+        }
+        
+        // Allow Enter key to reload iframe
+        emailInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                updateIframe();
+            }
+        });
+        
+        userIdInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                updateIframe();
+            }
+        });
+        
+        // Listen for messages from iframe (if needed)
+        window.addEventListener('message', (event) => {
+            // Security: verify origin
+            if (event.origin.includes('talenttransformation.com') || event.origin.includes('localhost')) {
+                const data = event.data;
+                if (data && data.type === 'settings' && data.payload) {
+                    settingsView.textContent = JSON.stringify(data.payload, null, 2);
+                } else if (data && data.type === 'erica-tuning-state' && data.payload) {
+                    lastTuningState = data.payload;
+                    tuneAgentGuidance.value = data.payload.agentGuidance || '';
+                    tuneCharacter.value = data.payload.character || '';
+                    tuneLabel.value = data.payload.label || '';
+                    tuneUserFacingContext.value = data.payload.userFacingContext || '';
+                    tuneCoachingStyle.value = JSON.stringify(data.payload.coachingStyle || {}, null, 2);
+                    tuneVoiceProfile.value = JSON.stringify(data.payload.voiceProfile || {}, null, 2);
+                    tuneGuardrails.value = JSON.stringify(data.payload.behavioralGuardrails || [], null, 2);
+                    tuneConversationStyle.value = (data.payload.conversationStyle || []).join('\n');
+                    tuneGlobalInstructions.value = data.payload.customInstructions || '';
+                    tuneOpeningLinePrompt.value = data.payload.openingLinePrompt || '';
+                    setTuneStatus('Loaded tuning state from agent.');
+                } else if (data && data.type === 'erica-overrides-applied') {
+                    setTuneStatus(data.ok ? 'Overrides applied. Ask a question to test behavior.' : ('Apply failed: ' + (data.error || 'unknown error')));
+                } else {
+                    console.log('Message from iframe:', data);
+                }
+            }
+        });
+
+        // Default to web mode on load
+        setMode('web');
+
+        // Auto-reload iframe when tuning mode is toggled (so tune=1 is applied immediately)
+        if (tuneEnabled) {
+            tuneEnabled.addEventListener('change', () => {
+                updateIframe();
+                setTuneStatus('Reloading iframe with tuning ' + (tuneEnabled.checked ? 'enabled' : 'disabled') + '...');
+                setTimeout(() => {
+                    if (tuneEnabled.checked) loadTuningState();
+                }, 1200);
+            });
+        }
+
+        // Ensure iframe loads with tune=1 by default, then pull current tuning state.
+        updateIframe();
+        setTimeout(() => {
+            if (tuneEnabled && tuneEnabled.checked) loadTuningState();
+        }, 1200);
+    </script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+node_modules/
+dist/
+build/
+coverage/
+tmp/
+temp/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+.env
+.env.*
+*.env
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Media/outputs (if generated; remove/comment to commit assets)
+# *.webm
+# *.mp4
+# *.wav
+# *.zip
+
+junit.xml
+*.coverage
+coverage-final.json
+lcov.info
+
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.sass-cache/
+.claude/
+preview_cache/

@@ -1,0 +1,1548 @@
+// Simple HTTP server for development
+// Run with: node server.js
+// Then open: http://localhost:8000
+
+// Load environment variables from .env file
+// Use __dirname so the correct .env is always found next to server.js,
+// regardless of what directory the process was launched from.
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const PORT = process.env.PORT || 8002;
+
+// ---- Logging helpers ----
+// Keep logs readable by default; allow turning on noisier logs when investigating.
+// ERICA_LOG_LEVEL: "silent" | "error" | "warn" | "info" | "debug"
+const ERICA_LOG_LEVEL = (process.env.ERICA_LOG_LEVEL || 'info').toLowerCase();
+const ERICA_LOG_ALL_REQUESTS = String(process.env.ERICA_LOG_ALL_REQUESTS || '').toLowerCase() === 'true';
+const ERICA_DEBUG_HISTORY = String(process.env.ERICA_DEBUG_HISTORY || '').toLowerCase() === 'true';
+
+const levelOrder = { silent: 0, error: 1, warn: 2, info: 3, debug: 4 };
+const currentLevel = levelOrder[ERICA_LOG_LEVEL] ?? levelOrder.info;
+function logAt(level, ...args) {
+    if ((levelOrder[level] ?? 999) <= currentLevel) {
+        // eslint-disable-next-line no-console
+        console[level](...args);
+    }
+}
+function makeReqId(prefix = 'req') {
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+function safePreview(str, maxLen = 220) {
+    if (typeof str !== 'string') return '';
+    const s = str.replace(/\s+/g, ' ').trim();
+    return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s;
+}
+
+// ---- OpenAI Realtime model selection ----
+// GA API model names (beta names like 'gpt-realtime-mini' no longer work).
+// Examples:
+//   ERICA_REALTIME_MODEL=gpt-4o-realtime
+//   REALTIME_MODEL=gpt-4o-mini-realtime
+const REALTIME_MODEL =
+    process.env.ERICA_REALTIME_MODEL ||
+    process.env.REALTIME_MODEL ||
+    'gpt-realtime';
+
+// ---- Preview TTS cache (filesystem) ----
+const PREVIEW_TTS_CACHE_DIR =
+    process.env.ERICA_PREVIEW_TTS_CACHE_DIR ||
+    path.join(__dirname, 'preview_cache');
+const PREVIEW_TTS_CACHE_TTL_MS =
+    Number(process.env.ERICA_PREVIEW_TTS_CACHE_TTL_MS) ||
+    7 * 24 * 60 * 60 * 1000; // 7 days
+
+function ensurePreviewCacheDir() {
+    try {
+        if (!fs.existsSync(PREVIEW_TTS_CACHE_DIR)) {
+            fs.mkdirSync(PREVIEW_TTS_CACHE_DIR, { recursive: true });
+        }
+    } catch (err) {
+        console.warn('[SERVER] preview cache dir error:', err?.message || err);
+    }
+}
+
+function buildPreviewCacheKey({ model, voice, text, instructions, format }) {
+    const hash = crypto.createHash('sha256');
+    hash.update(String(model || ''));
+    hash.update('|');
+    hash.update(String(voice || ''));
+    hash.update('|');
+    hash.update(String(format || ''));
+    hash.update('|');
+    hash.update(String(text || ''));
+    hash.update('|');
+    hash.update(String(instructions || ''));
+    return hash.digest('hex');
+}
+
+function getPreviewCachePath(key) {
+    return path.join(PREVIEW_TTS_CACHE_DIR, `${key}.mp3`);
+}
+
+// Store OpenAI API key fetched from external service
+let openAIKey = null;
+let openAISecondaryKey = null;
+
+// Handle OpenAI web search call
+function handleSearch(query, apiKey, res) {
+    const https = require('https');
+
+    // Responses API format - use models that support web_search
+    // gpt-4.1 and gpt-5.1 support web_search (gpt-5.1 needs reasoning_effort: 'none')
+    // Allow overriding via environment variables for cost/quality tuning
+    const webSearchModel =
+        process.env.ERICA_WEBSEARCH_MODEL ||
+        process.env.WEBSEARCH_MODEL ||
+        'gpt-4.1'; // default
+
+    const requestData = JSON.stringify({
+        model: webSearchModel,  // configurable web_search model
+        input: query,
+        tools: [
+            {
+                type: 'web_search',
+                external_web_access: true  // Enable live web access
+            }
+        ],
+        tool_choice: 'auto'
+    });
+
+    // Validate JSON is valid
+    try {
+        JSON.parse(requestData);
+    } catch (e) {
+        console.error('[SERVER] /api/search - Invalid JSON generated:', e);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to generate valid JSON request' }));
+        return;
+    }
+
+    console.log('[SERVER] /api/search - Calling OpenAI Responses API');
+
+    const requestBuffer = Buffer.from(requestData, 'utf8');
+
+    const options = {
+        hostname: 'api.openai.com',
+        port: 443,
+        path: '/v1/responses',
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'Content-Length': requestBuffer.length,
+            'OpenAI-Beta': 'responses=v1'  // May be required for Responses API
+        }
+    };
+
+    const openaiReq = https.request(options, (openaiRes) => {
+        let responseData = '';
+
+        openaiRes.on('data', (chunk) => {
+            responseData += chunk;
+        });
+
+        openaiRes.on('end', () => {
+            console.log('[SERVER] /api/search - OpenAI response status:', openaiRes.statusCode);
+
+            if (openaiRes.statusCode !== 200) {
+                console.error('[SERVER] /api/search - OpenAI API error status:', openaiRes.statusCode);
+                res.writeHead(openaiRes.statusCode, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(responseData);
+                return;
+            }
+
+            try {
+                const openaiResult = JSON.parse(responseData);
+
+                // Extract the response content from Responses API
+                // Structure: output[] -> message -> content[] -> output_text -> text
+                let content = '';
+
+                try {
+                    if (openaiResult.output && Array.isArray(openaiResult.output)) {
+                        for (const item of openaiResult.output) {
+                            if (item.type === 'message' && item.content && Array.isArray(item.content)) {
+                                for (const part of item.content) {
+                                    // Responses API may use either output_text.text or type/text
+                                    if (part.output_text && part.output_text.text) {
+                                        content = part.output_text.text;
+                                        break;
+                                    }
+                                    if (part.type === 'output_text' && part.text) {
+                                        content = part.text;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (content) break;
+                        }
+                    }
+                } catch (extractErr) {
+                    console.warn('[SERVER] /api/search - Could not extract content:', extractErr);
+                }
+
+                if (!content && openaiResult.output_text) {
+                    content = openaiResult.output_text;
+                }
+
+                if (!content && openaiResult.text) {
+                    content = openaiResult.text;
+                }
+
+                res.writeHead(200, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(JSON.stringify({
+                    answer: content,
+                    content: content,
+                    raw: openaiResult
+                }));
+            } catch (parseError) {
+                console.error('[SERVER] /api/search - Error parsing OpenAI response:', parseError);
+                res.writeHead(500, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(JSON.stringify({ error: 'Failed to parse OpenAI response' }));
+            }
+        });
+    });
+
+    openaiReq.on('error', (error) => {
+        console.error('[SERVER] /api/search - OpenAI request error:', error);
+        res.writeHead(500, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+        });
+        res.end(JSON.stringify({ error: 'Failed to reach OpenAI Web Search', details: error.message }));
+    });
+
+    // Write request body and end
+    openaiReq.write(requestBuffer);
+    openaiReq.end();
+}
+
+// Function to fetch OpenAI key from external service
+function fetchOpenAIKey() {
+    return new Promise((resolve, reject) => {
+        try {
+            console.log('[SERVER] Fetching OpenAI key from external service...');
+
+            const https = require('https');
+            const postData = JSON.stringify({
+                purpose: 'APPChat',
+                password: 'ericaKeyPassword'
+            });
+
+            const options = {
+                hostname: ERICA_API_HOST,
+                port: 443,
+                path: '/_functions/ericaOpenAiKey',
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(postData, 'utf8')
+                }
+            };
+
+            const req = https.request(options, (res) => {
+                let responseData = '';
+
+                res.on('data', (chunk) => {
+                    responseData += chunk;
+                });
+
+                res.on('end', () => {
+                    try {
+                        const data = JSON.parse(responseData);
+                        console.log('[SERVER] OpenAI key fetched successfully');
+                        openAIKey = data.openAIkey;
+                        openAISecondaryKey = data.openAISecondarykey;
+                        resolve(data);
+                    } catch (error) {
+                        console.error('[SERVER] Error parsing OpenAI key response:', error);
+                        reject(error);
+                    }
+                });
+            });
+
+            req.on('error', (error) => {
+                console.error('[SERVER] Error fetching OpenAI key:', error);
+                reject(error);
+            });
+
+            req.write(postData, 'utf8');
+            req.end();
+        } catch (error) {
+            console.error('[SERVER] Error in fetchOpenAIKey:', error);
+            reject(error);
+        }
+    });
+}
+
+const mimeTypes = {
+    '.html': 'text/html',
+    '.js': 'text/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.wav': 'audio/wav',
+    '.mp4': 'video/mp4',
+    '.woff': 'application/font-woff',
+    '.ttf': 'application/font-ttf',
+    '.eot': 'application/vnd.ms-fontobject',
+    '.otf': 'application/font-otf',
+    '.wasm': 'application/wasm'
+};
+
+// === External API host (sandbox / production) ===
+// All calls to the Wix backend use this single host variable.
+// Production: talenttransformation.com  |  Sandbox: awav.com
+// Override via env var:  ERICA_API_HOST=awav.com
+const ERICA_API_HOST = process.env.ERICA_API_HOST || process.env.PREP_HOST || 'talenttransformation.com';
+const ERICA_API_ORIGIN = `https://www.${ERICA_API_HOST}`;
+
+// === Preparation response cache (server-side) ===
+// Cache guest preparation responses to reduce Wix API load and improve speed
+const PREP_CACHE_GUEST_TTL_MS = Number(process.env.ERICA_PREP_GUEST_TTL_MS) || 24 * 60 * 60 * 1000; // 24 hours default
+const PREP_CACHE_AUTH_TTL_MS = Number(process.env.ERICA_PREP_AUTH_TTL_MS) || 2 * 60 * 1000; // 2 minutes default
+const prepCache = new Map(); // key -> { ts: number, data: string, statusCode: number, headers: object }
+
+// Helper to get cache key from request
+function getPrepCacheKey(userId, email) {
+    if (userId) return `user:${userId}`;
+    if (email) return `email:${email}`;
+    return '__guest__';
+}
+
+// Individual paths (rarely need overriding, but supported)
+const PREP_PATH = process.env.PREP_PATH || '/_functions/ericaPreparation';
+
+const server = http.createServer((req, res) => {
+    // Avoid spamming logs for static assets; focus on API requests.
+    const isApi = typeof req.url === 'string' && req.url.startsWith('/api/');
+    if (ERICA_LOG_ALL_REQUESTS || isApi) {
+        logAt('info', `${req.method} ${req.url}`);
+    }
+
+    // Handle web search API requests
+    if (req.url.startsWith('/api/search')) {
+        logAt('info', '[SERVER] /api/search request received:', req.url);
+
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        let query = url.searchParams.get('q');
+        let apiKey = null;
+
+        // If no query in URL, try to read POST body JSON { query: "...", apiKey?: "..." }
+        if (!query && req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => { body += chunk.toString(); });
+            req.on('end', () => {
+                try {
+                    if (body && body.trim() !== '') {
+                        const parsed = JSON.parse(body);
+                        if (!query && parsed.query) query = parsed.query;
+                        // Do not accept API keys from the client
+                    }
+                } catch (e) {
+                    console.warn('[SERVER] /api/search - Failed to parse body JSON:', e);
+                }
+
+                // Fall back to server-fetched key if none provided
+                if (!apiKey && openAIKey) {
+                    apiKey = openAIKey;
+                    console.log('[SERVER] /api/search - Using server-fetched OpenAI key');
+                }
+
+                logAt('debug', '[SERVER] /api/search - Query extracted:', query);
+
+                if (!query) {
+                    console.warn('[SERVER] /api/search - No query provided');
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Search query is required' }));
+                    return;
+                }
+
+                if (!apiKey) {
+                    console.warn('[SERVER] /api/search - Server OpenAI key not available');
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'OpenAI key not available on server' }));
+                    return;
+                }
+
+                // proceed with OpenAI call below using query/apiKey
+                handleSearch(query, apiKey, res);
+            });
+            req.on('error', (err) => {
+                console.error('[SERVER] /api/search - Request stream error:', err);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Failed to read request body' }));
+            });
+            return; // stop further processing; will continue in handler
+        }
+
+        // Fall back to server-fetched key if none provided
+        if (!apiKey && openAIKey) {
+            apiKey = openAIKey;
+            logAt('debug', '[SERVER] /api/search - Using server-fetched OpenAI key');
+        }
+
+        logAt('debug', '[SERVER] /api/search - Query extracted:', query);
+
+        if (!query) {
+            console.warn('[SERVER] /api/search - No query provided');
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Search query is required' }));
+            return;
+        }
+
+        if (!apiKey) {
+            console.warn('[SERVER] /api/search - Server OpenAI key not available');
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'OpenAI key not available on server' }));
+            return;
+        }
+
+        // proceed with OpenAI call using query/apiKey
+        handleSearch(query, apiKey, res);
+        return;
+    }
+
+    // Handle helpful resources fetch
+    if (req.url.startsWith('/api/helpful-resources')) {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        let query = url.searchParams.get('q') || '';
+        let type = url.searchParams.get('type') || '';
+        let limit = Number.parseInt(url.searchParams.get('limit') || '', 10);
+
+        if (req.method !== 'GET' && req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        const finalize = () => {
+            const filePath = path.join(__dirname, 'resources', 'Helpful_Resources_content.json');
+            fs.readFile(filePath, 'utf8', (error, content) => {
+                if (error) {
+                    console.error('[SERVER] /api/helpful-resources - File read error:', error);
+                    res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'Failed to read resources file' }));
+                    return;
+                }
+
+                try {
+                    const parsed = JSON.parse(content);
+                    const items = Array.isArray(parsed) ? parsed : [];
+                    const normalizedQuery = query.trim().toLowerCase();
+                    const normalizedType = type.trim().toLowerCase();
+                    const maxLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 10;
+
+                    const filtered = items.filter((item) => {
+                        if (!item || typeof item !== 'object') return false;
+                        const itemType = String(item.type || '').toLowerCase();
+                        if (normalizedType && itemType !== normalizedType) return false;
+                        if (!normalizedQuery) return true;
+                        const haystack = [
+                            item.Name,
+                            item.description,
+                            item.type,
+                            item.link
+                        ]
+                            .filter(Boolean)
+                            .map((value) => String(value).toLowerCase())
+                            .join(' ');
+                        return haystack.includes(normalizedQuery);
+                    });
+
+                    const limited = filtered.slice(0, maxLimit);
+
+                    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({
+                        items: limited,
+                        total: items.length,
+                        filtered: filtered.length,
+                        limit: maxLimit
+                    }));
+                } catch (parseError) {
+                    console.error('[SERVER] /api/helpful-resources - JSON parse error:', parseError);
+                    res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'Failed to parse resources file' }));
+                }
+            });
+        };
+
+        if (req.method === 'POST') {
+            let body = '';
+            req.on('data', chunk => { body += chunk.toString(); });
+            req.on('end', () => {
+                try {
+                    if (body && body.trim() !== '') {
+                        const parsed = JSON.parse(body);
+                        if (typeof parsed.query === 'string') query = parsed.query;
+                        if (typeof parsed.q === 'string') query = parsed.q;
+                        if (typeof parsed.type === 'string') type = parsed.type;
+                        if (Number.isFinite(parsed.limit)) limit = parsed.limit;
+                    }
+                } catch (e) {
+                    console.warn('[SERVER] /api/helpful-resources - Failed to parse body JSON:', e);
+                }
+                finalize();
+            });
+            req.on('error', (err) => {
+                console.error('[SERVER] /api/helpful-resources - Request stream error:', err);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: 'Failed to read request body' }));
+            });
+            return;
+        }
+
+        finalize();
+        return;
+    }
+
+    // SECURITY: Never expose OpenAI keys to the browser.
+    // This endpoint is disabled by default. Enable only for local debugging by setting:
+    //   ALLOW_OPENAI_KEY_ENDPOINT=true
+    if (req.url.startsWith('/api/openai-key')) {
+        const allow = String(process.env.ALLOW_OPENAI_KEY_ENDPOINT || '').toLowerCase() === 'true';
+        if (!allow) {
+            res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: 'Not found' }));
+            return;
+        }
+        // If explicitly enabled, keep legacy behavior (still not recommended for production)
+        if (req.method !== 'GET') {
+            res.writeHead(405, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+        logAt('warn', '[SERVER] /api/openai-key - Request received (ALLOW_OPENAI_KEY_ENDPOINT=true)');
+        if (!openAIKey) {
+            try {
+                fetchOpenAIKey().catch(() => { });
+            } catch (_) { }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ openAIkey: openAIKey, openAISecondarykey: openAISecondaryKey }));
+        return;
+    }
+
+    // Handle summarization requests
+    if (req.url.startsWith('/api/summarize')) {
+        if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', () => {
+            // Basic parsing
+            let messages = [];
+            try {
+                const parsed = JSON.parse(body);
+                messages = parsed.messages || [];
+            } catch (e) {
+                console.warn('[SERVER] /api/summarize - Failed to parse body:', e);
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+                return;
+            }
+
+            if (!messages || !Array.isArray(messages) || messages.length === 0) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'No messages provided to summarize' }));
+                return;
+            }
+
+            // Ensure we have an API key
+            if (!openAIKey) {
+                // Try to fetch? relying on periodic fetch usually, but let's just fail fast or wait.
+                // Ideally openAIKey is already set by startup or prior requests.
+                console.warn('[SERVER] /api/summarize - No OpenAI key available');
+                res.writeHead(503, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Server not ready (OpenAI key missing)' }));
+                return;
+            }
+
+            // Call OpenAI for summarization
+            const https = require('https');
+            const summarySystemPrompt = "You are a helpful assistant. Summarize the following conversation messages into a detailed and comprehensive summary (2-3 paragraphs). Retain all key facts, user preferences, specific details, and important context for a future AI interaction. Do not be too brief; ensure that nuanced information is preserved so the AI does not lose context.";
+
+            // Convert messages to a string block for the prompt to save complexity, or pass as chat messages
+            // passing as chat messages is cleaner.
+            const apiMessages = [
+                { role: "system", content: summarySystemPrompt },
+                { role: "user", content: JSON.stringify(messages) }
+            ];
+
+            const requestData = JSON.stringify({
+                model: "gpt-4o-mini", // Cost-effective model for summarization
+                messages: apiMessages,
+                temperature: 0.5,
+                max_tokens: 1000
+            });
+
+            const options = {
+                hostname: 'api.openai.com',
+                port: 443,
+                path: '/v1/chat/completions',
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${openAIKey}`,
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(requestData)
+                }
+            };
+
+            const openaiReq = https.request(options, (openaiRes) => {
+                let responseData = '';
+                openaiRes.on('data', chunk => { responseData += chunk; });
+                openaiRes.on('end', () => {
+                    if (openaiRes.statusCode !== 200) {
+                        console.error('[SERVER] /api/summarize - OpenAI error:', openaiRes.statusCode, responseData);
+                        res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                        res.end(JSON.stringify({ error: 'Upstream summarization failed' }));
+                        return;
+                    }
+
+                    try {
+                        const result = JSON.parse(responseData);
+                        const summary = result.choices?.[0]?.message?.content || null;
+
+                        if (!summary) {
+                            throw new Error('No content in OpenAI response');
+                        }
+
+                        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                        res.end(JSON.stringify({ summary }));
+
+                    } catch (e) {
+                        console.error('[SERVER] /api/summarize - Parse error:', e);
+                        res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                        res.end(JSON.stringify({ error: 'Failed to process summary' }));
+                    }
+                });
+            });
+
+            openaiReq.on('error', (e) => {
+                console.error('[SERVER] /api/summarize - Request exception:', e);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: 'Internal server error during summarization' }));
+            });
+
+            openaiReq.write(requestData);
+            openaiReq.end();
+        });
+        return;
+    }
+
+    // Handle Erica preparation API requests
+    if (req.url.startsWith('/api/erica-preparation')) {
+        logAt('info', '[SERVER] /api/erica-preparation - Request received:', req.method, req.url);
+
+        if (req.method !== 'POST') {
+            res.writeHead(405, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+
+        req.on('end', () => {
+            try {
+                logAt('debug', '[SERVER] /api/erica-preparation - Body received:', safePreview(body, 500));
+
+                if (!body || body.trim() === '') {
+                    console.error('[SERVER] /api/erica-preparation - Empty body');
+                    res.writeHead(400, {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    res.end(JSON.stringify({ error: 'Request body is required' }));
+                    return;
+                }
+
+                const requestData = JSON.parse(body);
+                console.log('[SERVER] /api/erica-preparation - Parsed data:', requestData);
+
+                // Accept either userId (preferred) or email; allow empty (guest mode)
+                const userId = requestData.userId;
+                const email = requestData.email;
+
+                if (!userId && !email) {
+                    console.warn('[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
+                }
+
+                logAt('info', '[SERVER] /api/erica-preparation - Request for:', { userId: userId || null, email: email || null });
+
+                // Check cache first
+                const cacheKey = getPrepCacheKey(userId, email);
+                const cached = prepCache.get(cacheKey);
+                const now = Date.now();
+                const ttl = cacheKey === '__guest__' ? PREP_CACHE_GUEST_TTL_MS : PREP_CACHE_AUTH_TTL_MS;
+
+                if (cached && (now - cached.ts) < ttl) {
+                    // Cache hit - return immediately
+                    logAt('info', '[SERVER] ✅ /api/erica-preparation - Cache HIT:', cacheKey, {
+                        age: Math.round((now - cached.ts) / 1000) + 's',
+                        ttl: Math.round(ttl / 1000) + 's'
+                    });
+
+                    const responseHeaders = {
+                        'Content-Type': cached.headers['content-type'] || 'application/json',
+                        'Access-Control-Allow-Origin': '*',
+                        'Cache-Control': cacheKey === '__guest__' ? 'public, max-age=86400' : 'private, max-age=120',
+                        'X-Cache': 'HIT'
+                    };
+
+                    res.writeHead(cached.statusCode, responseHeaders);
+                    res.end(cached.data);
+                    return;
+                }
+
+                // Cache miss - proceed with proxy
+                if (cached) {
+                    logAt('info', '[SERVER] ⏰ /api/erica-preparation - Cache EXPIRED:', cacheKey, {
+                        age: Math.round((now - cached.ts) / 1000) + 's'
+                    });
+                    prepCache.delete(cacheKey);
+                } else {
+                    logAt('info', '[SERVER] ❌ /api/erica-preparation - Cache MISS:', cacheKey);
+                }
+
+                // Proxy to configurable preparation backend (real mode)
+                const https = require('https');
+
+                const payload = {};
+                if (userId) payload.userId = userId;
+                if (email) payload.email = email;
+
+                const postData = JSON.stringify(payload);
+
+                const options = {
+                    hostname: ERICA_API_HOST,
+                    port: 443,
+                    path: PREP_PATH,
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Content-Length': Buffer.byteLength(postData, 'utf8'),
+                        // Emulate a standard browser to avoid aggressive WAF/bot blocking (429s)
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'application/json, text/plain, */*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Connection': 'keep-alive',
+                        'Origin': ERICA_API_ORIGIN,
+                        'Referer': ERICA_API_ORIGIN + '/'
+                    }
+                };
+
+                logAt('info', '[SERVER] /api/erica-preparation - Proxying to:', `${options.hostname}${options.path}`);
+
+                const externalReq = https.request(options, (externalRes) => {
+                    let responseData = '';
+
+                    externalRes.on('data', (chunk) => {
+                        responseData += chunk;
+                    });
+
+                    externalRes.on('end', () => {
+                        const statusCode = externalRes.statusCode || 500;
+
+                        // FALLBACK: If upstream API returns non-200, use local fallback file
+                        if (statusCode !== 200) {
+                            console.warn(`[SERVER] /api/erica-preparation - Upstream returned ${statusCode}, attempting fallback...`);
+                            servePrepFallback(res, cacheKey, now, ttl);
+                            return;
+                        }
+
+                        // Cache successful responses (200 OK only)
+                        if (statusCode === 200) {
+                            prepCache.set(cacheKey, {
+                                ts: now,
+                                data: responseData,
+                                statusCode: statusCode,
+                                headers: externalRes.headers
+                            });
+                            logAt('info', '[SERVER] 💾 /api/erica-preparation - Cached response:', cacheKey, {
+                                size: responseData.length,
+                                ttl: Math.round(ttl / 1000) + 's'
+                            });
+                        }
+
+                        const responseHeaders = {
+                            'Content-Type': externalRes.headers['content-type'] || 'application/json',
+                            'Access-Control-Allow-Origin': '*',
+                            'Cache-Control': cacheKey === '__guest__' ? 'public, max-age=86400' : 'private, max-age=120',
+                            'X-Cache': 'MISS'
+                        };
+                        res.writeHead(statusCode, responseHeaders);
+                        res.end(responseData);
+                    });
+                });
+
+                externalReq.on('error', (error) => {
+                    console.error('[SERVER] /api/erica-preparation - Upstream request error:', error);
+                    // FALLBACK: On network error, use local fallback file
+                    servePrepFallback(res, cacheKey, now, ttl);
+                });
+
+                externalReq.write(postData, 'utf8');
+                externalReq.end();
+            } catch (error) {
+                console.error('[SERVER] /api/erica-preparation - Handler error:', error);
+                // FALLBACK: On handler error, try fallback
+                const cacheKeyFallback = getPrepCacheKey(req.userId, req.email);
+                const ttlFallback = cacheKeyFallback === '__guest__' ? PREP_CACHE_GUEST_TTL_MS : PREP_CACHE_AUTH_TTL_MS;
+                servePrepFallback(res, cacheKeyFallback, Date.now(), ttlFallback);
+            }
+        });
+
+        req.on('error', (error) => {
+            console.error('[SERVER] /api/erica-preparation - Request stream error:', error);
+            res.writeHead(500, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: error.message }));
+        });
+
+        return;
+    }
+
+    // Helper to serve ericaPreparationFallBack.txt
+    function servePrepFallback(res, cacheKey, now, ttl) {
+        const fallbackPath = path.join(__dirname, 'ericaPreparationFallBack.txt');
+        fs.readFile(fallbackPath, 'utf8', (err, data) => {
+            if (err) {
+                console.error('[SERVER] ❌ /api/erica-preparation - Fallback file error:', err.message);
+                res.writeHead(503, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: 'Service Unavailable (Upstream failed and fallback missing)' }));
+                return;
+            }
+
+            console.warn('[SERVER] 🛡️ /api/erica-preparation - Serving fallback response for:', cacheKey);
+
+            // Cache the fallback response to avoid thrashing the disk/API
+            prepCache.set(cacheKey, {
+                ts: now,
+                data: data,
+                statusCode: 200,
+                headers: { 'content-type': 'application/json' }
+            });
+
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'private, max-age=60',
+                'X-Erica-Fallback': 'true',
+                'X-Cache': 'MISS'
+            });
+            res.end(data);
+        });
+    }
+
+    // Handle conversation history save API requests
+    if (req.url.startsWith('/api/conversation-history-save')) {
+        if (req.method !== 'POST') {
+            res.writeHead(405, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+
+        req.on('end', () => {
+            try {
+                const requestData = JSON.parse(body);
+                const userId = requestData.userId;
+                const text = requestData.text;
+
+                if (!userId || !text) {
+                    res.writeHead(400, {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    res.end(JSON.stringify({ error: 'userId and text are required' }));
+                    return;
+                }
+
+                const https = require('https');
+                const postData = JSON.stringify({
+                    userId: userId,
+                    text: text
+                });
+
+                const options = {
+                    hostname: ERICA_API_HOST,
+                    port: 443,
+                    path: '/_functions/ericaConversationHistorySave',
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Content-Length': Buffer.byteLength(postData, 'utf8'),
+                        // Emulate a standard browser to avoid aggressive WAF/bot blocking (429s)
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'application/json, text/plain, */*',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Connection': 'keep-alive',
+                        'Origin': ERICA_API_ORIGIN,
+                        'Referer': ERICA_API_ORIGIN + '/'
+                    }
+                };
+
+                const externalReq = https.request(options, (externalRes) => {
+                    let responseData = '';
+
+                    externalRes.on('data', (chunk) => {
+                        responseData += chunk;
+                    });
+
+                    externalRes.on('end', () => {
+                        const responseHeaders = {
+                            'Content-Type': externalRes.headers['content-type'] || 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        };
+
+                        res.writeHead(externalRes.statusCode, responseHeaders);
+                        res.end(responseData);
+                    });
+                });
+
+                externalReq.on('error', (error) => {
+                    console.error('[SERVER] /api/conversation-history-save - Request error:', error);
+                    res.writeHead(500, {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    res.end(JSON.stringify({ error: error.message }));
+                });
+
+                externalReq.write(postData, 'utf8');
+                externalReq.end();
+            } catch (error) {
+                console.error('[SERVER] /api/conversation-history-save - Parse error:', error);
+                res.writeHead(500, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(JSON.stringify({ error: error.message }));
+            }
+        });
+
+        req.on('error', (error) => {
+            console.error('[SERVER] /api/conversation-history-save - Request stream error:', error);
+            res.writeHead(500, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: error.message }));
+        });
+
+        return;
+    }
+
+    // Handle conversation history fetch API requests
+    if (req.url.startsWith('/api/conversation-history-fetch')) {
+        const reqId = makeReqId('histfetch');
+        const startMs = Date.now();
+        logAt('info', '[SERVER] /api/conversation-history-fetch - Request received:', { reqId, method: req.method, url: req.url });
+
+        if (req.method !== 'POST') {
+            res.writeHead(405, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+
+        req.on('end', () => {
+            try {
+                if (ERICA_DEBUG_HISTORY) {
+                    logAt('debug', '[SERVER] /api/conversation-history-fetch - Body received:', safePreview(body, 400));
+                }
+                const requestData = JSON.parse(body);
+                const userId = requestData.userId;
+
+                if (!userId) {
+                    logAt('warn', '[SERVER] /api/conversation-history-fetch - No userId in request:', { reqId });
+                    res.writeHead(400, {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    res.end(JSON.stringify({ error: 'userId is required' }));
+                    return;
+                }
+
+                if (ERICA_DEBUG_HISTORY) {
+                    logAt('debug', '[SERVER] /api/conversation-history-fetch - Request for userId:', { reqId, userId });
+                }
+
+                const https = require('https');
+                const postData = JSON.stringify({
+                    userId: userId
+                });
+
+                const options = {
+                    hostname: ERICA_API_HOST,
+                    port: 443,
+                    path: '/_functions/ericaConversationHistoryFetch',
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Content-Length': Buffer.byteLength(postData, 'utf8')
+                    }
+                };
+
+                if (ERICA_DEBUG_HISTORY) {
+                    logAt('debug', '[SERVER] /api/conversation-history-fetch - Proxying to:', options.hostname + options.path);
+                }
+
+                const externalReq = https.request(options, (externalRes) => {
+                    let responseData = '';
+
+                    const status = externalRes.statusCode;
+                    const retryAfter = externalRes.headers?.['retry-after'] || null;
+                    const rateLimit = {
+                        limit: externalRes.headers?.['x-ratelimit-limit'] || null,
+                        remaining: externalRes.headers?.['x-ratelimit-remaining'] || null,
+                        reset: externalRes.headers?.['x-ratelimit-reset'] || null
+                    };
+                    if (status === 429 || ERICA_DEBUG_HISTORY) {
+                        logAt('warn', '[SERVER] /api/conversation-history-fetch - External response:', {
+                            reqId,
+                            status,
+                            retryAfter,
+                            rateLimit
+                        });
+                    } else {
+                        logAt('info', '[SERVER] /api/conversation-history-fetch - External response status:', status);
+                    }
+
+                    externalRes.on('data', (chunk) => {
+                        responseData += chunk;
+                    });
+
+                    externalRes.on('end', () => {
+                        const durationMs = Date.now() - startMs;
+                        if (status === 429 || ERICA_DEBUG_HISTORY) {
+                            logAt('warn', '[SERVER] /api/conversation-history-fetch - Completed:', {
+                                reqId,
+                                durationMs,
+                                bytes: responseData.length,
+                                responsePreview: safePreview(responseData, 260)
+                            });
+                        } else {
+                            logAt('info', '[SERVER] /api/conversation-history-fetch - Completed:', { reqId, durationMs, bytes: responseData.length });
+                        }
+                        const responseHeaders = {
+                            'Content-Type': externalRes.headers['content-type'] || 'application/json',
+                            'Access-Control-Allow-Origin': '*'
+                        };
+
+                        res.writeHead(externalRes.statusCode, responseHeaders);
+                        res.end(responseData);
+                    });
+                });
+
+                externalReq.on('error', (error) => {
+                    logAt('error', '[SERVER] /api/conversation-history-fetch - Request error:', { reqId, message: error.message, code: error.code });
+                    res.writeHead(500, {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    });
+                    res.end(JSON.stringify({ error: error.message }));
+                });
+
+                externalReq.write(postData, 'utf8');
+                externalReq.end();
+            } catch (error) {
+                logAt('error', '[SERVER] /api/conversation-history-fetch - Parse error:', { reqId, message: error.message });
+                res.writeHead(500, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(JSON.stringify({ error: error.message }));
+            }
+        });
+
+        req.on('error', (error) => {
+            logAt('error', '[SERVER] /api/conversation-history-fetch - Request stream error:', { reqId, message: error.message, code: error.code });
+            res.writeHead(500, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: error.message }));
+        });
+
+        return;
+    }
+
+    // Handle TTS preview requests (mp3)
+    if (req.url.startsWith('/api/preview-tts')) {
+        if (req.method !== 'POST') {
+            res.writeHead(405, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => {
+            body += chunk.toString();
+        });
+
+        req.on('end', () => {
+            try {
+                const payload = JSON.parse(body || '{}');
+                const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+                const voice = typeof payload.voice === 'string' ? payload.voice.trim() : '';
+                const instructions = typeof payload.instructions === 'string' ? payload.instructions.trim() : '';
+
+                if (!text) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'text is required' }));
+                    return;
+                }
+                if (!voice) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'voice is required' }));
+                    return;
+                }
+
+                const model = process.env.ERICA_PREVIEW_TTS_MODEL || 'gpt-4o-mini-tts';
+                const format = 'mp3';
+                const cacheKey = buildPreviewCacheKey({ model, voice, text, instructions, format });
+                const cachePath = getPreviewCachePath(cacheKey);
+
+                ensurePreviewCacheDir();
+                try {
+                    if (fs.existsSync(cachePath)) {
+                        const stat = fs.statSync(cachePath);
+                        const ageMs = Date.now() - stat.mtimeMs;
+                        if (ageMs <= PREVIEW_TTS_CACHE_TTL_MS) {
+                            res.writeHead(200, {
+                                'Content-Type': 'audio/mpeg',
+                                'Access-Control-Allow-Origin': '*'
+                            });
+                            fs.createReadStream(cachePath).pipe(res);
+                            return;
+                        }
+                        try {
+                            fs.unlinkSync(cachePath);
+                        } catch (_) { }
+                    }
+                } catch (err) {
+                    console.warn('[SERVER] /api/preview-tts - Cache check error:', err?.message || err);
+                }
+
+                const ensureKey = (cb) => {
+                    if (openAIKey) return cb(openAIKey);
+                    fetchOpenAIKey()
+                        .then(() => cb(openAIKey))
+                        .catch((err) => {
+                            console.error('[SERVER] /api/preview-tts - OpenAI key not available:', err?.message || err);
+                            cb(null);
+                        });
+                };
+
+                ensureKey((apiKey) => {
+                    if (!apiKey) {
+                        res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                        res.end(JSON.stringify({ error: 'OpenAI key not available on server' }));
+                        return;
+                    }
+
+                    const https = require('https');
+                    const requestBody = JSON.stringify({
+                        model,
+                        voice,
+                        input: text,
+                        format,
+                        instructions: instructions || undefined
+                    });
+
+                    const options = {
+                        hostname: 'api.openai.com',
+                        port: 443,
+                        path: '/v1/audio/speech',
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`,
+                            'Content-Type': 'application/json',
+                            'Content-Length': Buffer.byteLength(requestBody, 'utf8')
+                        }
+                    };
+
+                    const openaiReq = https.request(options, (openaiRes) => {
+                        const status = openaiRes.statusCode || 500;
+                        if (status !== 200) {
+                            let errBody = '';
+                            openaiRes.on('data', (chunk) => {
+                                errBody += chunk.toString();
+                            });
+                            openaiRes.on('end', () => {
+                                res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                                res.end(errBody || JSON.stringify({ error: 'TTS request failed' }));
+                            });
+                            return;
+                        }
+
+                        const chunks = [];
+                        openaiRes.on('data', (chunk) => chunks.push(chunk));
+                        openaiRes.on('end', () => {
+                            const audioBuffer = Buffer.concat(chunks);
+                            try {
+                                fs.writeFile(cachePath, audioBuffer, (err) => {
+                                    if (err) {
+                                        console.warn('[SERVER] /api/preview-tts - Cache write failed:', err.message || err);
+                                    }
+                                });
+                            } catch (err) {
+                                console.warn('[SERVER] /api/preview-tts - Cache write error:', err?.message || err);
+                            }
+                            res.writeHead(200, {
+                                'Content-Type': 'audio/mpeg',
+                                'Access-Control-Allow-Origin': '*'
+                            });
+                            res.end(audioBuffer);
+                        });
+                    });
+
+                    openaiReq.on('error', (error) => {
+                        console.error('[SERVER] /api/preview-tts - Request error:', error);
+                        res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                        res.end(JSON.stringify({ error: error.message }));
+                    });
+
+                    openaiReq.write(requestBody, 'utf8');
+                    openaiReq.end();
+                });
+            } catch (error) {
+                console.error('[SERVER] /api/preview-tts - Parse error:', error);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: error.message }));
+            }
+        });
+
+        req.on('error', (error) => {
+            console.error('[SERVER] /api/preview-tts - Request stream error:', error);
+            res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: error.message }));
+        });
+
+        return;
+    }
+
+    // Handle message quality control requests
+    if (req.url.startsWith('/api/message-qc')) {
+        if (req.method !== 'POST') {
+            res.writeHead(405, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+
+        req.on('end', () => {
+            try {
+                const payload = JSON.parse(body || '{}');
+                const text = typeof payload.text === 'string' ? payload.text : '';
+                logAt('info', '[SERVER] /api/message-qc - Payload', {
+                    hasText: typeof payload.text === 'string',
+                    textLength: typeof payload.text === 'string' ? payload.text.length : 0
+                });
+
+                if (!text) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'text is required', hasText: typeof payload.text === 'string' }));
+                    return;
+                }
+
+                const ensureKey = (cb) => {
+                    if (openAIKey) return cb(openAIKey);
+                    fetchOpenAIKey()
+                        .then(() => cb(openAIKey))
+                        .catch((err) => {
+                            console.error('[SERVER] /api/message-qc - OpenAI key not available:', err?.message || err);
+                            cb(null);
+                        });
+                };
+
+                ensureKey((apiKey) => {
+                    if (!apiKey) {
+                        res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                        res.end(JSON.stringify({ error: 'OpenAI key not available on server' }));
+                        return;
+                    }
+
+                    const https = require('https');
+                    const qcModel = process.env.ERICA_MESSAGE_QC_MODEL || 'gpt-4.1-mini';
+                    const prompt =
+                        'You are a quality control filter for assistant messages. ' +
+                        'Return JSON with keys: ok (boolean), cleanedText (string), issues (array of strings). ' +
+                        'Rules: remove code block/markdown formatting, fix bare URLs by adding https://, ' +
+                        'remove placeholder artifacts like {coach: erica} or template tags, and remove stray JSON fragments. ' +
+                        'If the message is fine, ok=true and cleanedText must match the original text exactly. ' +
+                        'Respond with JSON only.';
+
+                    const requestBody = JSON.stringify({
+                        model: qcModel,
+                        input: `${prompt}\n\nMessage:\n${text}`,
+                        temperature: 0
+                    });
+
+                    const options = {
+                        hostname: 'api.openai.com',
+                        port: 443,
+                        path: '/v1/responses',
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`,
+                            'Content-Type': 'application/json',
+                            'Content-Length': Buffer.byteLength(requestBody, 'utf8'),
+                            'OpenAI-Beta': 'responses=v1'
+                        }
+                    };
+
+                    const openaiReq = https.request(options, (openaiRes) => {
+                        let responseData = '';
+                        openaiRes.on('data', (chunk) => {
+                            responseData += chunk.toString();
+                        });
+                        openaiRes.on('end', () => {
+                            if (openaiRes.statusCode !== 200) {
+                                res.writeHead(openaiRes.statusCode || 500, {
+                                    'Content-Type': 'application/json',
+                                    'Access-Control-Allow-Origin': '*'
+                                });
+                                res.end(responseData || JSON.stringify({ error: 'QC request failed' }));
+                                return;
+                            }
+
+                            try {
+                                const openaiResult = JSON.parse(responseData);
+                                let content = '';
+                                if (openaiResult.output && Array.isArray(openaiResult.output)) {
+                                    for (const item of openaiResult.output) {
+                                        if (item.type === 'message' && item.content && Array.isArray(item.content)) {
+                                            for (const part of item.content) {
+                                                if (part.output_text && part.output_text.text) {
+                                                    content = part.output_text.text;
+                                                    break;
+                                                }
+                                                if (part.type === 'output_text' && part.text) {
+                                                    content = part.text;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        if (content) break;
+                                    }
+                                }
+                                if (!content && openaiResult.output_text) {
+                                    content = openaiResult.output_text;
+                                }
+                                const parsed = JSON.parse(content);
+                                res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                                res.end(JSON.stringify(parsed));
+                            } catch (e) {
+                                res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                                res.end(JSON.stringify({ ok: true, cleanedText: text, issues: ['qc_parse_failed'] }));
+                            }
+                        });
+                    });
+
+                    openaiReq.on('error', (error) => {
+                        console.error('[SERVER] /api/message-qc - Request error:', error);
+                        res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                        res.end(JSON.stringify({ error: error.message }));
+                    });
+
+                    openaiReq.write(requestBody, 'utf8');
+                    openaiReq.end();
+                });
+            } catch (error) {
+                console.error('[SERVER] /api/message-qc - Parse error:', error);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: error.message }));
+            }
+        });
+
+        req.on('error', (error) => {
+            console.error('[SERVER] /api/message-qc - Request stream error:', error);
+            res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: error.message }));
+        });
+
+        return;
+    }
+
+    // Handle API proxy requests — OpenAI Realtime GA API
+    // GA endpoint: POST /v1/realtime/calls with FormData (sdp + session)
+    // Beta endpoint (/v1/realtime with raw SDP) was shut down May 12, 2026.
+    if (req.url.startsWith('/api/proxy/realtime')) {
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+
+        req.on('end', async () => {
+            // Use server-held OpenAI key (never provided by client)
+            let apiKey = openAIKey;
+            if (!apiKey) {
+                try {
+                    await fetchOpenAIKey();
+                    apiKey = openAIKey;
+                } catch (err) {
+                    console.error('[SERVER] /api/proxy/realtime - OpenAI key not available:', err?.message || err);
+                }
+            }
+            if (!apiKey) {
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: 'OpenAI key not available on server' }));
+                return;
+            }
+
+            try {
+                // Build FormData for GA endpoint
+                // Field 'sdp': raw SDP offer string (NOT Blob)
+                // Field 'session': JSON-stringified session config with voice
+                const voice = req.headers['x-erica-voice'] || 'marin';
+                const formData = new FormData();
+                formData.set('sdp', body);
+                formData.set('session', JSON.stringify({
+                    type: 'realtime',
+                    model: REALTIME_MODEL,
+                    audio: {
+                        input: {
+                            transcription: { model: 'whisper-1' }
+                        },
+                        output: { voice: voice }
+                    }
+                }));
+
+                const openaiRes = await fetch('https://api.openai.com/v1/realtime/calls', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`
+                        // Content-Type auto-set by FormData to multipart/form-data
+                    },
+                    body: formData
+                });
+
+                const responseBody = await openaiRes.text();
+
+                if (openaiRes.status !== 200 && openaiRes.status !== 201) {
+                    console.error('OpenAI API Error:', {
+                        status: openaiRes.status,
+                        body: responseBody.substring(0, 500)
+                    });
+                }
+
+                res.writeHead(openaiRes.status, {
+                    'Content-Type': openaiRes.headers.get('content-type') || 'text/plain',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, X-Erica-Voice'
+                });
+                res.end(responseBody);
+            } catch (error) {
+                console.error('Proxy error:', error);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: error.message }));
+            }
+        });
+        return;
+    }
+
+    // Handle OPTIONS preflight requests
+    if (req.method === 'OPTIONS') {
+        res.writeHead(200, {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, X-Erica-Voice'
+        });
+        res.end();
+        return;
+    }
+
+    // Serve static files
+    let filePath = '.' + req.url.split('?')[0];
+    if (filePath === './') {
+        filePath = './index.html';
+    }
+
+    const extname = String(path.extname(filePath)).toLowerCase();
+    const contentType = mimeTypes[extname] || 'application/octet-stream';
+
+    fs.readFile(filePath, (error, content) => {
+        if (error) {
+            if (error.code === 'ENOENT') {
+                res.writeHead(404, { 'Content-Type': 'text/html' });
+                res.end('<h1>404 - File Not Found</h1>', 'utf-8');
+            } else {
+                res.writeHead(500);
+                res.end(`Server Error: ${error.code}`, 'utf-8');
+            }
+        } else {
+            res.writeHead(200, {
+                'Content-Type': contentType,
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(content, 'utf-8');
+        }
+    });
+});
+
+server.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}/`);
+    console.log('Press Ctrl+C to stop the server');
+
+    // Fetch OpenAI key on server start
+    fetchOpenAIKey().catch((error) => {
+        console.warn('[SERVER] Failed to fetch OpenAI key on startup. Manual key entry will be required.');
+        console.warn('[SERVER] Error:', error.message);
+    });
+});
