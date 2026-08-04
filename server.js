@@ -12,6 +12,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+// AI-Coach-v3: OpenAI Vector Store helpers for knowledge-search
+const vectorStore = require('./lib/vectorStore');
+
 const PORT = process.env.PORT || 8002;
 
 // ---- Logging helpers ----
@@ -267,6 +270,17 @@ function fetchOpenAIKey() {
                         console.log('[SERVER] OpenAI key fetched successfully');
                         openAIKey = data.openAIkey;
                         openAISecondaryKey = data.openAISecondarykey;
+
+                        // Initialise the shared OpenAI client used by vectorStore helpers.
+                        // Any /api/knowledge-search call arriving before this fires would
+                        // hit "client not initialised" — the handler surfaces that as a 503.
+                        try {
+                            vectorStore.initClient(openAIKey);
+                            console.log('[SERVER] vectorStore client initialised');
+                        } catch (vsErr) {
+                            console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
+                        }
+
                         resolve(data);
                     } catch (error) {
                         console.error('[SERVER] Error parsing OpenAI key response:', error);
@@ -647,6 +661,60 @@ const server = http.createServer((req, res) => {
 
             openaiReq.write(requestData);
             openaiReq.end();
+        });
+        return;
+    }
+
+    // Handle knowledge-search (AI-Coach-v3 grounding pipeline)
+    // POST body: { query: string, scope?: 'frameworks'|'user_data'|'all', userId?: string }
+    // Returns:   { chunks: [...], answer: string, vectorStoreIds: [...] }
+    if (req.url.startsWith('/api/knowledge-search')) {
+        logAt('info', '[SERVER] /api/knowledge-search - Request received:', req.method);
+
+        if (req.method !== 'POST') {
+            res.writeHead(405, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+            });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const requestData = body ? JSON.parse(body) : {};
+                const query = String(requestData.query || '').trim();
+                const scope = String(requestData.scope || 'all');
+                const userId = requestData.userId ? String(requestData.userId) : null;
+
+                if (!query) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'query is required' }));
+                    return;
+                }
+
+                logAt('info', '[SERVER] /api/knowledge-search -', { scope, userId, queryPreview: safePreview(query, 120) });
+
+                const result = await vectorStore.searchKnowledge({ query, scope, userId });
+
+                logAt('info', '[SERVER] /api/knowledge-search -> chunks:', result.chunks.length, 'stores:', result.vectorStoreIds.length);
+
+                res.writeHead(200, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(JSON.stringify(result));
+            } catch (e) {
+                console.error('[SERVER] /api/knowledge-search error:', e?.message || e);
+                const isNotReady = /not initialised/i.test(e?.message || '');
+                res.writeHead(isNotReady ? 503 : 500, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
+            }
         });
         return;
     }

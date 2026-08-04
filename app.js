@@ -5313,6 +5313,26 @@ class VoiceChatBot {
                             },
                             required: ['category']
                         }
+                    },
+                    {
+                        type: 'function',
+                        name: 'search_knowledge',
+                        description: 'Search the coaching knowledge base for relevant information to ground your response. Use this whenever the user asks about their assessments, personal results, coaching frameworks, past sessions, or wants specific insights tied to their data. Choose scope: "user_data" for anything about THIS user (their quiz results, reports, past sessions), "frameworks" for general coaching approaches, "all" when unsure.',
+                        parameters: {
+                            type: 'object',
+                            properties: {
+                                query: {
+                                    type: 'string',
+                                    description: 'A specific, self-contained natural-language question capturing what to search for. Include enough context so it is meaningful on its own.'
+                                },
+                                scope: {
+                                    type: 'string',
+                                    enum: ['user_data', 'frameworks', 'all'],
+                                    description: 'user_data = this user\'s report/history. frameworks = general coaching frameworks. all = both (default).'
+                                }
+                            },
+                            required: ['query']
+                        }
                     }
                 ],
                 tool_choice: 'auto'
@@ -5707,6 +5727,53 @@ class VoiceChatBot {
                 } finally {
                     if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
                         window.uiLayout.setWaitingState(this, false);
+                    }
+                }
+            } else if (functionName === 'search_knowledge') {
+                // AI-Coach-v3 grounding tool. Calls /api/knowledge-search which
+                // runs file_search over the frameworks-shared store and (when
+                // scope includes user_data) the caller's user-<id> store.
+                const query = typeof safeArgs.query === 'string' ? safeArgs.query.trim() : '';
+                const scope = ['user_data', 'frameworks', 'all'].includes(safeArgs.scope) ? safeArgs.scope : 'all';
+                const userId = this.getUserIdFromURL();
+
+                if (!query) {
+                    result = JSON.stringify({ error: 'Empty query' });
+                } else {
+                    console.log('[Erica] 🔎 search_knowledge:', { scope, hasUserId: !!userId, queryPreview: query.slice(0, 120) });
+                    try {
+                        const searchUrl = this.apiUrl('/api/knowledge-search');
+                        const kresp = await fetch(searchUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query, scope, userId })
+                        });
+
+                        if (!kresp.ok) {
+                            const errText = await kresp.text();
+                            console.error('[Erica] ❌ knowledge-search HTTP error:', kresp.status, errText.slice(0, 400));
+                            result = JSON.stringify({ error: `search_knowledge failed: ${kresp.status}` });
+                        } else {
+                            const kdata = await kresp.json();
+                            // Return chunks + synthesized answer to the model.
+                            // We shape the payload so the LLM has both the raw
+                            // grounding material AND a pre-written answer it can
+                            // adapt to its coaching voice.
+                            result = JSON.stringify({
+                                answer: kdata.answer || null,
+                                chunks: (kdata.chunks || []).map((c) => ({
+                                    source: c.filename,
+                                    score: c.score,
+                                    excerpt: c.text
+                                })),
+                                storesQueried: (kdata.vectorStoreIds || []).length,
+                                scopeApplied: scope
+                            });
+                            console.log('[Erica] ✅ search_knowledge chunks:', (kdata.chunks || []).length);
+                        }
+                    } catch (error) {
+                        console.error('[Erica] ❌ search_knowledge failed:', error);
+                        result = JSON.stringify({ error: `search_knowledge exception: ${error.message}` });
                     }
                 }
             } else {
