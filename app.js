@@ -4562,6 +4562,45 @@ class VoiceChatBot {
                     }
                 }
 
+                // ============================================================
+                // AI-Coach-v3: knowledge-grounding directive
+                // ------------------------------------------------------------
+                // Overrides the legacy "if not in uploaded documents, say
+                // you're unsure" pattern in the base preparation prompt.
+                // The base prompt was written before search_knowledge existed
+                // and actively teaches Erica to punt on frameworks / user data
+                // she doesn't have inline — which defeats the whole retrieval
+                // layer. We tell her explicitly to CALL the tool first.
+                // ============================================================
+                const knowledgeGroundingDirective = [
+                    '',
+                    '=== KNOWLEDGE GROUNDING (v3) ===',
+                    'You have a tool called `search_knowledge` that searches a real knowledge base',
+                    'containing (a) all Talent Transformation coaching frameworks and (b) this',
+                    "user's own assessment reports and past session summaries.",
+                    '',
+                    'MANDATORY BEHAVIOR:',
+                    '- Whenever the user asks about coaching styles, frameworks, approaches, or',
+                    "  names any coaching persona (Supportive, Directive, Discovery, Empowering,",
+                    '  Nurturing, Guidance, Exploratory, Strengths, etc.), CALL search_knowledge',
+                    "  with scope='frameworks' BEFORE answering. Do not say you're not sure or",
+                    "  that we don't have a named framework — search first, then answer from",
+                    '  the retrieved chunks.',
+                    "- Whenever the user asks about their OWN results, quizzes, reports, past",
+                    '  sessions, insights, patterns, or anything specific to them personally,',
+                    "  CALL search_knowledge with scope='user_data' BEFORE answering.",
+                    "- Only say you don't know AFTER search_knowledge returns no relevant chunks.",
+                    "- Do not name the search tool to the user; use it silently. If chunks come",
+                    '  back, weave the substance into your coaching voice; do not just recite them.',
+                    '',
+                    'This overrides any earlier instruction about "if a quiz or resource isn\'t',
+                    'in the uploaded documents, say you are unsure" — those instructions predate',
+                    'the search tool and are no longer accurate.',
+                    '=== END KNOWLEDGE GROUNDING ==='
+                ].join('\n');
+
+                instructions = `${instructions}\n${knowledgeGroundingDirective}`;
+
                 this.customInstructions = instructions;
                 // Re-push session config now that customInstructions is populated.
                 // updateVoiceProfile above may have called configureSession before this was set (race condition).
