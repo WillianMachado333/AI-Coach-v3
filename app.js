@@ -1493,41 +1493,37 @@ class VoiceChatBot {
      * Determine if coach selection should be shown
      */
     shouldShowCoachSelection() {
-        // If a valid coach is specified in the URL, skip the selection screen
-        // (invalid coach names fall through to show selection)
-        if (this.getUrlCoach() && !this._urlCoachInvalid) {
-            return false;
-        }
+        // v3 UX default: open directly on chat with Erica ("Supportive" / marin)
+        // as the default coach. The coach picker is NOT shown at boot anymore;
+        // users open it via the "Switch Coaching Style" menu item or the
+        // back-to-list button whenever they want to change coach.
+        //
+        // Two escape hatches keep the old flow reachable:
+        //  1. Invalid URL coach — fall back to picker so user can choose manually
+        //  2. Explicit URL flag ?picker=1 (or ?showPicker=1) — opt back in
 
-        if (!this.stateManager) {
-            return true; // Show selection if no state manager
-        }
+        if (this._urlCoachInvalid) return true;
 
-        const savedState = this.loadSavedState();
+        try {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('picker') === '1' || params.get('showPicker') === '1') return true;
+        } catch (_) { /* URL parsing failure is non-fatal */ }
 
-        // Only skip selection if the user explicitly chose a coach (not the default fallback)
-        // Legacy states have companionId but no userChoseCoach — treat as explicit choice
-        const hasExplicitCoach = savedState && (savedState.userChoseCoach || savedState.selectedCoach?.companionId);
-        if (hasExplicitCoach && (savedState.mode === 'chat' || savedState.mode === 'call')) {
-            return false;
-        }
-
-        return true;
+        return false;
     }
 
     /**
      * Determine if the AI Navigator quiz should be shown.
-     * Show when: first visit, no saved coach, no URL coach, no saved navigator result.
+     * v3 UX default: skip the multi-question quiz. Chat with Erica opens
+     * directly. The quiz is still available via ?nav=1 URL flag for anyone
+     * who wants the guided coach discovery.
      */
     shouldShowNavigator() {
-        // Skip if a valid coach is specified in URL
-        if (this.getUrlCoach() && !this._urlCoachInvalid) return false;
-        // Skip if user already has a saved session/coach
-        const savedState = this.loadSavedState();
-        if (savedState && (savedState.mode === 'chat' || savedState.mode === 'call')) return false;
-        // Skip if navigator already completed
-        if (typeof EricaNavigator !== 'undefined' && EricaNavigator.getSavedResult()) return false;
-        return true;
+        try {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('nav') === '1' || params.get('navigator') === '1') return true;
+        } catch (_) { /* URL parsing failure is non-fatal */ }
+        return false;
     }
 
     /**
