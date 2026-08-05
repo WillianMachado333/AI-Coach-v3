@@ -92,6 +92,46 @@
         app.voiceMenu = document.getElementById('voiceMenu');
         app.voiceMenuOverlay = document.getElementById('voiceMenuOverlay');
 
+        // Scroll-to-bottom floating button — appears when the user has
+        // scrolled up from the latest message. Small helper wired directly
+        // here since the behavior is purely UI, no app-state dependency.
+        (function setupScrollToBottom() {
+            const btn = document.getElementById('scrollToBottomBtn');
+            const scrollContainer = document.getElementById('chatContainer');
+            if (!btn || !scrollContainer) return;
+
+            const NEAR_BOTTOM_THRESHOLD_PX = 80;
+
+            function updateVisibility() {
+                const distanceFromBottom =
+                    scrollContainer.scrollHeight
+                    - scrollContainer.scrollTop
+                    - scrollContainer.clientHeight;
+                if (distanceFromBottom > NEAR_BOTTOM_THRESHOLD_PX) {
+                    btn.classList.remove('hidden');
+                } else {
+                    btn.classList.add('hidden');
+                }
+            }
+
+            scrollContainer.addEventListener('scroll', updateVisibility, { passive: true });
+            btn.addEventListener('click', () => {
+                scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
+            });
+
+            // Recheck when content grows (new messages/pills appended). Node
+            // additions inside chatMessages are the main trigger — a small
+            // MutationObserver is cheaper than polling.
+            const chatMsgs = document.getElementById('chatMessages');
+            if (chatMsgs && typeof MutationObserver !== 'undefined') {
+                const mo = new MutationObserver(() => updateVisibility());
+                mo.observe(chatMsgs, { childList: true, subtree: false });
+            }
+
+            // Initial state
+            updateVisibility();
+        })();
+
         // State
         app.isBotSpeaking = false;
         app.currentVideoState = 'idle';

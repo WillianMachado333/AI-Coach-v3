@@ -196,22 +196,31 @@
 
     </main>
 
-    <!-- Quick-action suggestion pills (empty-chat cold-start UX).
-         Fixed to the viewport, sitting above the input bar. Populated per
-         persona by app.js:renderQuickActions(). Rendered ONLY when the
-         chat is empty; hidden as soon as the user sends anything or any
-         message arrives via history/replay. -->
-    <div id="quickActions" class="hidden fixed left-0 right-0 bottom-24 px-4 z-30 pointer-events-none">
-        <div class="max-w-md mx-auto flex flex-col gap-2 pointer-events-auto">
-            <div class="text-xs text-iconColor text-center mb-1" id="quickActionsHint">Try one of these to get started:</div>
-            <button type="button" data-idx="0"
-                class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-            <button type="button" data-idx="1"
-                class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-            <button type="button" data-idx="2"
-                class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-        </div>
+    <!-- Quick-action suggestion pills — kept INSIDE the chat flow (not
+         fixed) so they scroll with the conversation and don't cover
+         previous messages when the user scrolls up. Detached from the
+         top of the DOM and re-parented into #chatMessages by
+         app.js:renderQuickActions() so it always renders after the
+         last bubble. -->
+    <div id="quickActions" class="hidden w-full flex flex-col gap-2 mt-2">
+        <button type="button" data-idx="0"
+            class="quickActionBtn self-end max-w-[85%] bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+        <button type="button" data-idx="1"
+            class="quickActionBtn self-end max-w-[85%] bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+        <button type="button" data-idx="2"
+            class="quickActionBtn self-end max-w-[85%] bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
     </div>
+
+    <!-- Scroll-to-bottom floating button. Visible when the user has
+         scrolled up from the latest message; hidden when already at
+         bottom. Handled by app.js:setupScrollToBottom(). -->
+    <button id="scrollToBottomBtn" type="button" aria-label="Scroll to latest message"
+        class="hidden fixed right-4 bottom-24 z-40 w-11 h-11 rounded-full bg-white border border-borderColor shadow-lg flex items-center justify-center text-iconColor hover:bg-accent hover:text-accentText transition-colors">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+    </button>
 
     <!-- Call Mode Panel (slides up behind the bottom input bar) -->
     <div id="callModePanel"

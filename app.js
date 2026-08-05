@@ -3267,20 +3267,16 @@ class VoiceChatBot {
         const container = document.getElementById('quickActions');
         if (!container) return;
 
+        const chatMsgs = document.getElementById('chatMessages');
+        if (!chatMsgs) return;
+
         // Auto-detect mode when not explicitly passed: empty chat -> starter,
         // otherwise continuation. Callers that know the moment better (e.g.
         // right after a bot reply) can pass 'continuation' directly.
-        const chatMsgs = document.getElementById('chatMessages');
-        const chatEmpty = !chatMsgs || chatMsgs.children.length === 0;
+        // Exclude the pill container itself from the "chat is empty" check.
+        const messageChildren = Array.from(chatMsgs.children).filter((el) => el.id !== 'quickActions');
+        const chatEmpty = messageChildren.length === 0;
         const resolvedMode = mode || (chatEmpty ? 'starter' : 'continuation');
-
-        // Update the hint label so users can tell "start here" from "keep going".
-        const hint = document.getElementById('quickActionsHint');
-        if (hint) {
-            hint.textContent = resolvedMode === 'continuation'
-                ? 'Or keep exploring:'
-                : 'Try one of these to get started:';
-        }
 
         // Don't push suggestions during an active voice recording — the input
         // path is different and would confuse the user.
@@ -3310,7 +3306,25 @@ class VoiceChatBot {
             };
         });
 
+        // Re-parent the pill container into #chatMessages as the LAST child so
+        // it flows naturally with the conversation and scrolls off-screen when
+        // the user scrolls up. Called on every render to survive new message
+        // insertions that would otherwise push the pills into the middle.
+        if (container.parentElement !== chatMsgs) {
+            chatMsgs.appendChild(container);
+        } else if (chatMsgs.lastElementChild !== container) {
+            chatMsgs.appendChild(container); // moves to end (same node)
+        }
+
         container.classList.remove('hidden');
+
+        // Scroll into view so the user sees the fresh suggestions.
+        const scrollContainer = document.getElementById('chatContainer');
+        if (scrollContainer) {
+            requestAnimationFrame(() => {
+                scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
+            });
+        }
     }
 
     hideQuickActions() {
