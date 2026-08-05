@@ -3270,6 +3270,9 @@ class VoiceChatBot {
         buttons.forEach((btn, i) => {
             const suggestion = suggestions[i] || '';
             btn.textContent = suggestion;
+            // Remove any loading-state classes when painting real content.
+            btn.classList.remove('animate-pulse', 'text-transparent', 'select-none', 'pointer-events-none', 'bg-gray-100');
+            btn.classList.add('bg-white');
             if (!suggestion) {
                 btn.classList.add('hidden');
                 btn.onclick = null;
@@ -3281,6 +3284,26 @@ class VoiceChatBot {
                     this.sendTextMessage(suggestion);
                 }
             };
+        });
+    }
+
+    /**
+     * Paint the pills in a "loading" (skeleton) state — grey pulsing bars,
+     * non-clickable. Used while we wait for dynamic suggestions to arrive.
+     * Placeholder widths vary so it doesn't look like 3 identical rectangles.
+     */
+    _paintQuickActionSkeleton() {
+        const container = document.getElementById('quickActions');
+        if (!container) return;
+        const placeholders = ['                      ', // ~22 nbsps
+                              '                 ',                                             // ~17
+                              '                   '];                              // ~19
+        const buttons = container.querySelectorAll('.quickActionBtn');
+        buttons.forEach((btn, i) => {
+            btn.textContent = placeholders[i] || '         ';
+            btn.classList.remove('hidden', 'bg-white');
+            btn.classList.add('animate-pulse', 'bg-gray-100', 'text-transparent', 'select-none', 'pointer-events-none');
+            btn.onclick = null;
         });
     }
 
@@ -3341,13 +3364,6 @@ class VoiceChatBot {
             return;
         }
 
-        // Paint static persona suggestions IMMEDIATELY so the user sees
-        // something responsive; if mode is 'continuation' and there is real
-        // conversation to work with, an async fetch replaces the text with
-        // context-aware suggestions when they arrive (typically 1-2s).
-        const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
-        this._paintQuickActionButtons(staticSuggestions);
-
         // Re-parent into #chatMessages so it flows with the conversation.
         if (container.parentElement !== chatMsgs) {
             chatMsgs.appendChild(container);
@@ -3356,7 +3372,21 @@ class VoiceChatBot {
         }
         container.classList.remove('hidden');
 
-        // Scroll into view so the user sees the fresh suggestions.
+        // Paint decision:
+        //   - starter mode (empty chat)                -> persona defaults (instant)
+        //   - continuation mode with real conversation -> skeleton first, then
+        //     replace with dynamic suggestions when they arrive; fall back to
+        //     persona defaults if the fetch fails or times out.
+        const wantDynamic = (resolvedMode === 'continuation' && messageChildren.length >= 1);
+
+        if (!wantDynamic) {
+            const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
+            this._paintQuickActionButtons(staticSuggestions);
+        } else {
+            this._paintQuickActionSkeleton();
+        }
+
+        // Scroll into view so the user sees the pills.
         const scrollContainer = document.getElementById('chatContainer');
         if (scrollContainer) {
             requestAnimationFrame(() => {
@@ -3364,27 +3394,49 @@ class VoiceChatBot {
             });
         }
 
-        // Dynamic follow-ups only make sense once there is a real conversation
-        // (2+ real messages). Static suggestions cover the cold-start case.
-        if (resolvedMode !== 'continuation') return;
-        if (messageChildren.length < 1) return; // need at least the bot reply we just got
+        if (!wantDynamic) return;
 
         // Bump a token so stale responses (from earlier turns) can't overwrite
         // a newer set of suggestions.
         this._quickActionsFetchToken = (this._quickActionsFetchToken || 0) + 1;
         const myToken = this._quickActionsFetchToken;
 
-        this._fetchDynamicFollowUps().then((dynamic) => {
-            if (myToken !== this._quickActionsFetchToken) return; // stale
-            if (!dynamic || dynamic.length === 0) return; // keep static fallback
-            // Only replace if the pills are still visible — user may have
-            // typed / sent something in the meantime, and we don't want a
-            // late suggestion to un-hide them.
+        // Timeout guard: after 5s of no response, fall back to persona defaults
+        // so the user isn't staring at pulsing skeletons forever.
+        const timeoutId = setTimeout(() => {
+            if (myToken !== this._quickActionsFetchToken) return;
             const stillVisible = container && !container.classList.contains('hidden');
             if (!stillVisible) return;
-            console.log('[Erica] 🎯 dynamic follow-ups:', dynamic);
-            this._paintQuickActionButtons(dynamic);
-        }).catch(() => { /* silent — static already shown */ });
+            // Only fall back if the buttons are still in skeleton state.
+            const firstBtn = container.querySelector('.quickActionBtn');
+            if (!firstBtn || !firstBtn.classList.contains('animate-pulse')) return;
+            console.warn('[Erica] suggest-followups timed out, falling back to persona defaults');
+            const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
+            this._paintQuickActionButtons(staticSuggestions);
+        }, 5000);
+
+        this._fetchDynamicFollowUps().then((dynamic) => {
+            clearTimeout(timeoutId);
+            if (myToken !== this._quickActionsFetchToken) return;
+            const stillVisible = container && !container.classList.contains('hidden');
+            if (!stillVisible) return;
+
+            if (dynamic && dynamic.length > 0) {
+                console.log('[Erica] 🎯 dynamic follow-ups:', dynamic);
+                this._paintQuickActionButtons(dynamic);
+            } else {
+                // Fetch returned nothing usable — degrade to persona defaults.
+                const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
+                this._paintQuickActionButtons(staticSuggestions);
+            }
+        }).catch(() => {
+            clearTimeout(timeoutId);
+            if (myToken !== this._quickActionsFetchToken) return;
+            const stillVisible = container && !container.classList.contains('hidden');
+            if (!stillVisible) return;
+            const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
+            this._paintQuickActionButtons(staticSuggestions);
+        });
     }
 
     hideQuickActions() {
