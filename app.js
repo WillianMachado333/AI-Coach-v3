@@ -2301,9 +2301,24 @@ class VoiceChatBot {
             return;
         }
 
-        // Any message being added (fresh or historical) means the chat is no
-        // longer in cold-start empty state — dismiss the suggestion pills.
-        if (typeof this.hideQuickActions === 'function') this.hideQuickActions();
+        // Suggestion pills lifecycle:
+        //   - User message arriving -> hide (they've committed, don't distract)
+        //   - Bot FINAL message arriving -> re-render as "continuation" set
+        //     (short follow-ups that keep the conversation moving)
+        //   - Bot streaming (not final) -> leave state as-is
+        // Wrapped in try/catch because this is UX-only and must never break
+        // core message rendering if the DOM isn't ready yet.
+        try {
+            if (role === 'user') {
+                if (typeof this.hideQuickActions === 'function') this.hideQuickActions();
+            } else if (role === 'assistant' && isFinal) {
+                if (typeof this.renderQuickActions === 'function') {
+                    // Small delay lets the message bubble render first so
+                    // the pills don't briefly overlap the finalisation.
+                    setTimeout(() => this.renderQuickActions('continuation'), 150);
+                }
+            }
+        } catch (_) { /* non-fatal */ }
 
         // Ensure text is a string (not null/undefined)
         const messageText = (text || '').trim();
@@ -3136,8 +3151,10 @@ class VoiceChatBot {
     // coach is actually good at (see knowledge-base/frameworks/*.md).
     // Rendered when the chat is empty and dismissed on first user message.
     // ------------------------------------------------------------------
-    _getQuickActionsForPersona(companionId) {
-        const map = {
+    _getQuickActionsForPersona(companionId, mode = 'starter') {
+        // Starter set — shown on empty chat. Opens the conversation with a
+        // recognisable coaching frame that plays to that persona's strengths.
+        const starter = {
             Supportive: [
                 "I'm feeling overwhelmed and need to slow down",
                 "Help me find a small first step I can take",
@@ -3179,33 +3196,96 @@ class VoiceChatBot {
                 "I'm focused on what's broken — help me see what's working"
             ]
         };
-        return map[companionId] || [
+
+        // Continuation set — shown after each assistant reply. Meant to keep
+        // the conversation moving forward with beats natural to that persona.
+        const continuation = {
+            Supportive: [
+                "Tell me more",
+                "What's a small next step from here?",
+                "Can we slow down and stay with this?"
+            ],
+            Directive: [
+                "What do I do next?",
+                "Give me the specific action",
+                "Am I overthinking this?"
+            ],
+            Discovery: [
+                "Ask me a harder question",
+                "What am I still missing?",
+                "What's really underneath this?"
+            ],
+            Empowering: [
+                "Show me my options again",
+                "Reflect that back to me",
+                "Help me commit to a choice"
+            ],
+            Exploratory: [
+                "Go deeper on that",
+                "What pattern is this part of?",
+                "How does this connect to what I said before?"
+            ],
+            Guidance: [
+                "Show me an example",
+                "What would you try first?",
+                "I want to test this — how?"
+            ],
+            Nurturing: [
+                "Say more about that",
+                "Help me name this feeling",
+                "Just sit with me for a moment"
+            ],
+            Strengths: [
+                "What strength can I use here?",
+                "Point out what's working",
+                "How do I build on this?"
+            ]
+        };
+
+        const universalStarter = [
             "Help me clarify what I'm working on",
             "I have a decision to make — help me think through it",
             "I want to reflect on something that's been on my mind"
         ];
+        const universalContinuation = [
+            "Tell me more",
+            "Give me a concrete example",
+            "What's a good next step?"
+        ];
+
+        if (mode === 'continuation') {
+            return continuation[companionId] || universalContinuation;
+        }
+        return starter[companionId] || universalStarter;
     }
 
-    renderQuickActions() {
+    renderQuickActions(mode) {
         const container = document.getElementById('quickActions');
         if (!container) return;
 
-        // Only surface when the chat area is empty. If any message already
-        // exists, the moment for cold-start suggestions has passed.
+        // Auto-detect mode when not explicitly passed: empty chat -> starter,
+        // otherwise continuation. Callers that know the moment better (e.g.
+        // right after a bot reply) can pass 'continuation' directly.
         const chatMsgs = document.getElementById('chatMessages');
-        if (chatMsgs && chatMsgs.children.length > 0) {
-            container.classList.add('hidden');
-            return;
+        const chatEmpty = !chatMsgs || chatMsgs.children.length === 0;
+        const resolvedMode = mode || (chatEmpty ? 'starter' : 'continuation');
+
+        // Update the hint label so users can tell "start here" from "keep going".
+        const hint = document.getElementById('quickActionsHint');
+        if (hint) {
+            hint.textContent = resolvedMode === 'continuation'
+                ? 'Or keep exploring:'
+                : 'Try one of these to get started:';
         }
 
-        // Don't push suggestions during an active voice recording — the
-        // input path is different and would confuse the user.
+        // Don't push suggestions during an active voice recording — the input
+        // path is different and would confuse the user.
         if (this.isRecording) {
             container.classList.add('hidden');
             return;
         }
 
-        const suggestions = this._getQuickActionsForPersona(this.selectedCompanionId);
+        const suggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
         const buttons = container.querySelectorAll('.quickActionBtn');
         buttons.forEach((btn, i) => {
             const suggestion = suggestions[i] || '';
