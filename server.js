@@ -766,6 +766,60 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // Handle deep-think reasoning (AI-Coach-v3 reasoning layer)
+    // POST body: { query: string, context?: string }
+    // Returns:   { reasoning, answer, model }
+    if (req.url.startsWith('/api/deep-think')) {
+        logAt('info', '[SERVER] /api/deep-think - Request received:', req.method);
+
+        if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const requestData = body ? JSON.parse(body) : {};
+                const query = String(requestData.query || '').trim();
+                const context = String(requestData.context || '');
+
+                if (!query) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'query is required' }));
+                    return;
+                }
+
+                logAt('info', '[SERVER] /api/deep-think -', {
+                    queryPreview: safePreview(query, 120),
+                    contextLength: context.length
+                });
+
+                const result = await vectorStore.deepThink({ query, context });
+
+                logAt('info', '[SERVER] /api/deep-think ->', {
+                    model: result.model,
+                    reasoningChars: (result.reasoning || '').length,
+                    answerChars: (result.answer || '').length
+                });
+
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify(result));
+            } catch (e) {
+                console.error('[SERVER] /api/deep-think error:', e?.message || e);
+                const isNotReady = /not initialised/i.test(e?.message || '');
+                res.writeHead(isNotReady ? 503 : 500, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
+            }
+        });
+        return;
+    }
+
     // Handle Erica preparation API requests
     if (req.url.startsWith('/api/erica-preparation')) {
         logAt('info', '[SERVER] /api/erica-preparation - Request received:', req.method, req.url);

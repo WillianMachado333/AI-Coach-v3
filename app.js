@@ -5372,6 +5372,25 @@ class VoiceChatBot {
                             },
                             required: ['query']
                         }
+                    },
+                    {
+                        type: 'function',
+                        name: 'deep_think',
+                        description: 'Delegate careful step-by-step reasoning to a dedicated reasoning model (o4-mini). Use this ONLY when the question genuinely needs it: complex ethical trade-offs, weighing multiple options against the user\'s values, tracing a chain of consequences, deciding between coaching approaches for a nuanced situation, or when the user explicitly asks you to think this through. Do NOT use for simple factual, empathic, or acknowledgment turns. Include any grounding chunks you already retrieved via search_knowledge in the context field so the reasoner has real material. The tool returns reasoning + a suggested answer; use them to shape your reply but do not read the reasoning aloud.',
+                        parameters: {
+                            type: 'object',
+                            properties: {
+                                query: {
+                                    type: 'string',
+                                    description: 'The user\'s question restated fully, with any relevant conversational context you have gathered.'
+                                },
+                                context: {
+                                    type: 'string',
+                                    description: 'Optional. Grounding material to inform reasoning (e.g. concatenated excerpts from a previous search_knowledge call, salient facts about the user).'
+                                }
+                            },
+                            required: ['query']
+                        }
                     }
                 ],
                 tool_choice: 'auto'
@@ -5835,6 +5854,52 @@ class VoiceChatBot {
                     } catch (error) {
                         console.error('[Erica] ❌ search_knowledge failed:', error);
                         result = JSON.stringify({ error: `search_knowledge exception: ${error.message}` });
+                    }
+                }
+            } else if (functionName === 'deep_think') {
+                // AI-Coach-v3 reasoning layer. Delegates to o4-mini via
+                // /api/deep-think for step-by-step reasoning; returns
+                // { reasoning, answer, model } which the Realtime model uses
+                // to compose (but does not read verbatim) its response.
+                const query = typeof safeArgs.query === 'string' ? safeArgs.query.trim() : '';
+                const context = typeof safeArgs.context === 'string' ? safeArgs.context : '';
+
+                if (!query) {
+                    result = JSON.stringify({ error: 'Empty query' });
+                } else {
+                    console.log('[Erica] 🧠 deep_think:', {
+                        queryPreview: query.slice(0, 120),
+                        contextChars: context.length
+                    });
+                    try {
+                        const dtUrl = this.apiUrl('/api/deep-think');
+                        const dtResp = await fetch(dtUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query, context })
+                        });
+
+                        if (!dtResp.ok) {
+                            const errText = await dtResp.text();
+                            console.error('[Erica] ❌ deep-think HTTP error:', dtResp.status, errText.slice(0, 400));
+                            result = JSON.stringify({ error: `deep_think failed: ${dtResp.status}` });
+                        } else {
+                            const dtData = await dtResp.json();
+                            console.log('[Erica] ✅ deep_think returned:', {
+                                model: dtData.model,
+                                reasoningChars: (dtData.reasoning || '').length,
+                                answerChars: (dtData.answer || '').length
+                            });
+                            result = JSON.stringify({
+                                instruction: 'Use the reasoning and answer below to compose your reply. Do NOT read the reasoning aloud — it is internal deliberation. Deliver the answer in your own coaching voice.',
+                                reasoning: dtData.reasoning || null,
+                                suggestedAnswer: dtData.answer || null,
+                                modelUsed: dtData.model || null
+                            });
+                        }
+                    } catch (error) {
+                        console.error('[Erica] ❌ deep_think failed:', error);
+                        result = JSON.stringify({ error: `deep_think exception: ${error.message}` });
                     }
                 }
             } else {
@@ -6333,15 +6398,21 @@ class VoiceChatBot {
                         functionArgs = {};
                     }
 
-                    // Only process if we have a valid function name (arguments are optional)
-                    if (functionName) {
-                        // Track this function call
+                    // Match the response.done handler's guard: only execute when we
+                    // have BOTH a valid function name AND non-empty args. Previously
+                    // this fired on streaming with args={} (still being generated),
+                    // which returned "Empty query" and — because dedup marks the
+                    // call_id — swallowed the eventual response.done with real args.
+                    // Waiting for response.done is safer and produces identical
+                    // behaviour on the good-path where args happen to be complete.
+                    if (functionName && Object.keys(functionArgs).length > 0) {
                         if (message.response?.id) {
                             this.pendingFunctionCalls.add(message.response.id);
                         }
-
-                        // Execute custom functions (not native tools)
                         this.executeFunction(functionName, functionArgs, functionCall.call_id, message.response?.id);
+                    } else if (functionName) {
+                        // Args not ready yet — response.done will pick this up with complete args
+                        console.log('[Erica] 🔍 Function call args not yet complete, deferring to response.done');
                     } else {
                         console.warn('[Erica] ⚠️ Function call missing name:', { functionName, hasArgs: Object.keys(functionArgs).length > 0 });
                     }
