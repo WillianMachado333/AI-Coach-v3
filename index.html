@@ -194,21 +194,24 @@
             </div>
         </div>
 
-        <!-- Quick-action suggestion pills (empty-chat state).
-             Populated per persona by app.js:renderQuickActions().
-             Hidden as soon as the user sends their first message. -->
-        <div id="quickActions" class="hidden absolute left-0 right-0 bottom-6 px-4 z-20 pointer-events-none">
-            <div class="max-w-md mx-auto flex flex-col gap-2 pointer-events-auto">
-                <div class="text-xs text-iconColor text-center mb-1" id="quickActionsHint">Try one of these to get started:</div>
-                <button type="button" data-idx="0"
-                    class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-                <button type="button" data-idx="1"
-                    class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-                <button type="button" data-idx="2"
-                    class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-            </div>
-        </div>
     </main>
+
+    <!-- Quick-action suggestion pills (empty-chat cold-start UX).
+         Fixed to the viewport, sitting above the input bar. Populated per
+         persona by app.js:renderQuickActions(). Rendered ONLY when the
+         chat is empty; hidden as soon as the user sends anything or any
+         message arrives via history/replay. -->
+    <div id="quickActions" class="hidden fixed left-0 right-0 bottom-24 px-4 z-30 pointer-events-none">
+        <div class="max-w-md mx-auto flex flex-col gap-2 pointer-events-auto">
+            <div class="text-xs text-iconColor text-center mb-1" id="quickActionsHint">Try one of these to get started:</div>
+            <button type="button" data-idx="0"
+                class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+            <button type="button" data-idx="1"
+                class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+            <button type="button" data-idx="2"
+                class="quickActionBtn w-full bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+        </div>
+    </div>
 
     <!-- Call Mode Panel (slides up behind the bottom input bar) -->
     <div id="callModePanel"

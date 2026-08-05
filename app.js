@@ -2301,6 +2301,10 @@ class VoiceChatBot {
             return;
         }
 
+        // Any message being added (fresh or historical) means the chat is no
+        // longer in cold-start empty state — dismiss the suggestion pills.
+        if (typeof this.hideQuickActions === 'function') this.hideQuickActions();
+
         // Ensure text is a string (not null/undefined)
         const messageText = (text || '').trim();
 
