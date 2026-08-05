@@ -3263,6 +3263,64 @@ class VoiceChatBot {
         return starter[companionId] || universalStarter;
     }
 
+    _paintQuickActionButtons(suggestions) {
+        const container = document.getElementById('quickActions');
+        if (!container) return;
+        const buttons = container.querySelectorAll('.quickActionBtn');
+        buttons.forEach((btn, i) => {
+            const suggestion = suggestions[i] || '';
+            btn.textContent = suggestion;
+            if (!suggestion) {
+                btn.classList.add('hidden');
+                btn.onclick = null;
+                return;
+            }
+            btn.classList.remove('hidden');
+            btn.onclick = () => {
+                if (typeof this.sendTextMessage === 'function') {
+                    this.sendTextMessage(suggestion);
+                }
+            };
+        });
+    }
+
+    async _fetchDynamicFollowUps() {
+        // Grab the tail of the conversation. Use this.messages (the canonical
+        // in-memory store) so we get the exact final text after streaming.
+        // Cap at 8 recent turns to keep the request small and the model
+        // focused on what just happened.
+        const src = Array.isArray(this.messages) ? this.messages.slice(-8) : [];
+        const messages = src
+            .filter((m) => m && typeof m.text === 'string' && m.text.trim())
+            .map((m) => ({
+                role: (m.role === 'user') ? 'user' : 'coach',
+                content: m.text.trim()
+            }));
+
+        if (messages.length === 0) return null;
+
+        const personaLabel =
+            (this.currentVoiceProfile && (this.currentVoiceProfile.label || this.currentVoiceProfile.companionId)) ||
+            this.selectedCompanionId || '';
+
+        try {
+            const url = this.apiUrl('/api/suggest-followups');
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages, persona: personaLabel })
+            });
+            if (!resp.ok) return null;
+            const data = await resp.json();
+            if (Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+                return data.suggestions.slice(0, 3);
+            }
+        } catch (e) {
+            console.warn('[Erica] suggest-followups fetch failed:', e?.message || e);
+        }
+        return null;
+    }
+
     renderQuickActions(mode) {
         const container = document.getElementById('quickActions');
         if (!container) return;
@@ -3270,9 +3328,7 @@ class VoiceChatBot {
         const chatMsgs = document.getElementById('chatMessages');
         if (!chatMsgs) return;
 
-        // Auto-detect mode when not explicitly passed: empty chat -> starter,
-        // otherwise continuation. Callers that know the moment better (e.g.
-        // right after a bot reply) can pass 'continuation' directly.
+        // Auto-detect mode: empty chat -> starter, otherwise continuation.
         // Exclude the pill container itself from the "chat is empty" check.
         const messageChildren = Array.from(chatMsgs.children).filter((el) => el.id !== 'quickActions');
         const chatEmpty = messageChildren.length === 0;
@@ -3285,37 +3341,19 @@ class VoiceChatBot {
             return;
         }
 
-        const suggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
-        const buttons = container.querySelectorAll('.quickActionBtn');
-        buttons.forEach((btn, i) => {
-            const suggestion = suggestions[i] || '';
-            btn.textContent = suggestion;
-            if (!suggestion) {
-                btn.classList.add('hidden');
-                btn.onclick = null;
-                return;
-            }
-            btn.classList.remove('hidden');
-            btn.onclick = () => {
-                // Route through sendTextMessage so analytics, connection
-                // recovery, and dead-channel handling all fire correctly.
-                // hideQuickActions is called inside sendTextMessage itself.
-                if (typeof this.sendTextMessage === 'function') {
-                    this.sendTextMessage(suggestion);
-                }
-            };
-        });
+        // Paint static persona suggestions IMMEDIATELY so the user sees
+        // something responsive; if mode is 'continuation' and there is real
+        // conversation to work with, an async fetch replaces the text with
+        // context-aware suggestions when they arrive (typically 1-2s).
+        const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
+        this._paintQuickActionButtons(staticSuggestions);
 
-        // Re-parent the pill container into #chatMessages as the LAST child so
-        // it flows naturally with the conversation and scrolls off-screen when
-        // the user scrolls up. Called on every render to survive new message
-        // insertions that would otherwise push the pills into the middle.
+        // Re-parent into #chatMessages so it flows with the conversation.
         if (container.parentElement !== chatMsgs) {
             chatMsgs.appendChild(container);
         } else if (chatMsgs.lastElementChild !== container) {
-            chatMsgs.appendChild(container); // moves to end (same node)
+            chatMsgs.appendChild(container);
         }
-
         container.classList.remove('hidden');
 
         // Scroll into view so the user sees the fresh suggestions.
@@ -3325,6 +3363,28 @@ class VoiceChatBot {
                 scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
             });
         }
+
+        // Dynamic follow-ups only make sense once there is a real conversation
+        // (2+ real messages). Static suggestions cover the cold-start case.
+        if (resolvedMode !== 'continuation') return;
+        if (messageChildren.length < 1) return; // need at least the bot reply we just got
+
+        // Bump a token so stale responses (from earlier turns) can't overwrite
+        // a newer set of suggestions.
+        this._quickActionsFetchToken = (this._quickActionsFetchToken || 0) + 1;
+        const myToken = this._quickActionsFetchToken;
+
+        this._fetchDynamicFollowUps().then((dynamic) => {
+            if (myToken !== this._quickActionsFetchToken) return; // stale
+            if (!dynamic || dynamic.length === 0) return; // keep static fallback
+            // Only replace if the pills are still visible — user may have
+            // typed / sent something in the meantime, and we don't want a
+            // late suggestion to un-hide them.
+            const stillVisible = container && !container.classList.contains('hidden');
+            if (!stillVisible) return;
+            console.log('[Erica] 🎯 dynamic follow-ups:', dynamic);
+            this._paintQuickActionButtons(dynamic);
+        }).catch(() => { /* silent — static already shown */ });
     }
 
     hideQuickActions() {

@@ -826,6 +826,41 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // Handle follow-up suggestions (dynamic quick-action pills)
+    // POST body: { messages: [...], persona?: string }
+    // Returns:   { suggestions: string[], model: string }
+    if (req.url.startsWith('/api/suggest-followups')) {
+        if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const requestData = body ? JSON.parse(body) : {};
+                const messages = Array.isArray(requestData.messages) ? requestData.messages : [];
+                const persona = String(requestData.persona || '');
+
+                const result = await vectorStore.suggestFollowUps({ messages, persona });
+
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify(result));
+            } catch (e) {
+                console.error('[SERVER] /api/suggest-followups error:', e?.message || e);
+                const isNotReady = /not initialised/i.test(e?.message || '');
+                res.writeHead(isNotReady ? 503 : 500, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                });
+                res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
+            }
+        });
+        return;
+    }
+
     // Handle deep-think reasoning (AI-Coach-v3 reasoning layer)
     // POST body: { query: string, context?: string }
     // Returns:   { reasoning, answer, model }
