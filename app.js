@@ -2306,12 +2306,16 @@ class VoiceChatBot {
         //   - Bot FINAL message arriving -> re-render as "continuation" set
         //     (short follow-ups that keep the conversation moving)
         //   - Bot streaming (not final) -> leave state as-is
-        // Wrapped in try/catch because this is UX-only and must never break
-        // core message rendering if the DOM isn't ready yet.
+        //
+        // Live bot messages arrive via updateBotMessage() -> upsertMessage(id, 'bot', ...).
+        // History restore also uses role='bot'. Guard with !isRestoringHistory so
+        // replaying old messages doesn't stack pills mid-restore. Wrapped in
+        // try/catch because this is UX-only and must never break core message
+        // rendering if the DOM isn't ready yet.
         try {
             if (role === 'user') {
                 if (typeof this.hideQuickActions === 'function') this.hideQuickActions();
-            } else if (role === 'assistant' && isFinal) {
+            } else if ((role === 'assistant' || role === 'bot') && isFinal && !this.isRestoringHistory) {
                 if (typeof this.renderQuickActions === 'function') {
                     // Small delay lets the message bubble render first so
                     // the pills don't briefly overlap the finalisation.
