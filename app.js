@@ -3016,6 +3016,11 @@ class VoiceChatBot {
         const text = textPayload || this.textInput?.value.trim();
         if (!text) return;
 
+        // Dismiss the empty-state suggestion pills the moment the user commits
+        // to sending anything. They only serve to reduce cold-start friction;
+        // once the conversation is underway they'd just clutter the view.
+        this.hideQuickActions();
+
         // Detect dead connection: isConnected may be true but dataChannel degraded
         // (common after on-hold period where WebRTC silently drops)
         const channelDead = !this.dataChannel || this.dataChannel.readyState !== 'open';
@@ -3118,6 +3123,111 @@ class VoiceChatBot {
             // if (typeof this.setMicButtonState === 'function') this.setMicButtonState('disabled');
 
         }, 100);
+    }
+
+    // ------------------------------------------------------------------
+    // Quick-action suggestion pills (empty-chat cold-start UX)
+    // ------------------------------------------------------------------
+    // Three static suggestions per coaching persona, tuned to what that
+    // coach is actually good at (see knowledge-base/frameworks/*.md).
+    // Rendered when the chat is empty and dismissed on first user message.
+    // ------------------------------------------------------------------
+    _getQuickActionsForPersona(companionId) {
+        const map = {
+            Supportive: [
+                "I'm feeling overwhelmed and need to slow down",
+                "Help me find a small first step I can take",
+                "Just help me sort through what I'm feeling"
+            ],
+            Directive: [
+                "What's the next best step I should take?",
+                "Help me make a decision today",
+                "I need to move fast — cut through the noise"
+            ],
+            Discovery: [
+                "What am I not seeing in my situation?",
+                "Help me examine my assumptions",
+                "Ask me the question I need to sit with"
+            ],
+            Empowering: [
+                "What are my real options right now?",
+                "Help me remember what I'm capable of",
+                "I want to make a decision I own"
+            ],
+            Exploratory: [
+                "What patterns do you see in what I've shared?",
+                "Help me explore what's underneath this",
+                "I want to think creatively about this"
+            ],
+            Guidance: [
+                "What have others in my situation tried?",
+                "Give me the lay of the land, then I'll choose",
+                "I want to learn by doing — where do I start?"
+            ],
+            Nurturing: [
+                "Just listen for a moment — I need to process",
+                "Help me name what I'm actually feeling",
+                "I want to talk about connection and boundaries"
+            ],
+            Strengths: [
+                "Remind me what I do well",
+                "How can I use my strengths for what's in front of me?",
+                "I'm focused on what's broken — help me see what's working"
+            ]
+        };
+        return map[companionId] || [
+            "Help me clarify what I'm working on",
+            "I have a decision to make — help me think through it",
+            "I want to reflect on something that's been on my mind"
+        ];
+    }
+
+    renderQuickActions() {
+        const container = document.getElementById('quickActions');
+        if (!container) return;
+
+        // Only surface when the chat area is empty. If any message already
+        // exists, the moment for cold-start suggestions has passed.
+        const chatMsgs = document.getElementById('chatMessages');
+        if (chatMsgs && chatMsgs.children.length > 0) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        // Don't push suggestions during an active voice recording — the
+        // input path is different and would confuse the user.
+        if (this.isRecording) {
+            container.classList.add('hidden');
+            return;
+        }
+
+        const suggestions = this._getQuickActionsForPersona(this.selectedCompanionId);
+        const buttons = container.querySelectorAll('.quickActionBtn');
+        buttons.forEach((btn, i) => {
+            const suggestion = suggestions[i] || '';
+            btn.textContent = suggestion;
+            if (!suggestion) {
+                btn.classList.add('hidden');
+                btn.onclick = null;
+                return;
+            }
+            btn.classList.remove('hidden');
+            btn.onclick = () => {
+                // Route through sendTextMessage so analytics, connection
+                // recovery, and dead-channel handling all fire correctly.
+                // hideQuickActions is called inside sendTextMessage itself.
+                if (typeof this.sendTextMessage === 'function') {
+                    this.sendTextMessage(suggestion);
+                }
+            };
+        });
+
+        container.classList.remove('hidden');
+    }
+
+    hideQuickActions() {
+        const container = document.getElementById('quickActions');
+        if (container) container.classList.add('hidden');
     }
 
     setSelectedVoice(voice, thumb, character, companionId = null, skipSave = false) {
@@ -3266,6 +3376,11 @@ class VoiceChatBot {
         if (this.analyticsSession) {
             this.trackCoachEvent('Selected Persona', {});
         }
+
+        // Refresh the empty-state quick-action pills with suggestions matching
+        // the newly-selected coach. Renders only if the chat is still empty;
+        // becomes a no-op once the conversation has started.
+        try { this.renderQuickActions(); } catch (_) { /* non-fatal */ }
     }
 
     resolveCompanionThumb(profile) {
