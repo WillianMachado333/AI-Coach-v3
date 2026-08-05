@@ -15,6 +15,53 @@ const crypto = require('crypto');
 // AI-Coach-v3: OpenAI Vector Store helpers for knowledge-search
 const vectorStore = require('./lib/vectorStore');
 
+/**
+ * Fire-and-forget helper that extracts the user report body from an
+ * ericaPreparation JSON response and uploads it to the user's vector store.
+ *
+ * Hash-cached in vectorStore.syncUserReport, so calling this on every
+ * preparation fetch is safe — repeats are no-ops when content hasn't
+ * changed. Does NOT throw; failures log a warning and are swallowed so
+ * the client-facing response is never affected.
+ */
+function syncPreparationToVectorStore(userId, prepJsonText) {
+    if (!userId || !prepJsonText) return;
+
+    let parsed;
+    try {
+        parsed = JSON.parse(prepJsonText);
+    } catch (e) {
+        logAt('warn', '[SERVER] syncPreparationToVectorStore - could not parse prep response:', e?.message);
+        return;
+    }
+
+    const message = typeof parsed?.message === 'string' ? parsed.message : '';
+    if (!message || message.length < 500) {
+        logAt('debug', '[SERVER] syncPreparationToVectorStore - message too short or missing, skipping');
+        return;
+    }
+
+    // Fire-and-forget — do not await, do not throw. Sync typically finishes
+    // in a few seconds; the client already has its response by then.
+    Promise.resolve()
+        .then(() => vectorStore.syncUserReport(userId, message))
+        .then((res) => {
+            if (res.changed) {
+                logAt('info', '[SERVER] ✅ user report synced', {
+                    userId,
+                    storeId: res.storeId,
+                    fileId: res.fileId,
+                    bytes: message.length
+                });
+            } else {
+                logAt('debug', '[SERVER] user report sync skipped:', res.reason);
+            }
+        })
+        .catch((err) => {
+            logAt('warn', '[SERVER] ⚠️ user report sync failed:', err?.message || err);
+        });
+}
+
 const PORT = process.env.PORT || 8002;
 
 // ---- Logging helpers ----
@@ -786,6 +833,10 @@ const server = http.createServer((req, res) => {
 
                     res.writeHead(cached.statusCode, responseHeaders);
                     res.end(cached.data);
+
+                    // Best-effort sync to user's vector store. Cheap when unchanged
+                    // (hash cache short-circuits). Never blocks the response.
+                    syncPreparationToVectorStore(userId, cached.data);
                     return;
                 }
 
@@ -867,6 +918,9 @@ const server = http.createServer((req, res) => {
                         };
                         res.writeHead(statusCode, responseHeaders);
                         res.end(responseData);
+
+                        // Best-effort sync to user's vector store (see helper above).
+                        syncPreparationToVectorStore(userId, responseData);
                     });
                 });
 

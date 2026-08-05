@@ -5805,21 +5805,32 @@ class VoiceChatBot {
                             result = JSON.stringify({ error: `search_knowledge failed: ${kresp.status}` });
                         } else {
                             const kdata = await kresp.json();
-                            // Return chunks + synthesized answer to the model.
-                            // We shape the payload so the LLM has both the raw
-                            // grounding material AND a pre-written answer it can
-                            // adapt to its coaching voice.
+                            const chunks = (kdata.chunks || []).map((c) => ({
+                                source: c.filename,
+                                score: c.score,
+                                excerpt: c.text
+                            }));
+
+                            // Return raw chunks only — no pre-synthesized answer.
+                            // Earlier iteration returned the synthesised answer field too,
+                            // which the Realtime model tended to echo verbatim. When that
+                            // synthesis was hedgy ("I couldn't find...") the whole
+                            // grounding pipeline looked broken even when chunks were
+                            // clearly retrieved. Forcing the Realtime model to compose
+                            // from raw chunks keeps the coaching voice consistent and
+                            // eliminates the "hedgy echo" failure mode.
+                            const instructionForModel = chunks.length > 0
+                                ? 'Use the excerpts below to answer the user. Weave the content into your coaching voice — do not read them verbatim, do not name the search tool. If the excerpts contradict, prefer the one with the higher score. Do NOT tell the user you could not find information: the excerpts below ARE what you found.'
+                                : 'No matching content was found in the knowledge base for this query. Acknowledge briefly and either broaden the search with a different query in the same scope, try the other scope, or ask the user for a clarifying detail.';
+
                             result = JSON.stringify({
-                                answer: kdata.answer || null,
-                                chunks: (kdata.chunks || []).map((c) => ({
-                                    source: c.filename,
-                                    score: c.score,
-                                    excerpt: c.text
-                                })),
+                                instruction: instructionForModel,
+                                chunks: chunks,
                                 storesQueried: (kdata.vectorStoreIds || []).length,
-                                scopeApplied: scope
+                                scopeApplied: scope,
+                                chunkCount: chunks.length
                             });
-                            console.log('[Erica] ✅ search_knowledge chunks:', (kdata.chunks || []).length);
+                            console.log('[Erica] ✅ search_knowledge chunks:', chunks.length);
                         }
                     } catch (error) {
                         console.error('[Erica] ❌ search_knowledge failed:', error);
