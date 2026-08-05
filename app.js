@@ -5522,6 +5522,17 @@ class VoiceChatBot {
     }
 
     async executeFunction(functionName, functionArgs, callId, responseId) {
+        // Dedup: the same function call arrives from BOTH `response.output_item.added`
+        // (streaming) and `response.done` (final). Without this guard we run the tool
+        // twice, send two `function_call_output` items, and fire two `response.create`
+        // — the second of which hits "Conversation already has an active response".
+        if (!this._executedCallIds) this._executedCallIds = new Set();
+        if (callId && this._executedCallIds.has(callId)) {
+            console.log('[Erica] 🔁 Skipping duplicate function call (already executed):', functionName, callId);
+            return;
+        }
+        if (callId) this._executedCallIds.add(callId);
+
         try {
             console.log('[Erica] 🔍 Function call received:', functionName, functionArgs);
             let result = null;
