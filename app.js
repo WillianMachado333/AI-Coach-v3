@@ -5820,6 +5820,14 @@ class VoiceChatBot {
                 const scope = ['user_data', 'frameworks', 'all'].includes(safeArgs.scope) ? safeArgs.scope : 'all';
                 const userId = this.getUserIdFromURL();
 
+                // Show the typing indicator + disable mic while retrieval runs (~2-5s).
+                // Without this, the user sees a silent pause between filler and answer,
+                // which reads as "stuck". Reuses the same setWaitingState pattern that
+                // refresh_context already uses.
+                if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
+                    window.uiLayout.setWaitingState(this, true);
+                }
+
                 if (!query) {
                     result = JSON.stringify({ error: 'Empty query' });
                 } else {
@@ -5870,6 +5878,13 @@ class VoiceChatBot {
                         result = JSON.stringify({ error: `search_knowledge exception: ${error.message}` });
                     }
                 }
+
+                // Always hide the typing indicator + re-enable mic when the tool call
+                // resolves (success or failure). If we skipped early due to empty query,
+                // still clear the state.
+                if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
+                    window.uiLayout.setWaitingState(this, false);
+                }
             } else if (functionName === 'deep_think') {
                 // AI-Coach-v3 reasoning layer. Delegates to o4-mini via
                 // /api/deep-think for step-by-step reasoning; returns
@@ -5877,6 +5892,12 @@ class VoiceChatBot {
                 // to compose (but does not read verbatim) its response.
                 const query = typeof safeArgs.query === 'string' ? safeArgs.query.trim() : '';
                 const context = typeof safeArgs.context === 'string' ? safeArgs.context : '';
+
+                // Show typing indicator while o4-mini reasons (often 3-8s — heavier
+                // than search_knowledge because it's a full reasoning call).
+                if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
+                    window.uiLayout.setWaitingState(this, true);
+                }
 
                 if (!query) {
                     result = JSON.stringify({ error: 'Empty query' });
@@ -5915,6 +5936,11 @@ class VoiceChatBot {
                         console.error('[Erica] ❌ deep_think failed:', error);
                         result = JSON.stringify({ error: `deep_think exception: ${error.message}` });
                     }
+                }
+
+                // Hide the typing indicator regardless of outcome.
+                if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
+                    window.uiLayout.setWaitingState(this, false);
                 }
             } else {
                 console.warn('[Erica] ⚠️ Unknown function:', functionName);
