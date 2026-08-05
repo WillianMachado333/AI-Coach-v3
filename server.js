@@ -41,17 +41,33 @@ function syncPreparationToVectorStore(userId, prepJsonText) {
         return;
     }
 
+    // Extract the USER-SPECIFIC portion. The ericaPreparation message is
+    // mostly generic boilerplate (Talent Transformation prompt, off-topic
+    // handling, resource rules) with the user's actual quiz results / report
+    // content interleaved. Uploading the whole thing pollutes retrieval with
+    // system-prompt chunks that get returned instead of real user data.
+    //
+    // Strategy: locate the first quiz/report marker and keep everything from
+    // there onward. Fall back to a positional cut if no marker is found.
+    const userSpecific = extractUserSpecificReport(message);
+    if (!userSpecific || userSpecific.length < 200) {
+        logAt('debug', '[SERVER] syncPreparationToVectorStore - no user-specific body found, skipping');
+        return;
+    }
+
     // Fire-and-forget — do not await, do not throw. Sync typically finishes
     // in a few seconds; the client already has its response by then.
     Promise.resolve()
-        .then(() => vectorStore.syncUserReport(userId, message))
+        .then(() => vectorStore.syncUserReport(userId, userSpecific))
         .then((res) => {
             if (res.changed) {
                 logAt('info', '[SERVER] ✅ user report synced', {
                     userId,
                     storeId: res.storeId,
                     fileId: res.fileId,
-                    bytes: message.length
+                    bytes: userSpecific.length,
+                    originalBytes: message.length,
+                    trimmedRatio: (userSpecific.length / message.length).toFixed(2)
                 });
             } else {
                 logAt('debug', '[SERVER] user report sync skipped:', res.reason);
@@ -60,6 +76,50 @@ function syncPreparationToVectorStore(userId, prepJsonText) {
         .catch((err) => {
             logAt('warn', '[SERVER] ⚠️ user report sync failed:', err?.message || err);
         });
+}
+
+/**
+ * Extract the user-specific portion of an ericaPreparation `message` string.
+ * Looks for well-known markers that reliably indicate the start of user data
+ * (quiz report URLs, "This user has taken..." lines, name/goals footer).
+ * If none match, falls back to skipping the first ~2500 chars of boilerplate.
+ */
+function extractUserSpecificReport(message) {
+    if (!message) return '';
+
+    // Markers we've observed in real preparation responses that flag the
+    // transition from generic prompt to user-specific content.
+    const markers = [
+        /Report:\s*https?:\/\//i,                          // "Quiz X Report: https://..."
+        /This user has taken/i,                            // Positive assessment marker
+        /This is a list of quizzes this user has not taken/i, // Metadata footer
+        /\n[A-Z][^\n]*Quiz\s*\n/,                          // "Something Quiz" section header
+        /^Thge user Name is|^The user Name is/im,          // Name marker (typos in source preserved)
+        /The user selected the following goals/i           // Goals marker
+    ];
+
+    let earliestIndex = -1;
+    for (const re of markers) {
+        const m = message.match(re);
+        if (m && (earliestIndex === -1 || m.index < earliestIndex)) {
+            earliestIndex = m.index;
+        }
+    }
+
+    if (earliestIndex > 0) {
+        // Wrap with a small header so retrieval snippets have anchoring context
+        const header = '# User-Specific Report\n\nThe following content is drawn from this user\'s assessment reports and profile metadata. Use it to inform coaching responses.\n\n---\n\n';
+        return header + message.slice(earliestIndex).trim();
+    }
+
+    // Fallback: no marker found, skip generic prompt boilerplate positionally
+    if (message.length > 3000) {
+        const header = '# User-Specific Report (positional fallback)\n\n---\n\n';
+        return header + message.slice(2500).trim();
+    }
+
+    // Message is short and has no markers — probably guest/empty. Skip.
+    return '';
 }
 
 const PORT = process.env.PORT || 8002;
