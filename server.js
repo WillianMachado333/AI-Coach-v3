@@ -921,6 +921,29 @@ const server = http.createServer((req, res) => {
                     cached: result.cached,
                     delta: result.delta
                 }));
+
+                // Also index the fresh timeline into the vector store so
+                // search_knowledge (scope=user_data) can find activity chunks.
+                // Fire-and-forget after the response has been sent.
+                if (result.events.length > 0) {
+                    vectorStore.syncUserActivity({
+                        identifier,
+                        identifierType,
+                        markdown: result.markdown
+                    })
+                        .then((vsRes) => {
+                            if (vsRes && vsRes.changed) {
+                                logAt('info', '[SERVER] ✅ activity indexed to vector store', {
+                                    storeId: vsRes.storeId,
+                                    fileId: vsRes.fileId,
+                                    purgedCount: vsRes.purgedCount
+                                });
+                            }
+                        })
+                        .catch((err) => {
+                            logAt('warn', '[SERVER] ⚠️ activity vector-store sync failed:', err?.message || err);
+                        });
+                }
             } catch (e) {
                 console.error('[SERVER] /api/user-activity error:', e?.message || e);
                 res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
