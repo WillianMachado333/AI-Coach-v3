@@ -3357,12 +3357,10 @@ class VoiceChatBot {
         const chatEmpty = messageChildren.length === 0;
         const resolvedMode = mode || (chatEmpty ? 'starter' : 'continuation');
 
-        // Don't push suggestions during an active voice recording — the input
-        // path is different and would confuse the user.
-        if (this.isRecording) {
-            container.classList.add('hidden');
-            return;
-        }
+        // NOTE: previously we hid pills entirely during voice-recording. That
+        // caused "sometimes no pills after starting a call" — the guard was
+        // too aggressive. Pills work fine alongside call mode (user can still
+        // tap one to inject a text turn), so we render regardless of isRecording.
 
         // Re-parent into #chatMessages so it flows with the conversation.
         if (container.parentElement !== chatMsgs) {
@@ -4611,9 +4609,15 @@ class VoiceChatBot {
                                             ? { userId: prepId }
                                             : {} // guest mode: send empty payload, server is resilient
                                 )*/
-                                // Fixed code — add caller from URL:
+                                // Fixed code — add caller from URL + bridged CleverTap objectId (Fase C.2):
                                 body: JSON.stringify({
                                     caller: new URLSearchParams(window.location.search).get('caller') || 'app',
+                                    // objectId is set by the parent-page bridge (AI coach Monitor in Wix)
+                                    // in response to REQUEST_CLEVERTAP_ID. Present for guest users; harmless
+                                    // when signed-in (server prefers userId).
+                                    ...(typeof window !== 'undefined' && window.__ttCleverTapId
+                                        ? { objectId: String(window.__ttCleverTapId) }
+                                        : {}),
                                     ...(prepId && typeof prepId === 'string' && prepId.includes('@')
                                         ? { email: prepId }
                                         : prepId

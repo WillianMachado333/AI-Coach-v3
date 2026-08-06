@@ -14,6 +14,7 @@ const crypto = require('crypto');
 
 // AI-Coach-v3: OpenAI Vector Store helpers for knowledge-search
 const vectorStore = require('./lib/vectorStore');
+const activity = require('./lib/activity');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -75,6 +76,53 @@ function syncPreparationToVectorStore(userId, prepJsonText) {
         })
         .catch((err) => {
             logAt('warn', '[SERVER] ⚠️ user report sync failed:', err?.message || err);
+        });
+}
+
+/**
+ * Fire-and-forget helper that pulls this user's activity from CleverTap (with
+ * cache), indexes it as a markdown timeline in their vector store, and logs
+ * the outcome. Called from the preparation handler for both cache-hit and
+ * cache-miss paths so activity refreshes independently of the prep cache.
+ */
+function syncActivityForSession(userId, objectId) {
+    if (!userId && !objectId) return;
+    const identifier = userId || objectId;
+    const identifierType = userId ? 'userId' : 'objectId';
+
+    Promise.resolve()
+        .then(() => activity.getActivityHistory({ identifier, identifierType }))
+        .then((result) => {
+            if (!result || !result.events || result.events.length === 0) {
+                logAt('debug', '[SERVER] activity sync: no events', { identifierType, identifier });
+                return null;
+            }
+            logAt('info', '[SERVER] ✅ activity fetched', {
+                identifierType,
+                cached: result.cached,
+                delta: result.delta,
+                total: result.events.length
+            });
+            // Push the fresh timeline into the vector store so search_knowledge
+            // (scope=user_data) can retrieve activity chunks alongside the
+            // quiz report.
+            return vectorStore.syncUserActivity({
+                identifier,
+                identifierType,
+                markdown: result.markdown
+            });
+        })
+        .then((vsRes) => {
+            if (vsRes && vsRes.changed) {
+                logAt('info', '[SERVER] ✅ activity indexed to vector store', {
+                    storeId: vsRes.storeId,
+                    fileId: vsRes.fileId,
+                    purgedCount: vsRes.purgedCount
+                });
+            }
+        })
+        .catch((err) => {
+            logAt('warn', '[SERVER] ⚠️ activity sync failed:', err?.message || err);
         });
 }
 
@@ -826,6 +874,62 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // Handle user activity history fetch (Fase C.2)
+    // POST body: { userId?: string, objectId?: string }
+    // Returns:   { events: [...], meta: {...}, cached: N, delta: N }
+    //
+    // Uses cache-first strategy: reads the on-disk timeline for this
+    // identifier, fetches delta from CleverTap since the last known event,
+    // merges + persists, and returns the full timeline.
+    if (req.url.startsWith('/api/user-activity')) {
+        if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        let body = '';
+        req.on('data', (chunk) => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const requestData = body ? JSON.parse(body) : {};
+                const userId = requestData.userId;
+                const objectId = requestData.objectId;
+
+                if (!userId && !objectId) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'userId or objectId required' }));
+                    return;
+                }
+
+                const identifier = userId || objectId;
+                const identifierType = userId ? 'userId' : 'objectId';
+
+                const result = await activity.getActivityHistory({ identifier, identifierType });
+
+                logAt('info', '[SERVER] /api/user-activity ->', {
+                    identifierType,
+                    cached: result.cached,
+                    delta: result.delta,
+                    total: result.events.length
+                });
+
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({
+                    events: result.events,
+                    meta: result.meta,
+                    cached: result.cached,
+                    delta: result.delta
+                }));
+            } catch (e) {
+                console.error('[SERVER] /api/user-activity error:', e?.message || e);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
+            }
+        });
+        return;
+    }
+
     // Handle follow-up suggestions (dynamic quick-action pills)
     // POST body: { messages: [...], persona?: string }
     // Returns:   { suggestions: string[], model: string }
@@ -953,6 +1057,10 @@ const server = http.createServer((req, res) => {
                 // Accept either userId (preferred) or email; allow empty (guest mode)
                 const userId = requestData.userId;
                 const email = requestData.email;
+                // objectId (CleverTap anonymous ID) bridged from parent page for
+                // guest users. When userId is absent, we use objectId to key the
+                // activity cache and CleverTap query.
+                const objectId = requestData.objectId;
 
                 if (!userId && !email) {
                     console.warn('[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
@@ -986,6 +1094,10 @@ const server = http.createServer((req, res) => {
                     // Best-effort sync to user's vector store. Cheap when unchanged
                     // (hash cache short-circuits). Never blocks the response.
                     syncPreparationToVectorStore(userId, cached.data);
+                    // Activity keeps its own on-disk cache so a repeated cache-hit
+                    // here is still cheap. Signed-in users use userId; guest users
+                    // use their bridged objectId.
+                    syncActivityForSession(userId, objectId);
                     return;
                 }
 
@@ -1070,6 +1182,10 @@ const server = http.createServer((req, res) => {
 
                         // Best-effort sync to user's vector store (see helper above).
                         syncPreparationToVectorStore(userId, responseData);
+                        // And pull latest CleverTap activity delta, index to
+                        // vector store. Uses userId when present, otherwise
+                        // the guest objectId bridged from the parent page.
+                        syncActivityForSession(userId, objectId);
                     });
                 });
 
