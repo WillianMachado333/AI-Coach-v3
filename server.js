@@ -971,8 +971,12 @@ const server = http.createServer((req, res) => {
                 const requestData = body ? JSON.parse(body) : {};
                 const messages = Array.isArray(requestData.messages) ? requestData.messages : [];
                 const persona = String(requestData.persona || '');
+                // Optional live activity context so starter pills reference
+                // what the user actually just did (and continuation pills can
+                // ground back into telemetry when relevant).
+                const activity = typeof requestData.activity === 'string' ? requestData.activity : null;
 
-                const result = await vectorStore.suggestFollowUps({ messages, persona });
+                const result = await vectorStore.suggestFollowUps({ messages, persona, activity });
 
                 res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
                 res.end(JSON.stringify(result));

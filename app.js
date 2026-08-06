@@ -3320,7 +3320,14 @@ class VoiceChatBot {
                 content: m.text.trim()
             }));
 
-        if (messages.length === 0) return null;
+        const activity = (typeof this.userActivityMarkdown === 'string' && this.userActivityMarkdown.trim())
+            ? this.userActivityMarkdown
+            : null;
+
+        // Need EITHER a conversation to react to OR live activity to ground
+        // starter suggestions; without either the server can't produce
+        // anything meaningful.
+        if (messages.length === 0 && !activity) return null;
 
         const personaLabel =
             (this.currentVoiceProfile && (this.currentVoiceProfile.label || this.currentVoiceProfile.companionId)) ||
@@ -3331,7 +3338,7 @@ class VoiceChatBot {
             const resp = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages, persona: personaLabel })
+                body: JSON.stringify({ messages, persona: personaLabel, activity })
             });
             if (!resp.ok) return null;
             const data = await resp.json();
@@ -3371,17 +3378,32 @@ class VoiceChatBot {
         container.classList.remove('hidden');
 
         // Paint decision:
-        //   - starter mode (empty chat)                -> persona defaults (instant)
+        //   - starter mode WITH activity  -> paint persona defaults instantly,
+        //     then fetch activity-grounded suggestions in the background and
+        //     swap them in when they arrive. User isn't staring at skeletons
+        //     but still gets the personalised pills once the model returns.
+        //   - starter mode WITHOUT activity -> persona defaults (instant, no
+        //     fetch — the server can't ground without either messages or
+        //     activity so calling it would just return empty).
         //   - continuation mode with real conversation -> skeleton first, then
         //     replace with dynamic suggestions when they arrive; fall back to
         //     persona defaults if the fetch fails or times out.
-        const wantDynamic = (resolvedMode === 'continuation' && messageChildren.length >= 1);
+        const hasActivity = !!(typeof this.userActivityMarkdown === 'string' && this.userActivityMarkdown.trim());
+        const wantDynamic = (resolvedMode === 'continuation' && messageChildren.length >= 1)
+            || (resolvedMode === 'starter' && hasActivity);
+        // In starter+activity mode we DON'T show the skeleton — we already
+        // have decent defaults, so paint those immediately and upgrade later.
+        const showSkeletonWhileFetching = (resolvedMode === 'continuation');
 
         if (!wantDynamic) {
             const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
             this._paintQuickActionButtons(staticSuggestions);
-        } else {
+        } else if (showSkeletonWhileFetching) {
             this._paintQuickActionSkeleton();
+        } else {
+            // starter + activity: paint defaults NOW, dynamic swaps in later.
+            const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
+            this._paintQuickActionButtons(staticSuggestions);
         }
 
         // Scroll into view so the user sees the pills.
@@ -4996,10 +5018,23 @@ class VoiceChatBot {
                             // Append to customInstructions and re-configure session so
                             // Erica gets the enriched prompt on her very next turn.
                             this.customInstructions = (this.customInstructions || '') + '\n' + activityBlock;
+                            // Cache the markdown so quick-action pills can pass it
+                            // to /api/suggest-followups and produce starter pills
+                            // grounded in the user's real activity instead of
+                            // generic persona defaults.
+                            this.userActivityMarkdown = activityBlock;
                             if (this.isConnected && typeof this.configureSession === 'function') {
                                 console.log('[Erica] 📊 User activity injected into system prompt:', events.length, 'events');
                                 this.configureSession();
                             }
+                            // Re-render starter pills now that activity is available.
+                            // renderQuickActions is a no-op if chat isn't empty, so this
+                            // won't stomp on active conversations.
+                            try {
+                                if (typeof this.renderQuickActions === 'function') {
+                                    this.renderQuickActions();
+                                }
+                            } catch (_) { /* non-fatal */ }
                         } catch (e) {
                             console.warn('[Erica] user activity injection failed:', e?.message || e);
                         }
