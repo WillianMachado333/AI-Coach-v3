@@ -4948,6 +4948,64 @@ class VoiceChatBot {
 
                 instructions = `${instructions}\n${knowledgeGroundingDirective}`;
 
+                // Inject the user's live activity timeline directly into the
+                // system prompt so Erica knows about it WITHOUT needing to call
+                // search_knowledge first. Was previously only in the vector
+                // store — Erica had to decide to look, which she often didn't,
+                // so the user history was invisible in practice.
+                //
+                // Fire this async, DON'T block; update instructions when it
+                // resolves. First-turn opening may still lack the activity if
+                // network is slow, but any turn after ~1-3s picks it up.
+                const activityUserId = this.getUserIdFromURL();
+                const activityObjectId = (typeof window !== 'undefined' && window.__ttCleverTapId) ? String(window.__ttCleverTapId) : null;
+                if (activityUserId || activityObjectId) {
+                    (async () => {
+                        try {
+                            const resp = await fetch(this.apiUrl('/api/user-activity'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(activityUserId ? { userId: activityUserId } : { objectId: activityObjectId })
+                            });
+                            if (!resp.ok) return;
+                            const data = await resp.json();
+                            const events = Array.isArray(data.events) ? data.events : [];
+                            if (events.length === 0) return;
+
+                            const now = Date.now();
+                            const bullets = events
+                                .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+                                .slice(0, 20)
+                                .map((e) => {
+                                    const days = Math.max(0, Math.floor((now - (e.ts || now)) / (24 * 60 * 60 * 1000)));
+                                    const rec = days === 0 ? 'today' : days === 1 ? 'yesterday' : days < 30 ? `${days} days ago` : `${Math.floor(days / 30)} months ago`;
+                                    return `- **${e.name}** — ${e.count} time${e.count === 1 ? '' : 's'}, most recent: ${rec}`;
+                                })
+                                .join('\n');
+
+                            const activityBlock = [
+                                '',
+                                '=== USER ACTIVITY TIMELINE (live) ===',
+                                'The user\'s recent activity on our platform, captured live from telemetry.',
+                                'Use this to (a) tailor your greeting, (b) reference what they just did, (c) suggest natural next steps grounded in their current moment. Do NOT read this list aloud — weave it into your coaching voice.',
+                                '',
+                                bullets,
+                                '=== END USER ACTIVITY TIMELINE ==='
+                            ].join('\n');
+
+                            // Append to customInstructions and re-configure session so
+                            // Erica gets the enriched prompt on her very next turn.
+                            this.customInstructions = (this.customInstructions || '') + '\n' + activityBlock;
+                            if (this.isConnected && typeof this.configureSession === 'function') {
+                                console.log('[Erica] 📊 User activity injected into system prompt:', events.length, 'events');
+                                this.configureSession();
+                            }
+                        } catch (e) {
+                            console.warn('[Erica] user activity injection failed:', e?.message || e);
+                        }
+                    })();
+                }
+
                 this.customInstructions = instructions;
                 // Re-push session config now that customInstructions is populated.
                 // updateVoiceProfile above may have called configureSession before this was set (race condition).
