@@ -3308,37 +3308,48 @@ class VoiceChatBot {
     }
 
     async _syncUserActivityIntoPrompt() {
+        console.log('[Erica.activitySync] 🔵 START');
         // Wait for an identifier we can hand to /api/user-activity. Signed-in
         // users have userId in the URL; guests get an objectId bridged from
         // the parent page via postMessage (window.__ttCleverTapId) — that
         // arrives shortly after boot, so poll for up to ~5s.
         const activityUserId = this.getUserIdFromURL();
         let activityObjectId = (typeof window !== 'undefined' && window.__ttCleverTapId) ? String(window.__ttCleverTapId) : null;
+        console.log('[Erica.activitySync] identity check', { activityUserId, activityObjectId });
         if (!activityUserId && !activityObjectId) {
+            console.log('[Erica.activitySync] polling for window.__ttCleverTapId (up to 5s)…');
             for (let i = 0; i < 25 && !activityObjectId; i++) {
                 await new Promise((r) => setTimeout(r, 200));
                 activityObjectId = (typeof window !== 'undefined' && window.__ttCleverTapId) ? String(window.__ttCleverTapId) : null;
             }
             if (!activityObjectId) {
-                console.log('[Erica] user activity: no identifier available (guest without bridge), skipping');
+                console.warn('[Erica.activitySync] ❌ no identifier available after 5s polling — bailing');
                 return;
             }
+            console.log('[Erica.activitySync] ✓ got objectId after polling:', activityObjectId);
         }
 
         try {
             const body = activityUserId
                 ? { userId: activityUserId }
                 : { objectId: activityObjectId };
+            console.log('[Erica.activitySync] 📡 POST /api/user-activity', body);
             const resp = await fetch(this.apiUrl('/api/user-activity'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
             });
-            if (!resp.ok) return;
+            console.log('[Erica.activitySync] response status:', resp.status);
+            if (!resp.ok) {
+                const txt = await resp.text().catch(() => '');
+                console.warn('[Erica.activitySync] ❌ non-OK, body:', txt.slice(0, 300));
+                return;
+            }
             const data = await resp.json();
             const events = Array.isArray(data.events) ? data.events : [];
+            console.log('[Erica.activitySync] events returned:', events.length, events.map(e => e.name));
             if (events.length === 0) {
-                console.log('[Erica] user activity: 0 events for this user');
+                console.log('[Erica.activitySync] ⚠️ 0 events, nothing to inject');
                 return;
             }
 
@@ -3372,12 +3383,16 @@ class VoiceChatBot {
             // PREPEND (not append) so the model sees this block up front rather
             // than buried after ~120k characters of grounding + reasoning
             // directives, which was silently ignoring it in practice.
+            const beforeLen = (this.customInstructions || '').length;
             this.customInstructions = activityBlock + '\n\n' + (this.customInstructions || '');
             this.userActivityMarkdown = activityBlock;
+            console.log('[Erica.activitySync] 📊 injected — customInstructions', beforeLen, '→', this.customInstructions.length, 'chars');
+            console.log('[Erica.activitySync] block preview:\n' + activityBlock);
             if (this.isConnected && typeof this.configureSession === 'function') {
-                console.log('[Erica] 📊 User activity injected into system prompt:', events.length, 'events, block length:', activityBlock.length);
-                console.log('[Erica] 📊 Activity block preview:\n' + activityBlock);
+                console.log('[Erica.activitySync] 🔁 re-configuring Realtime session with activity in prompt');
                 this.configureSession();
+            } else {
+                console.warn('[Erica.activitySync] ⚠️ NOT connected yet — activity is stored, will be picked up on first configureSession call');
             }
             try {
                 if (typeof this.renderQuickActions === 'function') {
