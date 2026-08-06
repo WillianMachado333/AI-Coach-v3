@@ -3314,7 +3314,16 @@ class VoiceChatBot {
         // the parent page via postMessage (window.__ttCleverTapId) — that
         // arrives shortly after boot, so poll for up to ~5s.
         const activityUserId = this.getUserIdFromURL();
-        let activityObjectId = (typeof window !== 'undefined' && window.__ttCleverTapId) ? String(window.__ttCleverTapId) : null;
+        // Allow ?objectId=... in the URL as a testing/debug override so we can
+        // exercise the flow without needing the parent-page CleverTap bridge.
+        let activityObjectId = null;
+        try {
+            const urlObj = new URLSearchParams(window.location.search).get('objectId');
+            if (urlObj) activityObjectId = String(urlObj);
+        } catch (_) { /* non-fatal */ }
+        if (!activityObjectId && typeof window !== 'undefined' && window.__ttCleverTapId) {
+            activityObjectId = String(window.__ttCleverTapId);
+        }
         console.log('[Erica.activitySync] identity check', { activityUserId, activityObjectId });
         if (!activityUserId && !activityObjectId) {
             console.log('[Erica.activitySync] polling for window.__ttCleverTapId (up to 5s)…');
