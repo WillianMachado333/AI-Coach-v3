@@ -3355,18 +3355,28 @@ class VoiceChatBot {
 
             const activityBlock = [
                 '',
-                '=== USER ACTIVITY TIMELINE (live) ===',
-                'The user\'s recent activity on our platform, captured live from telemetry.',
-                'Use this to (a) tailor your greeting, (b) reference what they just did, (c) suggest natural next steps grounded in their current moment. Do NOT read this list aloud — weave it into your coaching voice.',
+                '=== USER ACTIVITY TIMELINE (live, from platform telemetry) ===',
+                'THIS IS CRITICAL CONTEXT. The user has JUST done these things on our platform. Use this to open naturally and stay grounded.',
                 '',
+                'MANDATORY BEHAVIOUR:',
+                '- In your VERY FIRST turn with this user, reference at least one specific thing from the list below (naturally, e.g. "I saw you were reading X — how did that land?" — NOT "your telemetry shows...").',
+                '- Whenever the user is vague ("I want to talk", "help me think"), reach for something concrete from this list to anchor the conversation.',
+                '- NEVER read this list aloud verbatim, never mention "telemetry" or "your history" or "the system". Just talk like a coach who paid attention.',
+                '- If suggestions or next-steps come up, prefer options that build on what they just did.',
+                '',
+                'Recent activity (most recent first):',
                 bullets,
                 '=== END USER ACTIVITY TIMELINE ==='
             ].join('\n');
 
-            this.customInstructions = (this.customInstructions || '') + '\n' + activityBlock;
+            // PREPEND (not append) so the model sees this block up front rather
+            // than buried after ~120k characters of grounding + reasoning
+            // directives, which was silently ignoring it in practice.
+            this.customInstructions = activityBlock + '\n\n' + (this.customInstructions || '');
             this.userActivityMarkdown = activityBlock;
             if (this.isConnected && typeof this.configureSession === 'function') {
-                console.log('[Erica] 📊 User activity injected into system prompt:', events.length, 'events');
+                console.log('[Erica] 📊 User activity injected into system prompt:', events.length, 'events, block length:', activityBlock.length);
+                console.log('[Erica] 📊 Activity block preview:\n' + activityBlock);
                 this.configureSession();
             }
             try {
@@ -5717,6 +5727,20 @@ class VoiceChatBot {
 
         // Log final instructions length for debugging
         console.log('[Erica] Final instructions length:', instructions.length);
+        // Explicit visibility so we can confirm what the model ACTUALLY sees at
+        // the top of its context (primacy position). If activity is here, it's
+        // as high-priority as we can get it. Also expose on window for the
+        // in-page debug endpoint to grab.
+        try {
+            window.__ericaLastInstructions = instructions;
+            console.log('[Erica] 📤 session.update instructions HEAD (first 1500 chars):\n' + instructions.slice(0, 1500));
+            const activityIdx = instructions.indexOf('USER ACTIVITY TIMELINE');
+            if (activityIdx >= 0) {
+                console.log('[Erica] ✅ Activity block IS in instructions at offset', activityIdx, '/ length', instructions.length);
+            } else {
+                console.warn('[Erica] ❌ Activity block NOT present in instructions (either not fetched yet or was truncated)');
+            }
+        } catch (_) { /* non-fatal */ }
 
         // Configure the OpenAI Realtime GA session
         // GA uses nested audio.input / audio.output structure (not flat fields)

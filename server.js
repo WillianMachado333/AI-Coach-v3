@@ -875,6 +875,63 @@ const server = http.createServer((req, res) => {
         return;
     }
 
+    // Debug endpoint — one-shot introspection of everything Erica has for a
+    // given user: activity events, vector store contents (file names +
+    // previews), preparation cache size. Deliberately GET so Willian can
+    // just paste it in a browser tab.
+    // GET /api/debug/user?userId=X   or   ?objectId=Y
+    if (req.url.startsWith('/api/debug/user')) {
+        (async () => {
+            try {
+                const url = new URL(req.url, `http://${req.headers.host}`);
+                const userId = url.searchParams.get('userId') || null;
+                const objectId = url.searchParams.get('objectId') || null;
+                if (!userId && !objectId) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'userId or objectId required' }));
+                    return;
+                }
+                const identifier = userId || objectId;
+                const identifierType = userId ? 'userId' : 'objectId';
+
+                const [activityResult, storeInfo] = await Promise.all([
+                    activity.getActivityHistory({ identifier, identifierType }).catch((e) => ({ error: e?.message || String(e) })),
+                    (async () => {
+                        try {
+                            const storeKey = identifierType === 'objectId' ? `guest-${identifier}` : identifier;
+                            const storeId = await vectorStore.getUserVectorStoreId(storeKey);
+                            if (!storeId) return { storeKey, storeId: null, files: [] };
+                            const files = await vectorStore.listUserStoreFiles(storeId).catch(() => []);
+                            return { storeKey, storeId, files };
+                        } catch (e) {
+                            return { error: e?.message || String(e) };
+                        }
+                    })()
+                ]);
+
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({
+                    identifier,
+                    identifierType,
+                    activity: activityResult && activityResult.events
+                        ? {
+                            eventsCount: activityResult.events.length,
+                            events: activityResult.events,
+                            markdown: activityResult.markdown,
+                            meta: activityResult.meta
+                        }
+                        : activityResult,
+                    vectorStore: storeInfo
+                }, null, 2));
+            } catch (e) {
+                console.error('[SERVER] /api/debug/user error:', e?.message || e);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
+            }
+        })();
+        return;
+    }
+
     // Handle user activity history fetch (Fase C.2)
     // POST body: { userId?: string, objectId?: string }
     // Returns:   { events: [...], meta: {...}, cached: N, delta: N }
