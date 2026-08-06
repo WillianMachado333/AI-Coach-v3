@@ -6164,13 +6164,16 @@ class VoiceChatBot {
                 if (!query) {
                     result = JSON.stringify({ error: 'Empty query' });
                 } else {
-                    console.log('[Erica] 🔎 search_knowledge:', { scope, hasUserId: !!userId, queryPreview: query.slice(0, 120) });
+                    // Include objectId for guest users so search_knowledge can find the
+                    // guest vector store (keyed as "guest-<objectId>" server-side).
+                    const objectId = (typeof window !== 'undefined' && window.__ttCleverTapId) ? String(window.__ttCleverTapId) : null;
+                    console.log('[Erica] 🔎 search_knowledge:', { scope, hasUserId: !!userId, hasObjectId: !!objectId, queryPreview: query.slice(0, 120) });
                     try {
                         const searchUrl = this.apiUrl('/api/knowledge-search');
                         const kresp = await fetch(searchUrl, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ query, scope, userId })
+                            body: JSON.stringify({ query, scope, userId, objectId })
                         });
 
                         if (!kresp.ok) {

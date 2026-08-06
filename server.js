@@ -843,6 +843,7 @@ const server = http.createServer((req, res) => {
                 const query = String(requestData.query || '').trim();
                 const scope = String(requestData.scope || 'all');
                 const userId = requestData.userId ? String(requestData.userId) : null;
+                const objectId = requestData.objectId ? String(requestData.objectId) : null;
 
                 if (!query) {
                     res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -850,9 +851,9 @@ const server = http.createServer((req, res) => {
                     return;
                 }
 
-                logAt('info', '[SERVER] /api/knowledge-search -', { scope, userId, queryPreview: safePreview(query, 120) });
+                logAt('info', '[SERVER] /api/knowledge-search -', { scope, userId, objectId, queryPreview: safePreview(query, 120) });
 
-                const result = await vectorStore.searchKnowledge({ query, scope, userId });
+                const result = await vectorStore.searchKnowledge({ query, scope, userId, objectId });
 
                 logAt('info', '[SERVER] /api/knowledge-search -> chunks:', result.chunks.length, 'stores:', result.vectorStoreIds.length);
 
