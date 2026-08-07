@@ -3522,38 +3522,46 @@ class VoiceChatBot {
         }
         container.classList.remove('hidden');
 
-        // Paint decision:
-        //   - starter mode WITH activity  -> paint persona defaults instantly,
-        //     then fetch activity-grounded suggestions in the background and
-        //     swap them in when they arrive. User isn't staring at skeletons
-        //     but still gets the personalised pills once the model returns.
-        //   - starter mode WITHOUT activity -> persona defaults (instant, no
-        //     fetch — the server can't ground without either messages or
-        //     activity so calling it would just return empty).
-        //   - continuation mode with real conversation -> skeleton first, then
-        //     replace with dynamic suggestions when they arrive; fall back to
-        //     persona defaults if the fetch fails or times out.
+        // Paint decision. Guiding principle: ONE visible pill transition per
+        // turn. No skeleton flash, no morph. Pills reveal once with their
+        // final content.
+        //
+        //   - starter mode WITH activity  -> paint persona defaults instantly
+        //     (they're a reasonable fallback), then fetch activity-grounded
+        //     suggestions in the background and swap them in when they arrive.
+        //   - starter mode WITHOUT activity -> persona defaults (instant,
+        //     no fetch — server can't ground without messages or activity).
+        //   - continuation mode with real conversation -> KEEP HIDDEN. Fire
+        //     fetch in the background. Reveal pills ONCE when the fetch
+        //     resolves. If it times out (>3s), reveal persona defaults then.
+        //     This is what eliminates the "skeleton flash then swap" flicker
+        //     that the user called out.
         const hasActivity = !!(typeof this.userActivityMarkdown === 'string' && this.userActivityMarkdown.trim());
         const wantDynamic = (resolvedMode === 'continuation' && messageChildren.length >= 1)
             || (resolvedMode === 'starter' && hasActivity);
-        // In starter+activity mode we DON'T show the skeleton — we already
-        // have decent defaults, so paint those immediately and upgrade later.
-        const showSkeletonWhileFetching = (resolvedMode === 'continuation');
+        const isContinuation = resolvedMode === 'continuation';
 
         if (!wantDynamic) {
+            // Nothing to fetch — reveal defaults immediately.
+            container.classList.remove('hidden');
             const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
             this._paintQuickActionButtons(staticSuggestions);
-        } else if (showSkeletonWhileFetching) {
-            this._paintQuickActionSkeleton();
+        } else if (isContinuation) {
+            // Keep hidden until fetch resolves; reveal is deferred to the
+            // .then/.catch branch below.
+            container.classList.add('hidden');
         } else {
-            // starter + activity: paint defaults NOW, dynamic swaps in later.
+            // starter + activity: reveal defaults NOW, upgrade in place on
+            // resolve. This is the only mid-turn morph we allow, and it's
+            // pre-send (user hasn't done anything yet), so it feels calm.
+            container.classList.remove('hidden');
             const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
             this._paintQuickActionButtons(staticSuggestions);
         }
 
-        // Scroll into view so the user sees the pills.
+        // Scroll into view so the user sees the pills (only if visible).
         const scrollContainer = document.getElementById('chatContainer');
-        if (scrollContainer) {
+        if (scrollContainer && !container.classList.contains('hidden')) {
             requestAnimationFrame(() => {
                 scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
             });
@@ -3566,41 +3574,42 @@ class VoiceChatBot {
         this._quickActionsFetchToken = (this._quickActionsFetchToken || 0) + 1;
         const myToken = this._quickActionsFetchToken;
 
-        // Timeout guard: after 5s of no response, fall back to persona defaults
-        // so the user isn't staring at pulsing skeletons forever.
-        const timeoutId = setTimeout(() => {
-            if (myToken !== this._quickActionsFetchToken) return;
-            const stillVisible = container && !container.classList.contains('hidden');
-            if (!stillVisible) return;
-            // Only fall back if the buttons are still in skeleton state.
-            const firstBtn = container.querySelector('.quickActionBtn');
-            if (!firstBtn || !firstBtn.classList.contains('animate-pulse')) return;
-            console.warn('[Erica] suggest-followups timed out, falling back to persona defaults');
+        const revealWithDefaults = () => {
             const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
             this._paintQuickActionButtons(staticSuggestions);
-        }, 5000);
+            container.classList.remove('hidden');
+            if (scrollContainer) {
+                requestAnimationFrame(() => scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' }));
+            }
+        };
+
+        // Timeout guard: after 3s, reveal persona defaults so the user isn't
+        // waiting silently for pills that may never come.
+        const timeoutId = setTimeout(() => {
+            if (myToken !== this._quickActionsFetchToken) return;
+            if (!container.classList.contains('hidden')) return; // already revealed by fetch
+            console.warn('[Erica] suggest-followups slow, revealing persona defaults');
+            revealWithDefaults();
+        }, 3000);
 
         this._fetchDynamicFollowUps().then((dynamic) => {
             clearTimeout(timeoutId);
             if (myToken !== this._quickActionsFetchToken) return;
-            const stillVisible = container && !container.classList.contains('hidden');
-            if (!stillVisible) return;
 
             if (dynamic && dynamic.length > 0) {
                 console.log('[Erica] 🎯 dynamic follow-ups:', dynamic);
                 this._paintQuickActionButtons(dynamic);
+                container.classList.remove('hidden');
+                if (scrollContainer) {
+                    requestAnimationFrame(() => scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' }));
+                }
             } else {
-                // Fetch returned nothing usable — degrade to persona defaults.
-                const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
-                this._paintQuickActionButtons(staticSuggestions);
+                revealWithDefaults();
             }
         }).catch(() => {
             clearTimeout(timeoutId);
             if (myToken !== this._quickActionsFetchToken) return;
-            const stillVisible = container && !container.classList.contains('hidden');
-            if (!stillVisible) return;
-            const staticSuggestions = this._getQuickActionsForPersona(this.selectedCompanionId, resolvedMode);
-            this._paintQuickActionButtons(staticSuggestions);
+            revealWithDefaults();
         });
     }
 
