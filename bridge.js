@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T07:15-forward-pills';
+    var VERSION = '2026-08-07T07:45-glass-iframe';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     // 84p is actually the HIGHEST resolution we have for Erica webm clips
@@ -389,9 +389,11 @@
         // 'icon' state so the coach app keeps pre-warming in the background).
         var container = document.createElement('div');
         container.id = CONTAINER_ID;
-        // Container floats ABOVE the persistent corner icon. Bottom offset
-        // = icon size (72) + margin below (20) + gap (16) = 108px. That
-        // way the icon stays fully visible below the chat while expanded.
+        // Container floats ABOVE the persistent corner icon. Semi-transparent
+        // background with a backdrop-blur so the parent page reads through
+        // in gutter areas — the coach is contextual to what you're
+        // reading, not a wall on top of it. The iframe itself sets its
+        // body to transparent so this glass effect comes through.
         applyStyle(container, {
             position: 'fixed',
             right: '20px',
@@ -401,9 +403,11 @@
             'max-width': 'calc(100vw - 40px)',
             'max-height': 'calc(100vh - 128px)',
             'z-index': '9998',
-            background: '#fff',
+            background: 'rgba(255,255,255,0.72)',
+            'backdrop-filter': 'blur(16px) saturate(140%)',
+            '-webkit-backdrop-filter': 'blur(16px) saturate(140%)',
             'border-radius': '18px',
-            'box-shadow': '0 12px 40px rgba(0,0,0,0.25)',
+            'box-shadow': '0 12px 40px rgba(0,0,0,0.18)',
             overflow: 'hidden',
             opacity: '0',
             'pointer-events': 'none',

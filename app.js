@@ -5178,6 +5178,20 @@ class VoiceChatBot {
                     this._syncUserActivityIntoPrompt();
                 }
 
+                // Safety net: render starter pills a moment after
+                // preparation completes even if activity sync bails (fresh
+                // guest, no CleverTap ID). Otherwise brand-new visitors
+                // land in an empty chat with no affordances. Delay lets
+                // the sync run first and upgrade pills to activity-grounded
+                // if it succeeds.
+                setTimeout(() => {
+                    try {
+                        if (typeof this.renderQuickActions === 'function') {
+                            this.renderQuickActions('starter');
+                        }
+                    } catch (_) { /* non-fatal */ }
+                }, 400);
+
                 this.customInstructions = instructions;
                 // Re-push session config now that customInstructions is populated.
                 // updateVoiceProfile above may have called configureSession before this was set (race condition).

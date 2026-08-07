@@ -803,6 +803,22 @@
         panel.classList.toggle('opacity-100', open);
         panel.classList.toggle('translate-y-0', open);
 
+        // When voice mode is on, the text input becomes secondary — collapse
+        // the textarea to a slim ~32px pill (placeholder still readable but
+        // doesn't dominate) so the audio controls near Erica read as the
+        // primary interaction. Restore when voice mode ends.
+        const ta = document.getElementById('userTextInput');
+        const inputWrap = document.getElementById('inputWrapper');
+        if (ta) {
+            ta.style.minHeight = open ? '32px' : '48px';
+            ta.style.paddingTop = open ? '6px' : '';
+            ta.style.paddingBottom = open ? '6px' : '';
+            ta.style.fontSize = open ? '13px' : '';
+        }
+        if (inputWrap) {
+            inputWrap.style.opacity = open ? '0.7' : '';
+        }
+
         // Critical: actually show/hide the element and enable interaction
         if (open) {
             panel.classList.remove('hidden');

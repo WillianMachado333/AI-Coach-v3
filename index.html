@@ -58,7 +58,8 @@
 </head>
 
 <body
-    class="bg-gray-50 h-[100dvh] w-full overflow-hidden flex flex-col font-sans text-gray-800 antialiased selection:bg-teal-100 selection:text-teal-900">
+    class="h-[100dvh] w-full overflow-hidden flex flex-col font-sans text-gray-800 antialiased selection:bg-teal-100 selection:text-teal-900"
+    style="background: transparent;">
 
     <!-- Header: minimal. Back-arrow + Erica name/status/coach-type were
          removed to reclaim vertical space — Erica is now the persistent
@@ -68,7 +69,7 @@
          hosts that menu button. Elements below are kept in the DOM as
          `hidden` so app.js / uiLayout.js references don't error. -->
     <header style="z-index: 60;"
-        class="fixed top-0 left-0 right-0 bg-white/70 backdrop-blur-md transition-all duration-300">
+        class="fixed top-0 left-0 right-0 bg-white/40 transition-all duration-300">
         <div class="w-full px-2 py-1 h-9 flex items-center justify-end relative">
             <button id="backToCoachListBtn" class="hidden"
                 type="button" aria-label="Back to coach list"></button>
@@ -169,7 +170,7 @@
     </header>
 
     <!-- Main Chat Area — pt-12 accounts for the compact h-9 header. -->
-    <main class="flex-1 overflow-y-auto overflow-x-hidden pt-12 pb-28 px-4 scroll-smooth w-full bg-white/80 relative"
+    <main class="flex-1 overflow-y-auto overflow-x-hidden pt-12 pb-28 px-4 scroll-smooth w-full relative"
         id="chatContainer">
         <!-- Connection loader overlay — shown when connecting/disconnected -->
         <div id="connectionLoader" class="absolute inset-0 flex items-center justify-center bg-white/70 z-10 hidden">
@@ -496,7 +497,7 @@
     </div>
 
     <!-- Bottom Interface: Input & Controls -->
-    <div class="fixed bottom-0 left-0 right-0 z-40 bg-white p-3 border-t border-border">
+    <div class="fixed bottom-0 left-0 right-0 z-40 bg-white/60 p-3 border-t border-border/60">
         <div class="w-full relative">
 
             <!-- Voice Mode / Text Mode Toggle Area -->
