@@ -3363,29 +3363,68 @@ class VoiceChatBot {
             }
 
             const now = Date.now();
-            const bullets = events
-                .sort((a, b) => (b.ts || 0) - (a.ts || 0))
-                .slice(0, 20)
-                .map((e) => {
-                    const days = Math.max(0, Math.floor((now - (e.ts || now)) / (24 * 60 * 60 * 1000)));
-                    const rec = days === 0 ? 'today' : days === 1 ? 'yesterday' : days < 30 ? `${days} days ago` : `${Math.floor(days / 30)} months ago`;
-                    return `- **${e.name}** — ${e.count} time${e.count === 1 ? '' : 's'}, most recent: ${rec}`;
-                })
-                .join('\n');
+            const DAY = 24 * 60 * 60 * 1000;
+            const daysAgo = (ts) => Math.max(0, Math.floor((now - (ts || now)) / DAY));
+            const isoDate = (ts) => (ts ? new Date(ts).toISOString().slice(0, 10) : 'unknown');
+            const humanRec = (d) => d === 0 ? 'today'
+                : d === 1 ? 'yesterday'
+                : d < 7 ? `${d} days ago`
+                : d < 30 ? `${d} days ago`
+                : `${Math.floor(d / 30)} months ago`;
+
+            const sorted = [...events].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+
+            // Split by RECENCY. What matters most for a coach is "what did you
+            // just do RIGHT NOW", not lifetime totals. Framing must make that
+            // obvious to the model — earlier version used raw counts which
+            // read as "you did this 92x today" and confused both the model
+            // and the user reading her responses.
+            const today = sorted.filter((e) => daysAgo(e.ts) === 0);
+            const thisWeek = sorted.filter((e) => { const d = daysAgo(e.ts); return d > 0 && d < 7; });
+            const older = sorted.filter((e) => daysAgo(e.ts) >= 7).slice(0, 8);
+
+            const fmtLine = (e) => {
+                const total = e.count > 1 ? ` (${e.count}x lifetime on this device, first: ${isoDate(e.firstSeenTs)})` : '';
+                return `- ${e.name}${total}`;
+            };
+            const fmtOlder = (e) => {
+                const rec = humanRec(daysAgo(e.ts));
+                return `- ${e.name} — last ${rec}${e.count > 1 ? ` (${e.count}x lifetime)` : ''}`;
+            };
+
+            const sections = [];
+            if (today.length) {
+                sections.push('TODAY (this current session — most important):');
+                sections.push(today.map(fmtLine).join('\n'));
+            }
+            if (thisWeek.length) {
+                sections.push('');
+                sections.push('EARLIER THIS WEEK:');
+                sections.push(thisWeek.map(fmtOlder).join('\n'));
+            }
+            if (older.length) {
+                sections.push('');
+                sections.push('OVER TIME (historical, use only if the user asks about long-term patterns):');
+                sections.push(older.map(fmtOlder).join('\n'));
+            }
+            if (sections.length === 0) {
+                sections.push('(no activity available for this user)');
+            }
 
             const activityBlock = [
                 '',
                 '=== USER ACTIVITY TIMELINE (live, from platform telemetry) ===',
-                'THIS IS CRITICAL CONTEXT. The user has JUST done these things on our platform. Use this to open naturally and stay grounded.',
+                'THIS IS CRITICAL CONTEXT. Below is what THIS user has done on our platform.',
+                'Counts labelled "lifetime" are TOTAL ever done on this device — not "did today". Do not confuse the two.',
                 '',
                 'MANDATORY BEHAVIOUR:',
-                '- In your VERY FIRST turn with this user, reference at least one specific thing from the list below (naturally, e.g. "I saw you were reading X — how did that land?" — NOT "your telemetry shows...").',
-                '- Whenever the user is vague ("I want to talk", "help me think"), reach for something concrete from this list to anchor the conversation.',
-                '- NEVER read this list aloud verbatim, never mention "telemetry" or "your history" or "the system". Just talk like a coach who paid attention.',
-                '- If suggestions or next-steps come up, prefer options that build on what they just did.',
+                '- In your VERY FIRST turn with this user, reference at least one specific thing from the TODAY section (naturally, e.g. "I noticed you were exploring X — how are you feeling about it?" — NOT "your telemetry shows...").',
+                '- Whenever the user is vague ("I want to talk", "help me think"), anchor on something concrete from TODAY.',
+                '- NEVER read counts aloud, never mention "telemetry" or "your history" or "the system". Just talk like a coach who paid attention.',
+                '- If TODAY is empty but EARLIER THIS WEEK has entries, use those instead.',
+                '- If suggestions or next-steps come up, prefer options that build on TODAY\'s activity.',
                 '',
-                'Recent activity (most recent first):',
-                bullets,
+                sections.join('\n'),
                 '=== END USER ACTIVITY TIMELINE ==='
             ].join('\n');
 
