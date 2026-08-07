@@ -228,7 +228,12 @@
         <div class="w-full pointer-events-auto">
             <div
                 class="bg-white/90 backdrop-blur-md border border-borderColor shadow-md rounded-[28px] px-3 pt-3 pb-3 overflow-visible">
-                <div class="flex items-center justify-between gap-4">
+                <!-- Layout changed from justify-between (with 3 clusters) to
+                     justify-center (with 2, after removing the redundant
+                     centre avatar). The corner icon on the parent page is
+                     now Erica's persistent presence, so repeating her here
+                     was doubling up. -->
+                <div class="flex items-center justify-center gap-8">
                     <!-- Left: Speaker toggle -->
                     <div class="flex items-center gap-1 flex-col relative">
                         <button id="callSpeakerBtn" type="button"
@@ -265,22 +270,24 @@
                         </div>
                     </div>
 
-                    <!-- Center: Coach avatar -->
-                    <div class="flex-1 flex items-center justify-center min-w-0">
+                    <!-- Centre coach avatar removed: Erica now lives on
+                         the parent-page corner icon and animates there via
+                         the CT_ICON_ANIMATION postMessage. The video
+                         elements below are kept hidden (display:none via
+                         Tailwind `hidden`) so existing JS that manipulates
+                         them stays a no-op instead of throwing on missing
+                         elements — cheaper than pulling every reference. -->
+                    <div class="hidden">
                         <div id="centerCoachAvatar"
                             class="relative w-[80px] h-[80px] rounded-full bg-white border-[4px] border-primary shadow-md flex items-center justify-center overflow-hidden">
-                            <!-- Layer 1: Fallback Image (lowest z-index) -->
                             <img id="callModeAvatarImg" src="companions/Erica-thumb.png" alt="Coach"
                                 class="absolute inset-0 w-full h-full object-cover opacity-95 z-0">
-                            <!-- Layer 2: Idle Video (middle z-index) -->
                             <video id="callModeAvatarVideo"
                                 class="absolute inset-0 w-full h-full object-cover opacity-95 z-10 transition-opacity duration-300"
                                 autoplay muted loop playsinline preload="auto" style="display:none;"></video>
-                            <!-- Layer 3: Speaking Video (higher z-index) -->
                             <video id="callModeSpeakingVideo"
                                 class="absolute inset-0 w-full h-full object-cover z-20 transition-opacity duration-300"
                                 autoplay muted loop playsinline preload="auto" style="display:none; opacity:0;"></video>
-                            <!-- Layer 4: Wave Video (highest z-index, on top) -->
                             <video id="callModeWaveVideo" class="absolute inset-0 w-full h-full object-cover z-30" muted
                                 playsinline preload="auto" style="display:none; transform: scale(1.04);"></video>
                         </div>

@@ -7541,6 +7541,28 @@ class VoiceChatBot {
 
                 if (level > 0.04) {
                     this.lastRemoteLevelAt = Date.now();
+                    // Broadcast 'speaking' to the parent-page corner icon,
+                    // debounced by the _iconAnimBroadcastState so we don't
+                    // spam postMessages every 80ms. See below for the
+                    // matching 'idle' broadcast when audio goes quiet.
+                    if (this._iconAnimBroadcastState !== 'speaking') {
+                        this._iconAnimBroadcastState = 'speaking';
+                        try {
+                            if (window.parent && window.parent !== window) {
+                                window.parent.postMessage({ type: 'CT_ICON_ANIMATION', name: 'speaking' }, '*');
+                            }
+                        } catch (_) { /* non-fatal */ }
+                    }
+                } else if (this._iconAnimBroadcastState === 'speaking'
+                    && this.lastRemoteLevelAt
+                    && (Date.now() - this.lastRemoteLevelAt) > 800) {
+                    // 800ms of quiet after speaking → back to idle.
+                    this._iconAnimBroadcastState = 'idle';
+                    try {
+                        if (window.parent && window.parent !== window) {
+                            window.parent.postMessage({ type: 'CT_ICON_ANIMATION', name: 'idle' }, '*');
+                        }
+                    } catch (_) { /* non-fatal */ }
                 }
                 if (window.uiLayout && typeof window.uiLayout.updateSpeakerLevel === 'function') {
                     window.uiLayout.updateSpeakerLevel(this, level);
