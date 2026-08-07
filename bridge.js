@@ -27,13 +27,14 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T05:15-speaking-clip';
+    var VERSION = '2026-08-07T05:45-hover-glimpse';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     var ICON_IDLE_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/idle/84p/Erica.webm';
     var ICON_SPEAKING_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/speaking/84p/Erica.webm';
     var ICON_WAVING_MP4 = 'https://web-production-2c7ff.up.railway.app/companions/waving/Erica.mp4';
     var ICON_ID = 'ct-bridge-icon';
+    var HOVER_PILLS_ID = 'ct-bridge-hover-pills';
     var IDLE_VIDEO_ID = 'ct-bridge-icon-video-idle';
     var SPEAKING_VIDEO_ID = 'ct-bridge-icon-video-speaking';
     var WAVING_VIDEO_ID = 'ct-bridge-icon-video-waving';
@@ -95,6 +96,14 @@
         // so Erica visibly reacts even without opening the chat.
         if (event.data.type === 'CT_ICON_ANIMATION' && typeof event.data.name === 'string') {
             setIconAnimation(event.data.name);
+            return;
+        }
+
+        // Iframe app responds with the current pill labels — bridge draws
+        // them as a hover preview above the corner icon (Bing-style
+        // pre-open glimpse).
+        if (event.data.type === 'PILL_LABELS' && Array.isArray(event.data.labels)) {
+            renderHoverPills(event.data.labels);
             return;
         }
     });
@@ -180,6 +189,101 @@
     function toggleChat() {
         if (state === 'expanded') collapseToIcon();
         else expandToChat();
+    }
+
+    // --- Hover-glimpse pills ---
+    // On icon hover (while minimised) we ask the iframe for its current
+    // pill labels and render them as floating hints stacked above the
+    // icon. Clicking a hint expands the chat AND sends that pill's text
+    // to the iframe so the coach starts on that thread immediately.
+    var hoverHideTimer = null;
+    function requestPillsFromIframe() {
+        var iframe = document.getElementById(IFRAME_ID);
+        if (!iframe || !iframe.contentWindow) return;
+        try { iframe.contentWindow.postMessage({ type: 'GET_PILL_LABELS' }, '*'); } catch (_) {}
+    }
+    function ensureHoverContainer() {
+        var existing = document.getElementById(HOVER_PILLS_ID);
+        if (existing) return existing;
+        var box = document.createElement('div');
+        box.id = HOVER_PILLS_ID;
+        applyStyle(box, {
+            position: 'fixed',
+            right: '20px',
+            // Sit just above the icon (icon bottom:20 + h:64 + gap:12 = 96).
+            bottom: '96px',
+            'max-width': '260px',
+            'z-index': '9997',
+            display: 'flex',
+            'flex-direction': 'column',
+            gap: '8px',
+            'align-items': 'flex-end',
+            'pointer-events': 'auto',
+            opacity: '0',
+            transform: 'translateY(4px)',
+            transition: 'opacity 160ms ease, transform 160ms ease'
+        });
+        document.body.appendChild(box);
+        // Keep pills visible while the cursor is on them.
+        box.addEventListener('mouseenter', function () {
+            if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+        });
+        box.addEventListener('mouseleave', hideHoverPills);
+        return box;
+    }
+    function renderHoverPills(labels) {
+        if (state !== 'icon') return; // only in minimised state
+        var box = ensureHoverContainer();
+        // Rebuild pills each time so we always reflect the current set.
+        box.innerHTML = '';
+        var visibleLabels = (labels || []).filter(function (l) { return typeof l === 'string' && l.trim(); }).slice(0, 3);
+        if (visibleLabels.length === 0) {
+            hideHoverPills();
+            return;
+        }
+        visibleLabels.forEach(function (label, i) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = label;
+            applyStyle(btn, {
+                background: '#fff',
+                border: '1px solid rgba(20, 184, 166, 0.4)',
+                color: '#1f2937',
+                'border-radius': '18px',
+                padding: '10px 14px',
+                'font-size': '13px',
+                'text-align': 'right',
+                'max-width': '260px',
+                cursor: 'pointer',
+                'box-shadow': '0 4px 12px rgba(0,0,0,0.12)',
+                'line-height': '1.35'
+            });
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                // Tell iframe to send this pill's text as a user message.
+                var iframe = document.getElementById(IFRAME_ID);
+                try {
+                    iframe && iframe.contentWindow && iframe.contentWindow.postMessage(
+                        { type: 'SEND_PILL_INDEX', index: i, label: label }, '*'
+                    );
+                } catch (_) {}
+                expandToChat();
+                hideHoverPills();
+            });
+            box.appendChild(btn);
+        });
+        // Force reflow + fade in.
+        void box.offsetHeight;
+        mergeStyle(box, { opacity: '1', transform: 'translateY(0)', 'pointer-events': 'auto' });
+    }
+    function hideHoverPills() {
+        var box = document.getElementById(HOVER_PILLS_ID);
+        if (!box) return;
+        mergeStyle(box, { opacity: '0', transform: 'translateY(4px)', 'pointer-events': 'none' });
+        if (hoverHideTimer) clearTimeout(hoverHideTimer);
+        hoverHideTimer = setTimeout(function () {
+            if (box && box.parentNode) box.parentNode.removeChild(box);
+        }, 200);
     }
 
     // --- Icon animation ---
@@ -370,6 +474,19 @@
         try { idleVideo.play().catch(function () {}); } catch (_) {}
 
         icon.addEventListener('click', toggleChat);
+        // Hover-to-glimpse: while minimised, hovering the icon requests the
+        // current pill labels from the iframe and renders them as floating
+        // hints above the icon.
+        icon.addEventListener('mouseenter', function () {
+            if (state !== 'icon') return;
+            if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+            requestPillsFromIframe();
+        });
+        icon.addEventListener('mouseleave', function () {
+            // Delay hide so cursor can move onto the pills.
+            if (hoverHideTimer) clearTimeout(hoverHideTimer);
+            hoverHideTimer = setTimeout(hideHoverPills, 220);
+        });
         document.body.appendChild(icon);
 
         console.log('[CTBridge] UI injected (corner-icon-first). Iframe pre-warming at:', IFRAME_SRC);

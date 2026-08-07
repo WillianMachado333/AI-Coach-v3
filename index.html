@@ -222,22 +222,19 @@
         </svg>
     </button>
 
-    <!-- Call Mode Panel (slides up behind the bottom input bar) -->
+    <!-- Call Mode Panel (compact bar above the input, single row of small
+         icon buttons — Erica lives on the parent-page corner icon, so this
+         panel is now just controls, not a stage). -->
     <div id="callModePanel"
         class="fixed left-0 right-0 z-30 px-4 pointer-events-none bottom-[86px] translate-y-10 opacity-0 transition-all duration-300">
         <div class="w-full pointer-events-auto">
             <div
-                class="bg-white/90 backdrop-blur-md border border-borderColor shadow-md rounded-[28px] px-3 pt-3 pb-3 overflow-visible">
-                <!-- Layout changed from justify-between (with 3 clusters) to
-                     justify-center (with 2, after removing the redundant
-                     centre avatar). The corner icon on the parent page is
-                     now Erica's persistent presence, so repeating her here
-                     was doubling up. -->
-                <div class="flex items-center justify-center gap-8">
-                    <!-- Left: Speaker toggle -->
+                class="bg-white/90 backdrop-blur-md border border-borderColor shadow-sm rounded-full px-3 py-1.5 overflow-visible inline-flex items-center gap-3">
+                <div class="flex items-center justify-center gap-3">
+                    <!-- Left: Speaker toggle (compact) -->
                     <div class="flex items-center gap-1 flex-col relative">
                         <button id="callSpeakerBtn" type="button"
-                            class="w-12 h-12 rounded-full flex items-center justify-center transition-colors"
+                            class="w-8 h-8 rounded-full flex items-center justify-center transition-colors"
                             aria-label="Toggle sound">
                             <!-- speaker on -->
                             <svg id="callSpeakerOnIcon" xmlns="http://www.w3.org/2000/svg" width="17" height="17"
@@ -293,10 +290,10 @@
                         </div>
                     </div>
 
-                    <!-- Right: Mic mute + Stop call -->
-                    <div class="flex items-center gap-3">
+                    <!-- Right: Mic mute + Stop call (compact) -->
+                    <div class="flex items-center gap-2">
                         <button id="callMicMuteBtn" type="button"
-                            class="w-12 h-12 rounded-full border bg-white flex items-center justify-center transition-colors border-borderColor hover:bg-accent hover:border-accent"
+                            class="w-8 h-8 rounded-full border bg-white flex items-center justify-center transition-colors border-borderColor hover:bg-accent hover:border-accent"
                             aria-label="Mute microphone">
                             <!-- mic on -->
                             <svg id="callMicOnIcon" xmlns="http://www.w3.org/2000/svg" width="17" height="17"
@@ -318,7 +315,7 @@
                         </button>
 
                         <button id="callEndBtn" type="button"
-                            class="w-12 h-12 rounded-full border bg-white flex items-center justify-center transition-colors border-borderColor hover:bg-accent hover:border-accent"
+                            class="w-8 h-8 rounded-full border bg-white flex items-center justify-center transition-colors border-borderColor hover:bg-accent hover:border-accent"
                             aria-label="End call">
                             <svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24"
                                 fill="currentColor">

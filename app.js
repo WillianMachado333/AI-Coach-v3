@@ -168,6 +168,7 @@ class VoiceChatBot {
         this.setupIframeMessaging();
         this.setupReportContextMessaging();
         this.setupTuningMessaging();
+        this.setupBridgeMessaging();
 
         // Companions cache (fast first paint for coach list)
         this._companionsCacheKey = 'ERICA_COMPANIONS_CACHE_V1';
@@ -2322,6 +2323,19 @@ class VoiceChatBot {
                     // the pills don't briefly overlap the finalisation.
                     setTimeout(() => this.renderQuickActions('continuation'), 150);
                 }
+                // Scroll so the START of Erica's response is at the top of
+                // the viewport — user starts reading immediately without
+                // hunting up. Skip if the user has scrolled up to read old
+                // messages (same convention as ChatGPT/Claude).
+                setTimeout(() => {
+                    try {
+                        if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                        const el = this.messageElements?.get?.(id);
+                        if (el && typeof this.scrollMessageTopIntoView === 'function') {
+                            this.scrollMessageTopIntoView(el);
+                        }
+                    } catch (_) { /* non-fatal */ }
+                }, 180);
             }
         } catch (_) { /* non-fatal */ }
 
@@ -2460,6 +2474,50 @@ class VoiceChatBot {
             onLog: (entry) => this.logIframeMessage(entry)
         });
         this.iframeMessaging.start();
+    }
+
+    // Bridge (parent page corner-icon) protocol:
+    //   - Bridge sends GET_PILL_LABELS on icon hover → we respond with the
+    //     current pill labels so it can render a Bing-style hover glimpse.
+    //   - Bridge sends SEND_PILL_INDEX when the user clicks one of those
+    //     hover pills → we treat it exactly as if the user clicked the
+    //     inline pill (send that text as a message).
+    setupBridgeMessaging() {
+        if (this._bridgeListenerAttached) return;
+        this._bridgeListenerAttached = true;
+        window.addEventListener('message', (event) => {
+            const data = event?.data || {};
+            if (data.type === 'GET_PILL_LABELS') {
+                const container = document.getElementById('quickActions');
+                const btns = container ? Array.from(container.querySelectorAll('.quickActionBtn')) : [];
+                const labels = btns
+                    .map((b) => (b.textContent || '').trim())
+                    .filter((t) => t && !/^\s*$/.test(t));
+                try {
+                    (event.source || window.parent).postMessage({ type: 'PILL_LABELS', labels }, event.origin || '*');
+                } catch (_) { /* non-fatal */ }
+                return;
+            }
+            if (data.type === 'SEND_PILL_INDEX' && typeof data.label === 'string' && data.label.trim()) {
+                // Route through the same path as clicking the inline pill:
+                // populate the input and send.
+                const ta = document.getElementById('userTextInput');
+                if (!ta) return;
+                try {
+                    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+                    setter ? setter.call(ta, data.label) : (ta.value = data.label);
+                    ta.dispatchEvent(new Event('input', { bubbles: true }));
+                    if (typeof this.sendMessage === 'function') {
+                        this.sendMessage();
+                    } else {
+                        ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                    }
+                } catch (e) {
+                    console.warn('[Erica] SEND_PILL_INDEX failed:', e);
+                }
+                return;
+            }
+        });
     }
 
     setupReportContextMessaging() {
@@ -3553,10 +3611,12 @@ class VoiceChatBot {
             this._paintQuickActionButtons(staticSuggestions);
         }
 
-        // Scroll into view so the user sees the pills (only if visible).
+        // Scroll into view so the user sees the pills (only if visible AND
+        // user is still following the latest — respect scroll-away).
         const scrollContainer = document.getElementById('chatContainer');
         if (scrollContainer && !container.classList.contains('hidden')) {
             requestAnimationFrame(() => {
+                if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
                 scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
             });
         }
@@ -3573,7 +3633,10 @@ class VoiceChatBot {
             this._paintQuickActionButtons(staticSuggestions);
             container.classList.remove('hidden');
             if (scrollContainer) {
-                requestAnimationFrame(() => scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' }));
+                requestAnimationFrame(() => {
+                    if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
+                });
             }
         };
 
@@ -3595,7 +3658,10 @@ class VoiceChatBot {
                 this._paintQuickActionButtons(dynamic);
                 container.classList.remove('hidden');
                 if (scrollContainer) {
-                    requestAnimationFrame(() => scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' }));
+                    requestAnimationFrame(() => {
+                    if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
+                });
                 }
             } else {
                 revealWithDefaults();

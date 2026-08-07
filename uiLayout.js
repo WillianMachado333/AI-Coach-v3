@@ -102,15 +102,34 @@
 
             const NEAR_BOTTOM_THRESHOLD_PX = 80;
 
-            function updateVisibility() {
-                const distanceFromBottom =
-                    scrollContainer.scrollHeight
+            // Expose a shared "is user near the bottom?" test on the app so
+            // scroll-follow decisions (e.g. auto-scroll on assistant final)
+            // can respect the user's intent — if they scrolled up to read
+            // history, don't yank them back down. Matches ChatGPT / Claude
+            // scroll behaviour.
+            app.isChatNearBottom = function () {
+                const distance = scrollContainer.scrollHeight
                     - scrollContainer.scrollTop
                     - scrollContainer.clientHeight;
-                if (distanceFromBottom > NEAR_BOTTOM_THRESHOLD_PX) {
-                    btn.classList.remove('hidden');
-                } else {
+                return distance <= NEAR_BOTTOM_THRESHOLD_PX;
+            };
+
+            // Scroll so a specific message element's TOP sits at the top of
+            // the visible viewport (with a small offset). Used on assistant
+            // final so the user starts reading from the beginning of the
+            // response without having to scroll up manually.
+            app.scrollMessageTopIntoView = function (el) {
+                if (!el || !scrollContainer) return;
+                const offset = 8; // tiny headroom
+                const elTop = el.offsetTop - scrollContainer.offsetTop;
+                scrollContainer.scrollTo({ top: Math.max(0, elTop - offset), behavior: 'smooth' });
+            };
+
+            function updateVisibility() {
+                if (app.isChatNearBottom()) {
                     btn.classList.add('hidden');
+                } else {
+                    btn.classList.remove('hidden');
                 }
             }
 
