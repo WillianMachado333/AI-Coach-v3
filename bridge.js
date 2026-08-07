@@ -27,13 +27,12 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T03:45-persistent-icon';
+    var VERSION = '2026-08-07T04:15-icon-toggle';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     var ICON_ID = 'ct-bridge-icon';
     var CONTAINER_ID = 'ct-bridge-container';
     var IFRAME_ID = 'ct-bridge-iframe';
-    var CLOSE_BTN_ID = 'ct-bridge-close';
 
     var state = 'icon'; // 'icon' | 'expanded'
 
@@ -136,27 +135,21 @@
     // --- State transitions ---
     // The corner icon (bottom-right, 64×64) is Erica's persistent visual
     // anchor. It stays visible in BOTH states — it's the same avatar the
-    // user sees animating during voice mode. The chat container floats
-    // ABOVE it (bottom offset leaves room for the icon), and expands/
-    // collapses via `transform: scale(...)` from the bottom-right corner
-    // (near the icon) so the growth reads as "chat unfolds from Erica".
+    // user sees animating during voice mode. Clicking the icon toggles
+    // between icon and expanded (no separate close button — user's instinct
+    // is to click Erica to dismiss the chat).
     //
     // Width/height animation is not used — Wix pins those properties on
-    // fixed children of body. transform is layout-free and safe.
+    // fixed children of body. transform: scale is layout-free and safe.
     function expandToChat() {
         if (state === 'expanded') return;
         state = 'expanded';
         var container = document.getElementById(CONTAINER_ID);
-        var closeBtn = document.getElementById(CLOSE_BTN_ID);
-        // Icon does NOT hide; it stays visible as the anchor. That is a
-        // deliberate change from v1 — user wants Erica present at all times,
-        // and to see her animate during voice regardless of expand state.
         mergeStyle(container, {
             transform: 'scale(1)',
             opacity: '1',
             'pointer-events': 'auto'
         });
-        mergeStyle(closeBtn, { opacity: '1', 'pointer-events': 'auto' });
         var iframe = document.getElementById(IFRAME_ID);
         try {
             iframe && iframe.contentWindow && iframe.contentWindow.postMessage({ type: 'CT_BRIDGE_EXPANDED' }, '*');
@@ -167,17 +160,20 @@
         if (state === 'icon') return;
         state = 'icon';
         var container = document.getElementById(CONTAINER_ID);
-        var closeBtn = document.getElementById(CLOSE_BTN_ID);
         mergeStyle(container, {
             transform: 'scale(0)',
             opacity: '0',
             'pointer-events': 'none'
         });
-        mergeStyle(closeBtn, { opacity: '0', 'pointer-events': 'none' });
         var iframe = document.getElementById(IFRAME_ID);
         try {
             iframe && iframe.contentWindow && iframe.contentWindow.postMessage({ type: 'CT_BRIDGE_COLLAPSED' }, '*');
         } catch (_) { /* non-fatal */ }
+    }
+
+    function toggleChat() {
+        if (state === 'expanded') collapseToIcon();
+        else expandToChat();
     }
 
     // --- Icon animation ---
@@ -268,66 +264,14 @@
         container.appendChild(iframe);
         document.body.appendChild(container);
 
-        // Close (×) button — parent-side overlay, always the same on-screen
-        // spot when the container is expanded. Cleaner than requiring the
-        // iframe app to render its own close.
-        // Minimise button: down-arrow (chat folds down into the icon).
-        // Not a close × — Erica the icon isn't going anywhere, this just
-        // hides the chat surface.
-        var closeBtn = document.createElement('button');
-        closeBtn.id = CLOSE_BTN_ID;
-        closeBtn.type = 'button';
-        closeBtn.setAttribute('aria-label', 'Minimise chat');
-        closeBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
-        applyStyle(closeBtn, {
-            position: 'fixed',
-            right: '30px',
-            // Sit just inside the top-right corner of the expanded container.
-            // Container top = viewport height - 100 (bottom) - 640 (height) = vh-740.
-            // But container may hit max-height, so we reposition after transition.
-            bottom: '720px',
-            width: '30px',
-            height: '30px',
-            'border-radius': '50%',
-            background: 'rgba(0,0,0,0.6)',
-            color: '#fff',
-            border: 'none',
-            display: 'flex',
-            'align-items': 'center',
-            'justify-content': 'center',
-            cursor: 'pointer',
-            'z-index': '10000',
-            opacity: '0',
-            'pointer-events': 'none',
-            transition: 'opacity 200ms ease',
-            padding: '0'
-        });
-        closeBtn.addEventListener('click', collapseToIcon);
-        document.body.appendChild(closeBtn);
-        // Position the minimise button INSIDE the chat's top-right corner
-        // (12px inset). Recomputed on resize + transitionend since container
-        // may be clamped by max-height on shorter viewports.
-        function positionCloseBtn() {
-            var c = document.getElementById(CONTAINER_ID);
-            if (!c) return;
-            var rect = c.getBoundingClientRect();
-            if (rect.width < 200) return; // icon state — leave last-known position
-            mergeStyle(closeBtn, {
-                top: (rect.top + 12) + 'px',
-                right: (window.innerWidth - rect.right + 12) + 'px',
-                bottom: 'auto'
-            });
-        }
-        window.addEventListener('resize', positionCloseBtn);
-        container.addEventListener('transitionend', positionCloseBtn);
-        positionCloseBtn();
-
-        // Icon (visible resting state). Rendered above the container so the
-        // click target is always crisp regardless of container z-index.
+        // Icon: always visible, click TOGGLES expand/collapse. No separate
+        // close button — user's natural instinct is to click the icon to
+        // dismiss. This also makes Erica the single point of interaction,
+        // which reinforces her as a presence rather than a UI element.
         var icon = document.createElement('button');
         icon.id = ICON_ID;
         icon.type = 'button';
-        icon.setAttribute('aria-label', 'Open coach');
+        icon.setAttribute('aria-label', 'Toggle coach chat');
         applyStyle(icon, {
             position: 'fixed',
             right: '20px',
@@ -344,7 +288,7 @@
             transition: 'opacity 200ms ease, transform 200ms ease',
             opacity: '1'
         });
-        icon.addEventListener('click', expandToChat);
+        icon.addEventListener('click', toggleChat);
         document.body.appendChild(icon);
 
         console.log('[CTBridge] UI injected (corner-icon-first). Iframe pre-warming at:', IFRAME_SRC);
@@ -366,6 +310,7 @@
     // Programmatic expand/collapse from the console for testing.
     window.__ctBridgeExpand = expandToChat;
     window.__ctBridgeCollapse = collapseToIcon;
+    window.__ctBridgeToggle = toggleChat;
 
     // --- Boot ---
     if (document.readyState === 'loading') {

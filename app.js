@@ -187,18 +187,11 @@ class VoiceChatBot {
         // console.log('[Erica] Loaded saved state:', savedState);
 
         if (savedState && savedState.mode === 'call') {
-            const userId = this.getUserIdFromURL();
-
-            // SECURITY: Only restore call mode if user is authenticated (has userId)
-            if (!userId) {
-                // console.log('[Erica] Saved mode is "call", but no userId found. Showing login prompt.');
-                if (typeof this.showLoginPrompt === 'function') {
-                    this.showLoginPrompt();
-                }
-                return;
-            }
-
-            // console.log('[Erica] ✅ SAVED MODE IS "CALL". Attempting to restore...');
+            // Prototype phase: voice mode is open to guests. Nobody uses the
+            // product yet, so a login wall in front of the demo would kill
+            // the exact evaluation loop we need. Reintroduce a gate later
+            // once we have usage worth protecting (e.g. per-guest voice-
+            // minute cap tracked via CleverTap objectId).
 
             // 1. Open Call Panel
             if (window.uiLayout && typeof window.uiLayout.setCallModePanelOpen === 'function') {
@@ -219,12 +212,8 @@ class VoiceChatBot {
                 console.warn('[Erica] Browser blocked auto-start. Waiting for user interaction.');
             });
         } else if (this.getUrlVoiceMode()) {
-            // URL param ?voiceMode=true — auto-open call panel and start recording
-            const userId = this.getUserIdFromURL();
-            if (!userId) {
-                if (typeof this.showLoginPrompt === 'function') this.showLoginPrompt();
-                return;
-            }
+            // URL param ?voiceMode=true — auto-open call panel and start
+            // recording. Prototype phase: no login gate for guests.
             if (window.uiLayout && typeof window.uiLayout.setCallModePanelOpen === 'function') {
                 window.uiLayout.setCallModePanelOpen(this, true, true);
             }
@@ -2670,15 +2659,8 @@ class VoiceChatBot {
             return;
         }
 
-        // Check if user is authenticated before allowing voice mode
-        const userId = this.getUserIdFromURL();
-        if (!userId) {
-            // User is not authenticated - show login prompt modal
-            if (typeof this.showLoginPrompt === 'function') {
-                this.showLoginPrompt();
-            }
-            return;
-        }
+        // Prototype phase: no login gate for voice — guests may try it.
+        // (see equivalent comment in the restoreMode() and voiceMode branches)
 
         // If we don't have a stream (or not recording), treat this as "Start"
         // Voice Limit Check (redundant but safe)
