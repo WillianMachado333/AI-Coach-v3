@@ -2499,18 +2499,15 @@ class VoiceChatBot {
                 return;
             }
             if (data.type === 'SEND_PILL_INDEX' && typeof data.label === 'string' && data.label.trim()) {
-                // Route through the same path as clicking the inline pill:
-                // populate the input and send.
-                const ta = document.getElementById('userTextInput');
-                if (!ta) return;
+                // Route through the exact same code path as clicking an
+                // inline pill (see _paintQuickActionButtons onclick):
+                // sendTextMessage handles composing + dispatching to the
+                // realtime channel. No DOM keydown fallback needed.
                 try {
-                    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-                    setter ? setter.call(ta, data.label) : (ta.value = data.label);
-                    ta.dispatchEvent(new Event('input', { bubbles: true }));
-                    if (typeof this.sendMessage === 'function') {
-                        this.sendMessage();
+                    if (typeof this.sendTextMessage === 'function') {
+                        this.sendTextMessage(data.label);
                     } else {
-                        ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                        console.warn('[Erica] SEND_PILL_INDEX: sendTextMessage not available');
                     }
                 } catch (e) {
                     console.warn('[Erica] SEND_PILL_INDEX failed:', e);

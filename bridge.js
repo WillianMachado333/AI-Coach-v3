@@ -27,10 +27,13 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T05:45-hover-glimpse';
+    var VERSION = '2026-08-07T06:15-clean-icon';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
-    var ICON_IDLE_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/idle/84p/Erica.webm';
+    // Use the FULL-resolution clips (not the 84p downsampled variants) so
+    // the 64×64 corner icon stays sharp on retina displays. Bandwidth cost
+    // is tiny per session (single load + loop) and worth the crispness.
+    var ICON_IDLE_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/idle/Erica.webm';
     var ICON_SPEAKING_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/speaking/84p/Erica.webm';
     var ICON_WAVING_MP4 = 'https://web-production-2c7ff.up.railway.app/companions/waving/Erica.mp4';
     var ICON_ID = 'ct-bridge-icon';
@@ -210,8 +213,8 @@
         applyStyle(box, {
             position: 'fixed',
             right: '20px',
-            // Sit just above the icon (icon bottom:20 + h:64 + gap:12 = 96).
-            bottom: '96px',
+            // Sit just above the icon (icon bottom:20 + h:72 + gap:12 = 104).
+            bottom: '104px',
             'max-width': '260px',
             'z-index': '9997',
             display: 'flex',
@@ -360,16 +363,16 @@
         var container = document.createElement('div');
         container.id = CONTAINER_ID;
         // Container floats ABOVE the persistent corner icon. Bottom offset
-        // = icon size (64) + margin below (20) + gap (16) = 100px. That
+        // = icon size (72) + margin below (20) + gap (16) = 108px. That
         // way the icon stays fully visible below the chat while expanded.
         applyStyle(container, {
             position: 'fixed',
             right: '20px',
-            bottom: '100px',
+            bottom: '108px',
             width: '420px',
             height: '640px',
             'max-width': 'calc(100vw - 40px)',
-            'max-height': 'calc(100vh - 120px)',
+            'max-height': 'calc(100vh - 128px)',
             'z-index': '9998',
             background: '#fff',
             'border-radius': '18px',
@@ -409,17 +412,18 @@
             position: 'fixed',
             right: '20px',
             bottom: '20px',
-            width: '64px',
-            height: '64px',
+            width: '72px',
+            height: '72px',
             'border-radius': '50%',
             'z-index': '9999',
-            border: '2px solid #fff',
+            border: 'none',
+            outline: 'none',
             padding: '0',
             cursor: 'pointer',
             background: '#fff center/cover no-repeat url("' + ICON_STILL_SRC + '")',
-            'box-shadow': '0 8px 24px rgba(0,0,0,0.3)',
+            'box-shadow': '0 6px 18px rgba(0,0,0,0.18)',
             overflow: 'hidden',
-            transition: 'opacity 200ms ease, transform 200ms ease',
+            transition: 'opacity 200ms ease, transform 200ms ease, box-shadow 200ms ease',
             opacity: '1'
         });
 
