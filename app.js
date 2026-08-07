@@ -4009,6 +4009,172 @@ class VoiceChatBot {
         }
     }
 
+    // Inline widgets (charts/tables) rendered from render_chart/render_table
+    // tool calls. The widget is appended as a message-bubble-shaped block to
+    // #chatMessages so it flows with the conversation and lives in the same
+    // scroll/reveal system as regular bubbles.
+    _renderInlineWidget({ kind, spec }) {
+        const chat = document.getElementById('chatMessages');
+        if (!chat) return;
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'w-full flex justify-end animate-fade-in-up';
+
+        const bubble = document.createElement('div');
+        bubble.className = 'max-w-[92%] bg-white/95 border border-primary/25 rounded-2xl rounded-br-md px-3 py-3 text-[13px] leading-relaxed text-gray-800 shadow-sm';
+
+        if (spec.title) {
+            const h = document.createElement('div');
+            h.className = 'text-xs font-semibold text-primary mb-2 uppercase tracking-wide';
+            h.textContent = spec.title;
+            bubble.appendChild(h);
+        }
+
+        if (kind === 'chart') {
+            bubble.appendChild(this._buildChartSvg(spec));
+        } else if (kind === 'table') {
+            bubble.appendChild(this._buildTable(spec));
+        }
+
+        wrapper.appendChild(bubble);
+        // Ensure widget sits at the natural end of the chat (respects the
+        // pill container detach logic in renderQuickActions).
+        chat.appendChild(wrapper);
+
+        // Follow-scroll if user is near bottom (respects the same convention
+        // as regular assistant final messages).
+        try {
+            if (typeof this.scrollMessageTopIntoView === 'function' &&
+                (typeof this.isChatNearBottom !== 'function' || this.isChatNearBottom())) {
+                this.scrollMessageTopIntoView(wrapper);
+            }
+        } catch (_) { /* non-fatal */ }
+    }
+
+    _buildChartSvg({ type, labels, values, valueLabel }) {
+        const W = 300, H = 180;
+        const padL = 30, padR = 10, padT = 12, padB = 34;
+        const innerW = W - padL - padR;
+        const innerH = H - padT - padB;
+        const max = Math.max(1, ...values.map((v) => Number(v) || 0));
+
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+        svg.setAttribute('width', '100%');
+        svg.setAttribute('height', String(H));
+        svg.setAttribute('role', 'img');
+
+        // Y-axis label
+        if (valueLabel) {
+            const yl = document.createElementNS(svgNS, 'text');
+            yl.setAttribute('x', '4');
+            yl.setAttribute('y', padT + 8);
+            yl.setAttribute('font-size', '10');
+            yl.setAttribute('fill', '#6b7280');
+            yl.textContent = valueLabel;
+            svg.appendChild(yl);
+        }
+
+        // Baseline
+        const axis = document.createElementNS(svgNS, 'line');
+        axis.setAttribute('x1', padL); axis.setAttribute('y1', padT + innerH);
+        axis.setAttribute('x2', padL + innerW); axis.setAttribute('y2', padT + innerH);
+        axis.setAttribute('stroke', '#e5e7eb');
+        svg.appendChild(axis);
+
+        const bandW = innerW / values.length;
+        const barW = Math.max(6, bandW * 0.55);
+
+        if (type === 'line') {
+            let pts = '';
+            values.forEach((v, i) => {
+                const x = padL + i * bandW + bandW / 2;
+                const y = padT + innerH - (Number(v) / max) * innerH;
+                pts += `${x},${y} `;
+                const c = document.createElementNS(svgNS, 'circle');
+                c.setAttribute('cx', x); c.setAttribute('cy', y); c.setAttribute('r', '3');
+                c.setAttribute('fill', '#0d9488');
+                svg.appendChild(c);
+            });
+            const path = document.createElementNS(svgNS, 'polyline');
+            path.setAttribute('points', pts.trim());
+            path.setAttribute('fill', 'none');
+            path.setAttribute('stroke', '#0d9488');
+            path.setAttribute('stroke-width', '2');
+            svg.appendChild(path);
+        } else {
+            values.forEach((v, i) => {
+                const h = (Number(v) / max) * innerH;
+                const x = padL + i * bandW + (bandW - barW) / 2;
+                const y = padT + innerH - h;
+                const rect = document.createElementNS(svgNS, 'rect');
+                rect.setAttribute('x', x); rect.setAttribute('y', y);
+                rect.setAttribute('width', barW); rect.setAttribute('height', Math.max(1, h));
+                rect.setAttribute('fill', '#14b8a6');
+                rect.setAttribute('rx', '3');
+                svg.appendChild(rect);
+                // Value label above bar
+                const vl = document.createElementNS(svgNS, 'text');
+                vl.setAttribute('x', x + barW / 2);
+                vl.setAttribute('y', y - 4);
+                vl.setAttribute('text-anchor', 'middle');
+                vl.setAttribute('font-size', '10');
+                vl.setAttribute('fill', '#374151');
+                vl.textContent = String(v);
+                svg.appendChild(vl);
+            });
+        }
+
+        // X-axis labels
+        labels.forEach((lb, i) => {
+            const t = document.createElementNS(svgNS, 'text');
+            t.setAttribute('x', padL + i * bandW + bandW / 2);
+            t.setAttribute('y', padT + innerH + 14);
+            t.setAttribute('text-anchor', 'middle');
+            t.setAttribute('font-size', '10');
+            t.setAttribute('fill', '#6b7280');
+            // Truncate long labels
+            const s = String(lb);
+            t.textContent = s.length > 12 ? s.slice(0, 11) + '…' : s;
+            svg.appendChild(t);
+        });
+
+        return svg;
+    }
+
+    _buildTable({ headers, rows }) {
+        const table = document.createElement('table');
+        table.className = 'w-full text-[12px] border-collapse';
+
+        const thead = document.createElement('thead');
+        const trh = document.createElement('tr');
+        headers.forEach((h) => {
+            const th = document.createElement('th');
+            th.className = 'text-left font-semibold text-primary bg-teal-50 px-2 py-1.5 border-b border-teal-200';
+            th.textContent = h;
+            trh.appendChild(th);
+        });
+        thead.appendChild(trh);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        rows.slice(0, 8).forEach((row, idx) => {
+            const tr = document.createElement('tr');
+            tr.className = idx % 2 === 0 ? 'bg-white/60' : 'bg-white/30';
+            (row || []).forEach((cell) => {
+                const td = document.createElement('td');
+                td.className = 'px-2 py-1.5 border-b border-teal-100 align-top';
+                td.textContent = cell == null ? '' : String(cell);
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        return table;
+    }
+
     playWaveAnimation() {
         // Broadcast wave animation to parent bridge so the corner icon also
         // plays the wave GIF. Falls back to idle after ~2.5s (typical wave
@@ -5159,6 +5325,19 @@ class VoiceChatBot {
                     '- This overrides any earlier instruction about "if a quiz or resource isn\'t',
                     '  in the uploaded documents, say you are unsure" — that predates these',
                     '  tools and no longer applies.',
+                    '',
+                    'VISUAL WIDGETS (render_chart / render_table):',
+                    '- CALL render_chart when a comparison of numbers would land more clearly',
+                    '  as a picture than as prose: quiz sub-scores across dimensions, distribution',
+                    '  of the user\'s emotional-intelligence or personality facets, progress over',
+                    '  time, weighted priorities. Use type="bar" for categories and type="line"',
+                    '  for ordered progressions.',
+                    '- CALL render_table when comparing a small set of items across a couple of',
+                    '  attributes (e.g. contrasting three coaching frameworks or three career',
+                    '  options across the same criteria). Keep it small — 2-5 rows, 2-4 columns.',
+                    '- After a render, briefly narrate WHAT the visual is showing and why it',
+                    '  matters. The chart/table is context, not the whole answer.',
+                    '- Do NOT render for single numbers, tiny lists, or as decoration.',
                     '=== END KNOWLEDGE GROUNDING & REASONING ==='
                 ].join('\n');
 
@@ -5996,6 +6175,68 @@ class VoiceChatBot {
                             },
                             required: ['query']
                         }
+                    },
+                    {
+                        type: 'function',
+                        name: 'render_chart',
+                        description: 'Render a chart inline in the chat when a visual would make a concept dramatically clearer than words alone. Use for: comparing dimensions of the user\'s quiz results, showing distributions across categories (e.g. personality traits, emotional intelligence subscales, values), tracking progress over time, illustrating relative weights. Do NOT use for simple lists (use render_table), single numbers, or as decoration. After calling, briefly narrate what the chart shows in your coaching voice.',
+                        parameters: {
+                            type: 'object',
+                            properties: {
+                                type: {
+                                    type: 'string',
+                                    enum: ['bar', 'line'],
+                                    description: 'bar for comparing categories, line for change over time or ordered progression.'
+                                },
+                                title: {
+                                    type: 'string',
+                                    description: 'Short chart title (2-6 words).'
+                                },
+                                labels: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                    description: 'X-axis labels — one per data point. Keep them short.'
+                                },
+                                values: {
+                                    type: 'array',
+                                    items: { type: 'number' },
+                                    description: 'Numeric values, same length as labels.'
+                                },
+                                value_label: {
+                                    type: 'string',
+                                    description: 'Optional Y-axis label (e.g. "Score", "%", "days").'
+                                }
+                            },
+                            required: ['type', 'title', 'labels', 'values']
+                        }
+                    },
+                    {
+                        type: 'function',
+                        name: 'render_table',
+                        description: 'Render a compact HTML table inline in the chat. Use when structured comparison across a small set of items is clearer than prose — for example: listing coaching frameworks side by side, comparing options against criteria, or presenting a short set of ranked items with attributes. Do NOT use for single-column lists (just narrate them). Keep to at most 5 rows and 4 columns.',
+                        parameters: {
+                            type: 'object',
+                            properties: {
+                                title: {
+                                    type: 'string',
+                                    description: 'Optional short heading above the table.'
+                                },
+                                headers: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                    description: 'Column headers.'
+                                },
+                                rows: {
+                                    type: 'array',
+                                    items: {
+                                        type: 'array',
+                                        items: { type: 'string' }
+                                    },
+                                    description: 'Rows, each an array of cell strings matching the headers length.'
+                                }
+                            },
+                            required: ['headers', 'rows']
+                        }
                     }
                 ],
                 tool_choice: 'auto'
@@ -6535,6 +6776,50 @@ class VoiceChatBot {
                 // Hide the typing indicator regardless of outcome.
                 if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
                     window.uiLayout.setWaitingState(this, false);
+                }
+            } else if (functionName === 'render_chart') {
+                // Inline visual: draws an SVG bar/line chart in the chat
+                // as a new "widget" message. No external chart library —
+                // hand-rolled SVG so the payload stays tiny and there's
+                // nothing to CDN-load.
+                try {
+                    const spec = {
+                        type: (safeArgs.type === 'line' ? 'line' : 'bar'),
+                        title: String(safeArgs.title || '').slice(0, 80),
+                        labels: Array.isArray(safeArgs.labels) ? safeArgs.labels.map(String) : [],
+                        values: Array.isArray(safeArgs.values) ? safeArgs.values.map((v) => Number(v)) : [],
+                        valueLabel: safeArgs.value_label ? String(safeArgs.value_label).slice(0, 24) : ''
+                    };
+                    if (spec.labels.length === 0 || spec.values.length === 0 || spec.labels.length !== spec.values.length) {
+                        result = JSON.stringify({ error: 'labels and values must be non-empty and same length' });
+                    } else if (typeof this._renderInlineWidget === 'function') {
+                        this._renderInlineWidget({ kind: 'chart', spec });
+                        result = JSON.stringify({ success: true, rendered: 'chart', points: spec.values.length });
+                    } else {
+                        result = JSON.stringify({ error: '_renderInlineWidget not available' });
+                    }
+                } catch (error) {
+                    result = JSON.stringify({ error: `render_chart failed: ${error.message}` });
+                }
+            } else if (functionName === 'render_table') {
+                try {
+                    const spec = {
+                        title: String(safeArgs.title || '').slice(0, 80),
+                        headers: Array.isArray(safeArgs.headers) ? safeArgs.headers.map(String) : [],
+                        rows: Array.isArray(safeArgs.rows)
+                            ? safeArgs.rows.map((r) => (Array.isArray(r) ? r.map(String) : []))
+                            : []
+                    };
+                    if (spec.headers.length === 0 || spec.rows.length === 0) {
+                        result = JSON.stringify({ error: 'headers and rows must be non-empty' });
+                    } else if (typeof this._renderInlineWidget === 'function') {
+                        this._renderInlineWidget({ kind: 'table', spec });
+                        result = JSON.stringify({ success: true, rendered: 'table', cols: spec.headers.length, rows: spec.rows.length });
+                    } else {
+                        result = JSON.stringify({ error: '_renderInlineWidget not available' });
+                    }
+                } catch (error) {
+                    result = JSON.stringify({ error: `render_table failed: ${error.message}` });
                 }
             } else {
                 console.warn('[Erica] ⚠️ Unknown function:', functionName);
