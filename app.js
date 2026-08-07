@@ -4351,48 +4351,13 @@ class VoiceChatBot {
     }
 
     handleVoiceInactivityTimeout() {
-        console.log('⏰ [Erica Inactivity] TIMER REACHED ZERO - 30 seconds elapsed!');
-
-        if (!this.isRecording || this.isVoiceMutedByInactivity) return;
-
-        // We rely on continuous resets based on audio levels (lastRemoteLevelAt)
-        // to keep the timer alive while coach is speaking.
-        // If we reached here, it means true silence (no user speech, no coach audio levels).
-
-        console.log('[Erica] Voice inactivity timeout triggered - muting microphone');
-
-        // Mute the microphone track
-        const audioTrack = this.localStream?.getAudioTracks()[0];
-        if (audioTrack) {
-            // Check if already muted by user
-            this.wasMutedBeforeInactivity = !audioTrack.enabled;
-            console.log('[Erica] User mute state preserved:', this.wasMutedBeforeInactivity ? 'MUTED' : 'UNMUTED');
-
-            audioTrack.enabled = false;
-        }
-
-        this.isVoiceMutedByInactivity = true;
-        this.inactivityMuteTimestamp = Date.now();
-
-        // Show modal
-        console.log('[Erica] Showing inactivity modal...');
-        console.log('[Erica] Modal element exists?', !!this.voiceInactivityModal);
-        console.log('[Erica] showVoiceInactivityModal function exists?', typeof this.showVoiceInactivityModal === 'function');
-
-        if (typeof this.showVoiceInactivityModal === 'function') {
-            this.showVoiceInactivityModal();
-            console.log('[Erica] ✅ Modal show function called');
-        } else {
-            console.error('[Erica] ❌ showVoiceInactivityModal function not found!');
-        }
-
-        // Track analytics
-        if (typeof this.trackCoachEvent === 'function') {
-            this.trackCoachEvent('Voice Muted - Inactivity Timeout', {
-                sessionDuration: Date.now() - this.recordingStartTimestamp,
-                lastActivity: this.lastAudioActivityTimestamp
-            });
-        }
+        // Removed for prototype: the "Are you still there?" auto-mute +
+        // modal interrupts silence that is often the RIGHT coaching
+        // rhythm (user thinking, breathing, reflecting). We keep the
+        // separate 30-minute session hold, but no per-30s intervention.
+        // Reintroduce later with a much longer threshold and softer UI if
+        // we see real evidence of runaway mic sessions.
+        return;
     }
 
     setupAudioAnalysis(stream) {

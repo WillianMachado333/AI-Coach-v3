@@ -27,10 +27,13 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T04:15-icon-toggle';
+    var VERSION = '2026-08-07T04:45-icon-video';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
-    var ICON_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
+    var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
+    var ICON_IDLE_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/idle/84p/Erica.webm';
+    var ICON_WAVING_MP4 = 'https://web-production-2c7ff.up.railway.app/companions/waving/Erica.mp4';
     var ICON_ID = 'ct-bridge-icon';
+    var VIDEO_ID = 'ct-bridge-icon-video';
     var CONTAINER_ID = 'ct-bridge-container';
     var IFRAME_ID = 'ct-bridge-iframe';
 
@@ -177,40 +180,63 @@
     }
 
     // --- Icon animation ---
-    // The iframe app dispatches CT_ICON_ANIMATION postMessages to signal
-    // what the coach is doing (speaking, waving, idle). MP4 avatar clips
-    // exist on disk but can't be applied via `background: url(...)`. For
-    // v2 the icon uses CSS keyframe animations to communicate the state
-    // (subtle pulse for speaking, tilt for waving). Real video swap in
-    // the corner icon can come later — the CSS animations already read
-    // clearly as "she is doing something".
+    // The corner icon hosts an actual <video> element playing Erica's
+    // idle clip on loop. When the iframe app broadcasts CT_ICON_ANIMATION
+    // we swap the video source: 'waving' plays the wave clip once and
+    // returns to idle; 'speaking' just keeps idle (there is no Erica-
+    // specific speaking clip today — falls back to a subtle CSS pulse on
+    // the icon so the user still sees "she is talking"); anything else
+    // returns to idle.
     function ensureIconKeyframes() {
         if (document.getElementById('ct-bridge-keyframes')) return;
         var s = document.createElement('style');
         s.id = 'ct-bridge-keyframes';
         s.textContent = [
             '@keyframes ctBridgePulse {',
-            '  0%,100% { transform: scale(1); }',
-            '  50%    { transform: scale(1.08); }',
+            '  0%,100% { transform: scale(1); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }',
+            '  50%    { transform: scale(1.08); box-shadow: 0 12px 32px rgba(20, 184, 166, 0.5); }',
             '}',
-            '@keyframes ctBridgeWave {',
-            '  0%,100% { transform: rotate(0); }',
-            '  25%    { transform: rotate(-14deg); }',
-            '  75%    { transform: rotate(14deg); }',
-            '}',
-            '#' + ICON_ID + '.ct-anim-speaking { animation: ctBridgePulse 900ms ease-in-out infinite; }',
-            '#' + ICON_ID + '.ct-anim-waving   { animation: ctBridgeWave 700ms ease-in-out 3; }'
+            '#' + ICON_ID + '.ct-anim-speaking { animation: ctBridgePulse 900ms ease-in-out infinite; }'
         ].join('');
         document.head.appendChild(s);
     }
+    function setVideoSource(video, src) {
+        if (!video) return;
+        // Only reload if source changes — otherwise we'd stall the loop.
+        if (video.getAttribute('src') === src) return;
+        video.setAttribute('src', src);
+        try { video.load(); video.play().catch(function () {}); } catch (_) {}
+    }
     function setIconAnimation(name) {
         var icon = document.getElementById(ICON_ID);
+        var video = document.getElementById(VIDEO_ID);
         if (!icon) return;
         ensureIconKeyframes();
-        icon.classList.remove('ct-anim-speaking', 'ct-anim-waving');
-        if (name === 'speaking') icon.classList.add('ct-anim-speaking');
-        else if (name === 'waving') icon.classList.add('ct-anim-waving');
-        // 'idle' / 'clapping' / anything else → no animation class → still.
+        icon.classList.remove('ct-anim-speaking');
+        // Reset any prior "revert to idle" scheduled by waving.
+        if (icon._ctRevertTimer) { clearTimeout(icon._ctRevertTimer); icon._ctRevertTimer = null; }
+
+        if (name === 'waving') {
+            setVideoSource(video, ICON_WAVING_MP4);
+            if (video) { video.loop = false; }
+            // After a typical wave clip length, revert to idle loop.
+            icon._ctRevertTimer = setTimeout(function () {
+                setVideoSource(video, ICON_IDLE_WEBM);
+                if (video) { video.loop = true; }
+            }, 2500);
+            return;
+        }
+        if (name === 'speaking') {
+            // No Erica-specific speaking clip; keep idle looping and add a
+            // CSS pulse so the user reads it as "she's talking".
+            setVideoSource(video, ICON_IDLE_WEBM);
+            if (video) { video.loop = true; }
+            icon.classList.add('ct-anim-speaking');
+            return;
+        }
+        // idle / clapping / unknown → default idle loop.
+        setVideoSource(video, ICON_IDLE_WEBM);
+        if (video) { video.loop = true; }
     }
 
     // --- UI injection ---
@@ -264,10 +290,9 @@
         container.appendChild(iframe);
         document.body.appendChild(container);
 
-        // Icon: always visible, click TOGGLES expand/collapse. No separate
-        // close button — user's natural instinct is to click the icon to
-        // dismiss. This also makes Erica the single point of interaction,
-        // which reinforces her as a presence rather than a UI element.
+        // Icon: always visible, click TOGGLES expand/collapse. Contains a
+        // real <video> playing Erica's idle clip on loop; source is swapped
+        // by setIconAnimation on speaking/waving events from the iframe.
         var icon = document.createElement('button');
         icon.id = ICON_ID;
         icon.type = 'button';
@@ -283,11 +308,38 @@
             border: '2px solid #fff',
             padding: '0',
             cursor: 'pointer',
-            background: '#fff center/cover no-repeat url("' + ICON_SRC + '")',
+            background: '#fff center/cover no-repeat url("' + ICON_STILL_SRC + '")',
             'box-shadow': '0 8px 24px rgba(0,0,0,0.3)',
+            overflow: 'hidden',
             transition: 'opacity 200ms ease, transform 200ms ease',
             opacity: '1'
         });
+
+        var video = document.createElement('video');
+        video.id = VIDEO_ID;
+        video.muted = true;
+        video.autoplay = true;
+        video.loop = true;
+        video.playsInline = true;
+        video.setAttribute('playsinline', '');
+        video.setAttribute('muted', '');
+        video.setAttribute('src', ICON_IDLE_WEBM);
+        applyStyle(video, {
+            width: '100%',
+            height: '100%',
+            'object-fit': 'cover',
+            display: 'block',
+            'pointer-events': 'none'
+        });
+        icon.appendChild(video);
+        // If webm fails (Safari), fall back to the static thumb so the icon
+        // never appears blank.
+        video.addEventListener('error', function () {
+            video.style.display = 'none';
+        });
+        // Kick off playback (some browsers wait for user gesture).
+        try { video.play().catch(function () {}); } catch (_) {}
+
         icon.addEventListener('click', toggleChat);
         document.body.appendChild(icon);
 
