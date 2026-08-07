@@ -27,7 +27,36 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T08:30-page-context';
+    var VERSION = '2026-08-07T09:00-preview-gate';
+
+    // --- Preview gate ---
+    // The bridge can be loaded site-wide via Wix Custom Code without showing
+    // Erica to real visitors. Activation rules (any one is enough):
+    //   1. URL contains ?erica=preview
+    //   2. sessionStorage.ericaPreview === '1' (persists across internal
+    //      Wix client-side navigations after the first ?erica=preview)
+    //   3. Path ends with /playground (existing behaviour)
+    // Once activated via #1, we stamp sessionStorage so the flag survives
+    // navigation to a report page etc.
+    function isPreviewActivated() {
+        try {
+            var search = (window.location && window.location.search) || '';
+            var path = (window.location && window.location.pathname) || '';
+            if (/[?&]erica=preview\b/i.test(search)) {
+                try { window.sessionStorage && sessionStorage.setItem('ericaPreview', '1'); } catch (_) {}
+                return true;
+            }
+            if (window.sessionStorage && sessionStorage.getItem('ericaPreview') === '1') return true;
+            if (/\/playground(?:$|[\/?#])/i.test(path)) return true;
+            return false;
+        } catch (_) {
+            return false;
+        }
+    }
+    if (!isPreviewActivated()) {
+        console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground) — skipping injection.');
+        return;
+    }
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     // 84p is actually the HIGHEST resolution we have for Erica webm clips
