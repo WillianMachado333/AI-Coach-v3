@@ -2476,6 +2476,18 @@ class VoiceChatBot {
         this.iframeMessaging.start();
     }
 
+    async _requestPageContextFromBridge(timeoutMs = 2500) {
+        if (!window.parent || window.parent === window) return null;
+        return new Promise((resolve) => {
+            if (!Array.isArray(this._pageContextWaiters)) this._pageContextWaiters = [];
+            let done = false;
+            const finish = (v) => { if (done) return; done = true; resolve(v || null); };
+            this._pageContextWaiters.push(finish);
+            try { window.parent.postMessage({ type: 'REQUEST_PAGE_CONTEXT' }, '*'); } catch (_) { /* non-fatal */ }
+            setTimeout(() => finish(null), timeoutMs);
+        });
+    }
+
     // Bridge (parent page corner-icon) protocol:
     //   - Bridge sends GET_PILL_LABELS on icon hover → we respond with the
     //     current pill labels so it can render a Bing-style hover glimpse.
@@ -2496,6 +2508,13 @@ class VoiceChatBot {
                 try {
                     (event.source || window.parent).postMessage({ type: 'PILL_LABELS', labels }, event.origin || '*');
                 } catch (_) { /* non-fatal */ }
+                return;
+            }
+            if (data.type === 'PAGE_CONTEXT_RESPONSE' && data.context) {
+                // Bridge just replied with a page snapshot. Resolve any
+                // waiter created by _requestPageContextFromBridge.
+                const waiters = Array.isArray(this._pageContextWaiters) ? this._pageContextWaiters.splice(0) : [];
+                waiters.forEach((fn) => { try { fn(data.context); } catch (_) {} });
                 return;
             }
             if (data.type === 'SEND_PILL_INDEX' && typeof data.label === 'string' && data.label.trim()) {
@@ -3480,8 +3499,17 @@ class VoiceChatBot {
             // PREPEND (not append) so the model sees this block up front rather
             // than buried after ~120k characters of grounding + reasoning
             // directives, which was silently ignoring it in practice.
-            const beforeLen = (this.customInstructions || '').length;
-            this.customInstructions = activityBlock + '\n\n' + (this.customInstructions || '');
+            //
+            // Idempotent: strip any previous activity block BEFORE prepending
+            // the fresh one — periodic re-sync (every 90s) would otherwise
+            // stack duplicates.
+            let baseInstructions = this.customInstructions || '';
+            baseInstructions = baseInstructions.replace(
+                /\n?=== USER ACTIVITY TIMELINE \(live[\s\S]*?=== END USER ACTIVITY TIMELINE ===\n?/g,
+                ''
+            );
+            const beforeLen = baseInstructions.length;
+            this.customInstructions = activityBlock + '\n\n' + baseInstructions;
             this.userActivityMarkdown = activityBlock;
             console.log('[Erica.activitySync] 📊 injected — customInstructions', beforeLen, '→', this.customInstructions.length, 'chars');
             console.log('[Erica.activitySync] block preview:\n' + activityBlock);
@@ -5326,6 +5354,16 @@ class VoiceChatBot {
                     '  in the uploaded documents, say you are unsure" — that predates these',
                     '  tools and no longer applies.',
                     '',
+                    'PAGE AWARENESS (get_page_context):',
+                    'You have a tool `get_page_context` that returns the title, URL,',
+                    'headings and visible text of the page the user is currently on. Call it:',
+                    '- At the start of any conversation on a new page so your first',
+                    '  substantive response is grounded in what they are actually seeing.',
+                    '- Whenever the user references "this page", "this report", "here",',
+                    '  "what I\'m looking at", or asks about specific content on-screen.',
+                    '- Before answering questions about a quiz report, article, or dashboard.',
+                    'Do NOT read the page text aloud — use it to shape your reply.',
+                    '',
                     'VISUAL WIDGETS (render_chart / render_table) — USE PROACTIVELY:',
                     'Do NOT wait for the user to ask "show me a chart" or "make a table".',
                     'If the ANSWER involves any of the triggers below, call the tool FIRST,',
@@ -5372,6 +5410,15 @@ class VoiceChatBot {
                 if (!this._activitySyncStarted) {
                     this._activitySyncStarted = true;
                     this._syncUserActivityIntoPrompt();
+                    // Also poll periodically so Erica stays aware of
+                    // things the user does DURING the session (page
+                    // navigations, new quiz starts, etc). Silent — only
+                    // updates the system prompt on real change.
+                    if (!this._activitySyncInterval) {
+                        this._activitySyncInterval = setInterval(() => {
+                            this._syncUserActivityIntoPrompt();
+                        }, 90 * 1000);
+                    }
                 }
 
                 // Safety net: render starter pills a moment after
@@ -6195,6 +6242,16 @@ class VoiceChatBot {
                     },
                     {
                         type: 'function',
+                        name: 'get_page_context',
+                        description: 'Fetch the visible content of the page the user is currently on (title, URL, headings, main text). Use this whenever the user asks about what they are looking at, references "this page", "here", "this report", or when the answer depends on knowing what content is in front of them right now. Also call it opportunistically at the start of a conversation on a new page so you can ground your first response in what they are actually seeing.',
+                        parameters: {
+                            type: 'object',
+                            properties: {},
+                            required: []
+                        }
+                    },
+                    {
+                        type: 'function',
                         name: 'render_chart',
                         description: 'Render a chart inline in the chat when a visual would make a concept dramatically clearer than words alone. Use for: comparing dimensions of the user\'s quiz results, showing distributions across categories (e.g. personality traits, emotional intelligence subscales, values), tracking progress over time, illustrating relative weights. Do NOT use for simple lists (use render_table), single numbers, or as decoration. After calling, briefly narrate what the chart shows in your coaching voice.',
                         parameters: {
@@ -6793,6 +6850,27 @@ class VoiceChatBot {
                 // Hide the typing indicator regardless of outcome.
                 if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
                     window.uiLayout.setWaitingState(this, false);
+                }
+            } else if (functionName === 'get_page_context') {
+                // Ask the parent-page bridge for a snapshot of the current
+                // page (title, url, headings, visible text). Bridge extracts
+                // <main>/<article>/body innerText and posts back via
+                // PAGE_CONTEXT_RESPONSE (see setupBridgeMessaging).
+                try {
+                    const snapshot = await this._requestPageContextFromBridge();
+                    if (!snapshot) {
+                        result = JSON.stringify({ error: 'No page context available (no parent page or bridge did not respond).' });
+                    } else {
+                        result = JSON.stringify({
+                            instruction: 'Ground your next reply in the following page context. Reference specific parts naturally (do not read them verbatim).',
+                            url: snapshot.url,
+                            title: snapshot.title,
+                            headings: snapshot.headings || [],
+                            text: snapshot.text || ''
+                        });
+                    }
+                } catch (error) {
+                    result = JSON.stringify({ error: `get_page_context failed: ${error.message}` });
                 }
             } else if (functionName === 'render_chart') {
                 // Inline visual: draws an SVG bar/line chart in the chat

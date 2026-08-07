@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T07:45-glass-iframe';
+    var VERSION = '2026-08-07T08:30-page-context';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     // 84p is actually the HIGHEST resolution we have for Erica webm clips
@@ -118,7 +118,50 @@
             setConnectionState(event.data.state);
             return;
         }
+
+        // Iframe asks parent for the visible text of the current page (so
+        // Erica can be aware of what the user is actually looking at).
+        // Bridge extracts a compact snapshot: url, title, main text.
+        if (event.data.type === 'REQUEST_PAGE_CONTEXT') {
+            var snap = capturePageContext();
+            try {
+                (event.source || null).postMessage(
+                    { type: 'PAGE_CONTEXT_RESPONSE', context: snap },
+                    event.origin || '*'
+                );
+            } catch (_) { /* non-fatal */ }
+            return;
+        }
     });
+
+    // Capture a compact snapshot of the current page. Prefers <main>/<article>
+    // for content-first pages (report / journey / quiz result pages); falls
+    // back to body innerText. Caps at ~8 KB so the postMessage stays small.
+    function capturePageContext() {
+        var out = {
+            url: (window.location && window.location.href) || '',
+            title: (document && document.title) || '',
+            text: '',
+            headings: []
+        };
+        try {
+            var scope = document.querySelector('main')
+                || document.querySelector('article')
+                || document.querySelector('[data-erica-context]')
+                || document.body;
+            if (scope) {
+                // Collect visible headings so Erica knows the outline.
+                out.headings = Array.prototype.slice
+                    .call(scope.querySelectorAll('h1,h2,h3'))
+                    .map(function (h) { return (h.innerText || '').trim(); })
+                    .filter(Boolean)
+                    .slice(0, 30);
+                var t = (scope.innerText || '').replace(/\s+/g, ' ').trim();
+                out.text = t.slice(0, 8000);
+            }
+        } catch (_) { /* non-fatal */ }
+        return out;
+    }
 
     // Wix (the parent page in production) has CSSOM/layout behaviour that
     // causes multi-step `element.style.setProperty(..., 'important')` calls
