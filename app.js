@@ -7412,23 +7412,22 @@ class VoiceChatBot {
                         functionArgs = {};
                     }
 
-                    // Match the response.done handler's guard: only execute when we
-                    // have BOTH a valid function name AND non-empty args. Previously
-                    // this fired on streaming with args={} (still being generated),
-                    // which returned "Empty query" and — because dedup marks the
-                    // call_id — swallowed the eventual response.done with real args.
-                    // Waiting for response.done is safer and produces identical
-                    // behaviour on the good-path where args happen to be complete.
-                    if (functionName && Object.keys(functionArgs).length > 0) {
+                    // Fire only when the arguments STRING is present. Zero-arg
+                    // tools (get_page_context, play_wave_animation) legitimately
+                    // parse to {} — we still want to execute them. The previous
+                    // "Object.keys > 0" gate silently swallowed those. If the
+                    // string is empty/absent we're mid-stream — response.done
+                    // will pick it up with the final args.
+                    const argsReady = typeof functionCall.arguments === 'string' && functionCall.arguments.length > 0;
+                    if (functionName && argsReady) {
                         if (message.response?.id) {
                             this.pendingFunctionCalls.add(message.response.id);
                         }
                         this.executeFunction(functionName, functionArgs, functionCall.call_id, message.response?.id);
                     } else if (functionName) {
-                        // Args not ready yet — response.done will pick this up with complete args
                         console.log('[Erica] 🔍 Function call args not yet complete, deferring to response.done');
                     } else {
-                        console.warn('[Erica] ⚠️ Function call missing name:', { functionName, hasArgs: Object.keys(functionArgs).length > 0 });
+                        console.warn('[Erica] ⚠️ Function call missing name');
                     }
                 }
                 break;
@@ -7604,16 +7603,18 @@ class VoiceChatBot {
                                     console.error('[Erica] Error parsing function arguments:', error);
                                 }
 
-                                // Only process if we have valid arguments
-                                if (functionName && Object.keys(functionArgs).length > 0) {
-                                    // Track this function call
+                                // response.done means args are FINAL — fire on
+                                // presence of the name, even if args parsed to {}
+                                // (zero-arg tools like get_page_context /
+                                // play_wave_animation are legitimate). The old
+                                // "length > 0" gate silently swallowed those.
+                                if (functionName) {
                                     if (responseId) {
                                         this.pendingFunctionCalls.add(responseId);
                                     }
-
                                     this.executeFunction(functionName, functionArgs, functionCall.call_id, responseId);
                                 } else {
-                                    console.warn('[Erica] ⚠️ Function call missing name or arguments:', { functionName, hasArgs: Object.keys(functionArgs).length > 0 });
+                                    console.warn('[Erica] ⚠️ Function call missing name');
                                 }
                             }
                         });
