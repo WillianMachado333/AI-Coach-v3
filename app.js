@@ -3532,6 +3532,63 @@ class VoiceChatBot {
         }
     }
 
+    // Silent parent-page snapshot at boot (and on periodic refresh). Same
+    // pattern as _syncUserActivityIntoPrompt: fetch → build block → strip
+    // any previous block → prepend → reconfigure session. This is what
+    // grounds Erica's FIRST turn in the page the user is actually reading
+    // instead of forcing them to say "look at my page first".
+    async _syncPageContextIntoPrompt() {
+        try {
+            const snap = await this._requestPageContextFromBridge(1500);
+            if (!snap || !snap.text) return;
+
+            const headingsStr = Array.isArray(snap.headings) && snap.headings.length
+                ? snap.headings.slice(0, 12).map((h) => `- ${h}`).join('\n')
+                : '(none extracted)';
+
+            // Cap text at 4 KB — enough to ground, small enough that it
+            // doesn't dominate the ~18 KB instructions budget.
+            const bodyText = (snap.text || '').slice(0, 4000);
+
+            const pageBlock = [
+                '',
+                '=== CURRENT PAGE CONTEXT (live, from the page the user is viewing) ===',
+                'This is what THIS user is looking at RIGHT NOW. Reference it naturally',
+                'when they say "this page", "this report", "here", etc. Do NOT read the',
+                'text verbatim — use it to make your first turn feel like you\'re in',
+                'the room with them, seeing what they see.',
+                '',
+                'Title: ' + (snap.title || '(untitled)'),
+                'URL: ' + (snap.url || '(unknown)'),
+                '',
+                'Section outline:',
+                headingsStr,
+                '',
+                'Visible text (truncated):',
+                bodyText,
+                '=== END CURRENT PAGE CONTEXT ==='
+            ].join('\n');
+
+            let base = this.customInstructions || '';
+            base = base.replace(
+                /\n?=== CURRENT PAGE CONTEXT \(live[\s\S]*?=== END CURRENT PAGE CONTEXT ===\n?/g,
+                ''
+            );
+            this.customInstructions = pageBlock + '\n\n' + base;
+
+            if (this.isConnected && typeof this.configureSession === 'function') {
+                console.log('[Erica] 🌐 Page context injected into prompt:', {
+                    title: snap.title,
+                    headings: (snap.headings || []).length,
+                    textChars: bodyText.length
+                });
+                this.configureSession();
+            }
+        } catch (e) {
+            console.warn('[Erica] page context injection failed:', e?.message || e);
+        }
+    }
+
     async _fetchDynamicFollowUps() {
         // Grab the tail of the conversation. Use this.messages (the canonical
         // in-memory store) so we get the exact final text after streaming.
@@ -5413,6 +5470,10 @@ class VoiceChatBot {
                 if (!this._activitySyncStarted) {
                     this._activitySyncStarted = true;
                     this._syncUserActivityIntoPrompt();
+                    // Also fetch the page the user is looking at, so
+                    // Erica's first turn is already grounded — no need to
+                    // say "look at my page first". Runs silently.
+                    this._syncPageContextIntoPrompt();
                     // Also poll periodically so Erica stays aware of
                     // things the user does DURING the session (page
                     // navigations, new quiz starts, etc). Silent — only
@@ -5420,6 +5481,7 @@ class VoiceChatBot {
                     if (!this._activitySyncInterval) {
                         this._activitySyncInterval = setInterval(() => {
                             this._syncUserActivityIntoPrompt();
+                            this._syncPageContextIntoPrompt();
                         }, 90 * 1000);
                     }
                 }
