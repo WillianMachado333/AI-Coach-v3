@@ -2066,6 +2066,18 @@ class VoiceChatBot {
         this.messages = [];
         this.messageElements.clear();
         if (this.chatMessages) {
+            // The pill container (#quickActions) may have been re-parented
+            // into #chatMessages by renderQuickActions on a prior turn. A raw
+            // innerHTML wipe would delete it — after which
+            // document.getElementById('quickActions') silently returns null
+            // and renderQuickActions becomes a no-op for the rest of the
+            // session. Detach the pill container before clearing, re-attach
+            // afterwards (hidden — the caller re-shows it when appropriate).
+            const pills = document.getElementById('quickActions');
+            if (pills && this.chatMessages.contains(pills)) {
+                pills.classList.add('hidden');
+                this.chatMessages.parentElement?.appendChild(pills);
+            }
             this.chatMessages.innerHTML = '';
         }
 
