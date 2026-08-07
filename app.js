@@ -2477,13 +2477,16 @@ class VoiceChatBot {
     }
 
     async _requestPageContextFromBridge(timeoutMs = 2500) {
-        if (!window.parent || window.parent === window) return null;
+        // Post to parent when framed (real flow); post to own window when
+        // top-level (test/dev harness with a mocked listener). Either way a
+        // PAGE_CONTEXT_RESPONSE message resolves the waiter.
+        const target = (window.parent && window.parent !== window) ? window.parent : window;
         return new Promise((resolve) => {
             if (!Array.isArray(this._pageContextWaiters)) this._pageContextWaiters = [];
             let done = false;
             const finish = (v) => { if (done) return; done = true; resolve(v || null); };
             this._pageContextWaiters.push(finish);
-            try { window.parent.postMessage({ type: 'REQUEST_PAGE_CONTEXT' }, '*'); } catch (_) { /* non-fatal */ }
+            try { target.postMessage({ type: 'REQUEST_PAGE_CONTEXT' }, '*'); } catch (_) { /* non-fatal */ }
             setTimeout(() => finish(null), timeoutMs);
         });
     }
