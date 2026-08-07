@@ -1652,7 +1652,11 @@
                     const toggle = document.createElement('button');
                     toggle.type = 'button';
                     toggle.setAttribute('data-collapse-toggle', '1');
-                    toggle.className = 'block mt-2 text-xs font-semibold text-primary hover:underline focus:outline-none';
+                    // Bubble bg for assistant is bg-primary (teal), so a
+                    // text-primary button on it is INVISIBLE. Use white with
+                    // opacity + underline so it reads on both bubble colours
+                    // and is obvious as a clickable affordance.
+                    toggle.className = 'block mt-2 text-xs font-semibold text-white/90 hover:text-white underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-white/40 rounded';
                     toggle.textContent = 'Show more';
                     toggle.addEventListener('click', () => {
                         const collapsed = textElement.getAttribute('data-collapsed') === '1';
