@@ -60,38 +60,32 @@
 <body
     class="bg-gray-50 h-[100dvh] w-full overflow-hidden flex flex-col font-sans text-gray-800 antialiased selection:bg-teal-100 selection:text-teal-900">
 
-    <!-- Header: Glassmorphism -->
+    <!-- Header: minimal. Back-arrow + Erica name/status/coach-type were
+         removed to reclaim vertical space — Erica is now the persistent
+         corner icon on the parent page (which also carries connection
+         state via a coloured ring), and coach switching / rename live in
+         the ⋮ menu on the right. Header shrunk to h-9 (36px) and only
+         hosts that menu button. Elements below are kept in the DOM as
+         `hidden` so app.js / uiLayout.js references don't error. -->
     <header style="z-index: 60;"
-        class="fixed top-0 left-0 right-0 bg-white/90 backdrop-blur-md border-b border-borderColor transition-all duration-300">
-        <div class="w-full px-2 py-2 h-14 flex items-center justify-center relative">
-            <!-- Back Button (Absolute Left) -->
-            <button id="backToCoachListBtn"
-                class="absolute left-2 w-[40px] h-[40px] text-iconColor transition-colors rounded-xl hover:bg-accent hover:text-accentText z-10"
-                type="button" aria-label="Back to coach list">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-                    class="m-auto">
-                    <path d="m15 18-6-6 6-6" />
-                </svg>
-            </button>
+        class="fixed top-0 left-0 right-0 bg-white/70 backdrop-blur-md transition-all duration-300">
+        <div class="w-full px-2 py-1 h-9 flex items-center justify-end relative">
+            <button id="backToCoachListBtn" class="hidden"
+                type="button" aria-label="Back to coach list"></button>
 
-            <!-- Centered Profile Info -->
-            <div class="flex items-center gap-3" id="agentHeaderProfile">
+            <div class="hidden" id="agentHeaderProfile">
                 <div class="flex flex-col items-center">
                     <div class="flex flex-row items-center gap-2">
-                        <h1 class="text-sm font-semibold text-gray-900 leading-tight" id="agentNameDisplay">Erica
-                        </h1>
-                        <div id="connectionStatusDot"
-                            class="w-2 h-2 bg-gray-300 rounded-full transition-colors duration-300">
-                        </div>
+                        <h1 class="text-sm font-semibold text-gray-900 leading-tight" id="agentNameDisplay">Erica</h1>
+                        <div id="connectionStatusDot" class="w-2 h-2 bg-gray-300 rounded-full transition-colors duration-300"></div>
                         <span class="text-xs text-teal-600 font-medium opacity-0 transition-opacity duration-300"
                             id="connectionStatusText">Offline</span>
                     </div>
                     <span id="coachTypeText" class="text-xs font-medium text-iconColor">Supportive</span>
                 </div>
             </div>
-            <!-- More Menu Button (Absolute Right) -->
-            <div class="absolute right-2 z-10">
+            <!-- ⋮ menu (right-aligned; only interactive element left in header) -->
+            <div class="z-10">
                 <div class="relative">
                     <button id="moreMenuBtn"
                         class="w-[40px] h-[40px] text-iconColor transition-colors p-2 rounded-xl hover:bg-accent hover:text-accentText"
@@ -174,8 +168,8 @@
         </div>
     </header>
 
-    <!-- Main Chat Area -->
-    <main class="flex-1 overflow-y-auto overflow-x-hidden pt-20 pb-28 px-4 scroll-smooth w-full bg-white/80 relative"
+    <!-- Main Chat Area — pt-12 accounts for the compact h-9 header. -->
+    <main class="flex-1 overflow-y-auto overflow-x-hidden pt-12 pb-28 px-4 scroll-smooth w-full bg-white/80 relative"
         id="chatContainer">
         <!-- Connection loader overlay — shown when connecting/disconnected -->
         <div id="connectionLoader" class="absolute inset-0 flex items-center justify-center bg-white/70 z-10 hidden">

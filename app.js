@@ -7827,6 +7827,17 @@ class VoiceChatBot {
         // Update Internal State
         this.isConnected = connected;
 
+        // Broadcast to the parent-page bridge so the corner icon's ring
+        // reflects connection state (green connected / red offline).
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage(
+                    { type: 'CT_CONNECTION_STATE', state: connected ? 'connected' : 'disconnected' },
+                    '*'
+                );
+            }
+        } catch (_) { /* non-fatal */ }
+
         // Fire connected/disconnected events to parent app (e.g. mobile app via postMessage)
         // Guard with _lastReportedConnected to avoid duplicate events on redundant calls
         try {

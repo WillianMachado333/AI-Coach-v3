@@ -27,13 +27,14 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T06:15-clean-icon';
+    var VERSION = '2026-08-07T06:45-connection-ring';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
-    // Use the FULL-resolution clips (not the 84p downsampled variants) so
-    // the 64×64 corner icon stays sharp on retina displays. Bandwidth cost
-    // is tiny per session (single load + loop) and worth the crispness.
-    var ICON_IDLE_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/idle/Erica.webm';
+    // 84p is actually the HIGHEST resolution we have for Erica webm clips
+    // (base /companions/idle/Erica.webm is smaller than the 84p variant —
+    // odd naming). PNG thumb is higher-res than any video and is used as
+    // the resting background layer so the icon reads crisp when idle.
+    var ICON_IDLE_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/idle/84p/Erica.webm';
     var ICON_SPEAKING_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/speaking/84p/Erica.webm';
     var ICON_WAVING_MP4 = 'https://web-production-2c7ff.up.railway.app/companions/waving/Erica.mp4';
     var ICON_ID = 'ct-bridge-icon';
@@ -107,6 +108,14 @@
         // pre-open glimpse).
         if (event.data.type === 'PILL_LABELS' && Array.isArray(event.data.labels)) {
             renderHoverPills(event.data.labels);
+            return;
+        }
+
+        // Iframe app broadcasts realtime connection state
+        // ('connected' | 'connecting' | 'disconnected' | 'onhold').
+        // Bridge recolours the ring around the corner icon.
+        if (event.data.type === 'CT_CONNECTION_STATE' && typeof event.data.state === 'string') {
+            setConnectionState(event.data.state);
             return;
         }
     });
@@ -192,6 +201,24 @@
     function toggleChat() {
         if (state === 'expanded') collapseToIcon();
         else expandToChat();
+    }
+
+    // Colour the ring around the corner icon to reflect connection state.
+    // green = ready, amber = connecting, red = disconnected, blue = onhold.
+    function setConnectionState(s) {
+        var icon = document.getElementById(ICON_ID);
+        if (!icon) return;
+        var colour;
+        switch (s) {
+            case 'connected': colour = '#22c55e'; break;
+            case 'connecting': colour = '#f59e0b'; break;
+            case 'disconnected': colour = '#ef4444'; break;
+            case 'onhold': colour = '#6b7280'; break;
+            default: colour = '#f59e0b';
+        }
+        mergeStyle(icon, {
+            'box-shadow': '0 0 0 3px ' + colour + ', 0 6px 18px rgba(0,0,0,0.18)'
+        });
     }
 
     // --- Hover-glimpse pills ---
@@ -420,11 +447,17 @@
             outline: 'none',
             padding: '0',
             cursor: 'pointer',
-            background: '#fff center/cover no-repeat url("' + ICON_STILL_SRC + '")',
-            'box-shadow': '0 6px 18px rgba(0,0,0,0.18)',
+            background: '#e5e7eb center/cover no-repeat url("' + ICON_STILL_SRC + '")',
+            // Two-part box-shadow: inner ring encodes connection state
+            // (green connected / amber connecting / grey offline), outer
+            // shadow is the elevation. Starts amber ("connecting").
+            'box-shadow': '0 0 0 3px #f59e0b, 0 6px 18px rgba(0,0,0,0.18)',
             overflow: 'hidden',
-            transition: 'opacity 200ms ease, transform 200ms ease, box-shadow 200ms ease',
-            opacity: '1'
+            transition: 'opacity 200ms ease, transform 200ms ease, box-shadow 300ms ease',
+            opacity: '1',
+            // Hint to the browser to render pixel-perfect over the video —
+            // marginal but visible at retina 72px on top of 84p source.
+            'image-rendering': '-webkit-optimize-contrast'
         });
 
         // Three stacked <video> layers inside the icon: idle (bottom,

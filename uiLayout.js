@@ -1075,12 +1075,16 @@
             app.centerCoachAvatar.classList.toggle('coach-speaking', clamped > 0.04 && !!app.isSoundEnabled);
         }
 
+        // Voice bars replaced by a gentle colour shift on the speaker button
+        // itself (subtler, matches the flat design of the compact controls
+        // bar). Bars kept hidden regardless of state.
         if (app.voiceBars) {
-            if (clamped > 0.04 && !!app.isSoundEnabled) {
-                app.voiceBars.style.display = 'flex';
-            } else {
-                app.voiceBars.style.display = 'none';
-            }
+            app.voiceBars.style.display = 'none';
+        }
+        if (app.callSpeakerBtn) {
+            const isSpeaking = clamped > 0.04 && !!app.isSoundEnabled;
+            app.callSpeakerBtn.style.color = isSpeaking ? 'rgb(20, 184, 166)' : '';
+            app.callSpeakerBtn.style.background = isSpeaking ? 'rgba(20, 184, 166, 0.12)' : '';
         }
 
         // Smooth fade transitions for speaking video with delayed hiding
