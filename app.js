@@ -3797,6 +3797,15 @@ class VoiceChatBot {
 
     // Video playback methods - supports both idle and speaking animations
     updateCurrentVoiceVideo(state) {
+        // Broadcast avatar animation state to the parent-page bridge so
+        // the persistent corner-icon can animate in sync with the coach's
+        // in-iframe avatar. Fires on every state transition (idle/speaking).
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'CT_ICON_ANIMATION', name: state }, '*');
+            }
+        } catch (_) { /* non-fatal */ }
+
         if (!this.currentVoiceProfile || !this.currentVoiceVideo || !this.currentVoiceThumb) return;
 
         // Force idle-only mode for now
@@ -3956,6 +3965,20 @@ class VoiceChatBot {
     }
 
     playWaveAnimation() {
+        // Broadcast wave animation to parent bridge so the corner icon also
+        // plays the wave GIF. Falls back to idle after ~2.5s (typical wave
+        // clip length).
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'CT_ICON_ANIMATION', name: 'waving' }, '*');
+                setTimeout(() => {
+                    try {
+                        window.parent.postMessage({ type: 'CT_ICON_ANIMATION', name: 'idle' }, '*');
+                    } catch (_) { /* non-fatal */ }
+                }, 2500);
+            }
+        } catch (_) { /* non-fatal */ }
+
         // Delegate to UI Layout to play wave in call mode panel
         if (window.uiLayout && typeof window.uiLayout.playCallModeWave === 'function') {
             window.uiLayout.playCallModeWave(this);

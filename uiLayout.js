@@ -1552,40 +1552,22 @@
             // Text element
             const p = document.createElement('p');
 
+            // Chat is INVERTED from classic messenger layout:
+            //   - Erica (bot): RIGHT side, near the persistent corner icon
+            //   - User: LEFT side
+            // Erica's bubble no longer carries an inline avatar — she IS the
+            // corner icon on the parent page, so repeating a thumbnail per
+            // bubble is redundant clutter.
             if (message.role === 'user') {
-                // User Style: Right aligned, Teal, White text
+                messageDiv.classList.add('justify-start');
+                contentWrapper.className = 'max-w-[80%] bg-lightGray backdrop-blur-sm border border-gray-100 rounded-2xl rounded-bl-md px-4 py-3 text-[14px] leading-relaxed text-gray-700 select-text';
+                contentWrapper.appendChild(p);
+                messageDiv.appendChild(contentWrapper);
+            } else {
                 messageDiv.classList.add('justify-end');
                 contentWrapper.className = 'max-w-[80%] bg-primary text-white rounded-2xl rounded-br-md px-4 py-3 text-[14px] leading-relaxed select-text';
                 contentWrapper.appendChild(p);
                 messageDiv.appendChild(contentWrapper);
-            } else {
-                // Bot Style: Left aligned, White, Gray text with coach avatar
-                messageDiv.classList.add('justify-start');
-                contentWrapper.className = 'max-w-[80%] bg-lightGray backdrop-blur-sm border border-gray-100 rounded-2xl rounded-bl-md px-4 py-3 text-[14px] leading-relaxed text-gray-700 select-text';
-                contentWrapper.appendChild(p);
-
-                const row = document.createElement('div');
-                row.className = 'flex items-start gap-3 w-full';
-
-                const avatarWrap = document.createElement('div');
-                avatarWrap.className = 'w-9 h-9 rounded-full overflow-hidden bg-white border border-gray-200 flex items-center justify-center flex-shrink-0';
-
-                const avatarImg = document.createElement('img');
-                avatarImg.className = 'w-full h-full object-cover';
-                avatarImg.alt = message.companionName || 'Coach';
-                if (message.companionThumb) {
-                    let thumbSrc = message.companionThumb;
-                    const ci = thumbSrc.indexOf('/companions/');
-                    if (ci > 0 && !thumbSrc.startsWith('http') && typeof app?.apiUrl === 'function') {
-                        thumbSrc = app.apiUrl(thumbSrc.substring(ci));
-                    }
-                    avatarImg.src = thumbSrc;
-                }
-
-                avatarWrap.appendChild(avatarImg);
-                row.appendChild(avatarWrap);
-                row.appendChild(contentWrapper);
-                messageDiv.appendChild(row);
             }
 
             messageDiv._textElement = p;
