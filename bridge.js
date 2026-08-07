@@ -27,13 +27,16 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T04:45-icon-video';
+    var VERSION = '2026-08-07T05:15-speaking-clip';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     var ICON_IDLE_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/idle/84p/Erica.webm';
+    var ICON_SPEAKING_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/speaking/84p/Erica.webm';
     var ICON_WAVING_MP4 = 'https://web-production-2c7ff.up.railway.app/companions/waving/Erica.mp4';
     var ICON_ID = 'ct-bridge-icon';
-    var VIDEO_ID = 'ct-bridge-icon-video';
+    var IDLE_VIDEO_ID = 'ct-bridge-icon-video-idle';
+    var SPEAKING_VIDEO_ID = 'ct-bridge-icon-video-speaking';
+    var WAVING_VIDEO_ID = 'ct-bridge-icon-video-waving';
     var CONTAINER_ID = 'ct-bridge-container';
     var IFRAME_ID = 'ct-bridge-iframe';
 
@@ -180,63 +183,64 @@
     }
 
     // --- Icon animation ---
-    // The corner icon hosts an actual <video> element playing Erica's
-    // idle clip on loop. When the iframe app broadcasts CT_ICON_ANIMATION
-    // we swap the video source: 'waving' plays the wave clip once and
-    // returns to idle; 'speaking' just keeps idle (there is no Erica-
-    // specific speaking clip today — falls back to a subtle CSS pulse on
-    // the icon so the user still sees "she is talking"); anything else
-    // returns to idle.
-    function ensureIconKeyframes() {
-        if (document.getElementById('ct-bridge-keyframes')) return;
-        var s = document.createElement('style');
-        s.id = 'ct-bridge-keyframes';
-        s.textContent = [
-            '@keyframes ctBridgePulse {',
-            '  0%,100% { transform: scale(1); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }',
-            '  50%    { transform: scale(1.08); box-shadow: 0 12px 32px rgba(20, 184, 166, 0.5); }',
-            '}',
-            '#' + ICON_ID + '.ct-anim-speaking { animation: ctBridgePulse 900ms ease-in-out infinite; }'
-        ].join('');
-        document.head.appendChild(s);
-    }
-    function setVideoSource(video, src) {
-        if (!video) return;
-        // Only reload if source changes — otherwise we'd stall the loop.
-        if (video.getAttribute('src') === src) return;
-        video.setAttribute('src', src);
-        try { video.load(); video.play().catch(function () {}); } catch (_) {}
-    }
+    // Three video layers stacked inside the corner icon:
+    //   1. IDLE  — always looping in the background at opacity 1
+    //   2. SPEAKING — same-size overlay, fades in when Erica is talking
+    //      (crossfade preserves the "she smoothly starts / stops speaking"
+    //      feel the previous mini-player had; NOT a mechanical pulse)
+    //   3. WAVING — top layer, plays once on demand, hides after 2.5s
+    //
+    // The previous in-chat mini-player used the same trio (idle + speaking
+    // + wave with opacity crossfade + 500ms hide-delay) — this replicates
+    // that on the corner icon.
     function setIconAnimation(name) {
-        var icon = document.getElementById(ICON_ID);
-        var video = document.getElementById(VIDEO_ID);
-        if (!icon) return;
-        ensureIconKeyframes();
-        icon.classList.remove('ct-anim-speaking');
-        // Reset any prior "revert to idle" scheduled by waving.
-        if (icon._ctRevertTimer) { clearTimeout(icon._ctRevertTimer); icon._ctRevertTimer = null; }
+        var idleV = document.getElementById(IDLE_VIDEO_ID);
+        var speakV = document.getElementById(SPEAKING_VIDEO_ID);
+        var waveV = document.getElementById(WAVING_VIDEO_ID);
 
         if (name === 'waving') {
-            setVideoSource(video, ICON_WAVING_MP4);
-            if (video) { video.loop = false; }
-            // After a typical wave clip length, revert to idle loop.
-            icon._ctRevertTimer = setTimeout(function () {
-                setVideoSource(video, ICON_IDLE_WEBM);
-                if (video) { video.loop = true; }
-            }, 2500);
+            if (waveV) {
+                waveV.style.display = 'block';
+                try { waveV.currentTime = 0; waveV.play().catch(function () {}); } catch (_) {}
+            }
+            // Hide wave after ~2.5s (typical wave clip length) so we don't
+            // leave the frozen last frame stuck on top of idle.
+            if (waveV && waveV._ctHideTimer) clearTimeout(waveV._ctHideTimer);
+            if (waveV) {
+                waveV._ctHideTimer = setTimeout(function () {
+                    waveV.style.display = 'none';
+                }, 2500);
+            }
             return;
         }
+
         if (name === 'speaking') {
-            // No Erica-specific speaking clip; keep idle looping and add a
-            // CSS pulse so the user reads it as "she's talking".
-            setVideoSource(video, ICON_IDLE_WEBM);
-            if (video) { video.loop = true; }
-            icon.classList.add('ct-anim-speaking');
+            if (speakV) {
+                // Cancel any pending fade-out.
+                if (speakV._ctHideTimer) { clearTimeout(speakV._ctHideTimer); speakV._ctHideTimer = null; }
+                // Show (was display:none) then fade to opacity 0.95 so the
+                // browser has a chance to lay it out before the transition.
+                if (speakV.style.display === 'none') {
+                    speakV.style.display = 'block';
+                    // Force reflow so the opacity transition catches.
+                    void speakV.offsetHeight;
+                }
+                speakV.style.opacity = '0.95';
+                try { speakV.play().catch(function () {}); } catch (_) {}
+            }
             return;
         }
-        // idle / clapping / unknown → default idle loop.
-        setVideoSource(video, ICON_IDLE_WEBM);
-        if (video) { video.loop = true; }
+
+        // idle / anything else → fade speaking out and hide after 500ms
+        // (matches the previous mini-player's fade-tail — avoids choppy
+        // toggling during natural speech pauses).
+        if (speakV) {
+            speakV.style.opacity = '0';
+            if (speakV._ctHideTimer) clearTimeout(speakV._ctHideTimer);
+            speakV._ctHideTimer = setTimeout(function () {
+                if (speakV.style.opacity === '0') speakV.style.display = 'none';
+            }, 500);
+        }
     }
 
     // --- UI injection ---
@@ -315,30 +319,55 @@
             opacity: '1'
         });
 
-        var video = document.createElement('video');
-        video.id = VIDEO_ID;
-        video.muted = true;
-        video.autoplay = true;
-        video.loop = true;
-        video.playsInline = true;
-        video.setAttribute('playsinline', '');
-        video.setAttribute('muted', '');
-        video.setAttribute('src', ICON_IDLE_WEBM);
-        applyStyle(video, {
-            width: '100%',
-            height: '100%',
-            'object-fit': 'cover',
-            display: 'block',
-            'pointer-events': 'none'
-        });
-        icon.appendChild(video);
-        // If webm fails (Safari), fall back to the static thumb so the icon
-        // never appears blank.
-        video.addEventListener('error', function () {
-            video.style.display = 'none';
-        });
-        // Kick off playback (some browsers wait for user gesture).
-        try { video.play().catch(function () {}); } catch (_) {}
+        // Three stacked <video> layers inside the icon: idle (bottom,
+        // always looping), speaking (mid, fades in on voice), wave (top,
+        // pops on demand). Same pattern the previous in-chat mini-player
+        // used — replicated here so the corner icon reads as her actually
+        // speaking, not a metronomic pulse.
+        function makeVideoLayer(id, src, opts) {
+            var v = document.createElement('video');
+            v.id = id;
+            v.muted = true;
+            v.autoplay = !!opts.autoplay;
+            v.loop = !!opts.loop;
+            v.playsInline = true;
+            v.setAttribute('playsinline', '');
+            v.setAttribute('muted', '');
+            v.setAttribute('preload', 'auto');
+            v.setAttribute('src', src);
+            var style = {
+                position: 'absolute',
+                inset: '0',
+                width: '100%',
+                height: '100%',
+                'object-fit': 'cover',
+                display: opts.display || 'block',
+                'pointer-events': 'none',
+                'z-index': String(opts.z || 0),
+                opacity: opts.opacity != null ? String(opts.opacity) : '1',
+                transition: 'opacity 300ms ease'
+            };
+            applyStyle(v, style);
+            v.addEventListener('error', function () { v.style.display = 'none'; });
+            return v;
+        }
+
+        // Icon needs to be a positioned container for absolute children.
+        mergeStyle(icon, { position: 'fixed', overflow: 'hidden' });
+
+        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, ICON_IDLE_WEBM,
+            { autoplay: true, loop: true, z: 10, opacity: 1 });
+        var speakingVideo = makeVideoLayer(SPEAKING_VIDEO_ID, ICON_SPEAKING_WEBM,
+            { autoplay: true, loop: true, z: 20, opacity: 0, display: 'none' });
+        var wavingVideo = makeVideoLayer(WAVING_VIDEO_ID, ICON_WAVING_MP4,
+            { autoplay: false, loop: false, z: 30, opacity: 1, display: 'none' });
+
+        icon.appendChild(idleVideo);
+        icon.appendChild(speakingVideo);
+        icon.appendChild(wavingVideo);
+
+        // Kick off idle playback (some browsers require explicit call).
+        try { idleVideo.play().catch(function () {}); } catch (_) {}
 
         icon.addEventListener('click', toggleChat);
         document.body.appendChild(icon);
