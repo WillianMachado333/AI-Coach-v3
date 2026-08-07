@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T03:00-atomic-style';
+    var VERSION = '2026-08-07T03:15-transform-scale';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     var ICON_ID = 'ct-bridge-icon';
@@ -126,6 +126,13 @@
     }
 
     // --- State transitions ---
+    // We do NOT animate width/height because Wix's page layout under the
+    // stylesheet aggressively pins any fixed element on <body> to whatever
+    // width it observed at creation, and further changes to `width` don't
+    // relayout. Instead we keep the container at its full 420×640 size
+    // permanently, and use `transform: scale(...)` from the bottom-right
+    // corner to shrink it to 0 visually while in icon mode. Layout box stays
+    // stable; the visual effect is identical (grows out of the icon corner).
     function expandToChat() {
         if (state === 'expanded') return;
         state = 'expanded';
@@ -134,11 +141,9 @@
         var closeBtn = document.getElementById(CLOSE_BTN_ID);
         mergeStyle(icon, { opacity: '0', transform: 'scale(0.4)', 'pointer-events': 'none' });
         mergeStyle(container, {
-            width: '420px',
-            height: '640px',
+            transform: 'scale(1)',
             opacity: '1',
-            'pointer-events': 'auto',
-            'border-radius': '18px'
+            'pointer-events': 'auto'
         });
         mergeStyle(closeBtn, { opacity: '1', 'pointer-events': 'auto' });
         var iframe = document.getElementById(IFRAME_ID);
@@ -154,11 +159,9 @@
         var container = document.getElementById(CONTAINER_ID);
         var closeBtn = document.getElementById(CLOSE_BTN_ID);
         mergeStyle(container, {
-            width: '0',
-            height: '0',
+            transform: 'scale(0)',
             opacity: '0',
-            'pointer-events': 'none',
-            'border-radius': '60px'
+            'pointer-events': 'none'
         });
         mergeStyle(closeBtn, { opacity: '0', 'pointer-events': 'none' });
         if (icon) {
@@ -189,19 +192,20 @@
             position: 'fixed',
             right: '20px',
             bottom: '20px',
-            width: '0',
-            height: '0',
+            width: '420px',
+            height: '640px',
             'max-width': 'calc(100vw - 40px)',
             'max-height': 'calc(100vh - 40px)',
             'z-index': '9998',
             background: '#fff',
-            'border-radius': '60px',
+            'border-radius': '18px',
             'box-shadow': '0 12px 40px rgba(0,0,0,0.25)',
             overflow: 'hidden',
             opacity: '0',
             'pointer-events': 'none',
+            transform: 'scale(0)',
             'transform-origin': '100% 100%',
-            transition: 'width 260ms cubic-bezier(0.2,0.9,0.3,1), height 260ms cubic-bezier(0.2,0.9,0.3,1), opacity 200ms ease, border-radius 260ms ease'
+            transition: 'transform 260ms cubic-bezier(0.2,0.9,0.3,1), opacity 200ms ease'
         });
 
         var iframe = document.createElement('iframe');
