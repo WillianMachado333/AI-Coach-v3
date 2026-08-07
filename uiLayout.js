@@ -1618,14 +1618,75 @@
 
         // Update Text
         const textElement = messageDiv._textElement;
-        /*if (textElement) {
-            textElement.textContent = message.text || '';
-        }*/
         if (textElement) {
             if (message.final) {
                 textElement.innerHTML = formatText(message.text || '');
             } else {
                 textElement.textContent = message.text || ''; // plain during streaming
+            }
+        }
+
+        // Collapse LONG assistant messages into a "show more" preview so a
+        // single big reply doesn't dominate the scroll. Only applied on the
+        // final text (streaming previews are always shown in full) and only
+        // to assistant bubbles (user messages are user-authored, no need).
+        // Threshold: 480 chars OR 6+ line breaks. Preview shows first ~280
+        // chars followed by an ellipsis + "Show more" toggle.
+        if (message.final && message.role !== 'user' && textElement) {
+            const raw = (message.text || '').trim();
+            const isLong = raw.length > 480 || (raw.match(/\n/g) || []).length >= 6;
+            const existingToggle = messageDiv.querySelector('[data-collapse-toggle]');
+            if (isLong) {
+                // Only build UI the first time; on subsequent updates (streaming
+                // → final) preserve the user's current expand state.
+                if (!existingToggle) {
+                    // Wrap textElement so we can clip its max height.
+                    textElement.setAttribute('data-collapsed', '1');
+                    textElement.style.maxHeight = '7.2em';
+                    textElement.style.overflow = 'hidden';
+                    textElement.style.position = 'relative';
+                    // Gradient fade at the bottom to hint "more below".
+                    textElement.style.webkitMaskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
+                    textElement.style.maskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
+
+                    const toggle = document.createElement('button');
+                    toggle.type = 'button';
+                    toggle.setAttribute('data-collapse-toggle', '1');
+                    toggle.className = 'block mt-2 text-xs font-semibold text-primary hover:underline focus:outline-none';
+                    toggle.textContent = 'Show more';
+                    toggle.addEventListener('click', () => {
+                        const collapsed = textElement.getAttribute('data-collapsed') === '1';
+                        if (collapsed) {
+                            textElement.setAttribute('data-collapsed', '0');
+                            textElement.style.maxHeight = '';
+                            textElement.style.overflow = '';
+                            textElement.style.webkitMaskImage = '';
+                            textElement.style.maskImage = '';
+                            toggle.textContent = 'Show less';
+                        } else {
+                            textElement.setAttribute('data-collapsed', '1');
+                            textElement.style.maxHeight = '7.2em';
+                            textElement.style.overflow = 'hidden';
+                            textElement.style.webkitMaskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
+                            textElement.style.maskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
+                            toggle.textContent = 'Show more';
+                            // Scroll bubble back into view after collapsing.
+                            messageDiv.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                        }
+                    });
+                    // Append the toggle to the content wrapper (bubble) so
+                    // it appears inside the bubble, right below the text.
+                    (messageDiv._contentWrapper || textElement.parentElement || messageDiv).appendChild(toggle);
+                }
+            } else if (existingToggle) {
+                // Message shrank below threshold (edit/rewrite) — remove toggle
+                // and restore full display.
+                existingToggle.remove();
+                textElement.removeAttribute('data-collapsed');
+                textElement.style.maxHeight = '';
+                textElement.style.overflow = '';
+                textElement.style.webkitMaskImage = '';
+                textElement.style.maskImage = '';
             }
         }
 
