@@ -4232,15 +4232,10 @@ class VoiceChatBot {
         return true;
     }*/
     checkVoiceLimit() {
-        if (!this.questionsLimit) return true; // No limit enforced
-
-        const usage = this._loadVoiceUsage();
-        const effectiveCount = Math.max(usage.count, this._serverVoiceUsageCount || 0);
-
-        if (effectiveCount >= this.questionsLimit) {
-            console.warn(`[Erica] Voice limit reached: ${effectiveCount}/${this.questionsLimit}`);
-            return false;
-        }
+        // Prototype phase: no daily voice-mode limit. Same reasoning as the
+        // login-gate removal — a cap here right now would kill the exact
+        // evaluation loop we need. Reintroduce once we see real usage,
+        // ideally as a per-guest cap keyed off the CleverTap objectId.
         return true;
     }
 
