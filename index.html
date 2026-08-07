@@ -216,15 +216,15 @@
         </svg>
     </button>
 
-    <!-- Call Mode Panel (compact bar above the input, single row of small
-         icon buttons — Erica lives on the parent-page corner icon, so this
-         panel is now just controls, not a stage). -->
+    <!-- Call Mode Panel (compact bar, right-anchored so it sits close to
+         Erica's corner icon on the parent page — controls belong with her,
+         not centred in the chat). -->
     <div id="callModePanel"
-        class="fixed left-0 right-0 z-30 px-4 pointer-events-none bottom-[86px] translate-y-10 opacity-0 transition-all duration-300">
-        <div class="w-full pointer-events-auto">
+        class="fixed right-3 z-30 pointer-events-none bottom-[86px] translate-y-10 opacity-0 transition-all duration-300">
+        <div class="pointer-events-auto">
             <div
-                class="bg-white/90 backdrop-blur-md border border-borderColor shadow-sm rounded-full px-3 py-1.5 overflow-visible inline-flex items-center gap-3">
-                <div class="flex items-center justify-center gap-3">
+                class="bg-white/90 backdrop-blur-md border border-borderColor shadow-sm rounded-full px-2 py-1 overflow-visible inline-flex items-center gap-2">
+                <div class="flex items-center justify-end gap-2">
                     <!-- Left: Speaker toggle (compact) -->
                     <div class="flex items-center gap-1 flex-col relative">
                         <button id="callSpeakerBtn" type="button"

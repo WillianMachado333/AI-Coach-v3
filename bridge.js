@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T06:45-connection-ring';
+    var VERSION = '2026-08-07T07:15-forward-pills';
     var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     // 84p is actually the HIGHEST resolution we have for Erica webm clips
@@ -482,6 +482,12 @@
                 width: '100%',
                 height: '100%',
                 'object-fit': 'cover',
+                // Slight upscale (10%) hides the letterbox band the source
+                // clips carry (character centred on a small black frame).
+                // Combined with the icon's overflow:hidden this crops the
+                // black edge without visibly shrinking the character.
+                transform: 'scale(1.1)',
+                'transform-origin': 'center 40%',
                 display: opts.display || 'block',
                 'pointer-events': 'none',
                 'z-index': String(opts.z || 0),

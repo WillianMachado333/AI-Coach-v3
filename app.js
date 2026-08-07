@@ -3209,9 +3209,9 @@ class VoiceChatBot {
         // recognisable coaching frame that plays to that persona's strengths.
         const starter = {
             Supportive: [
-                "I'm feeling overwhelmed and need to slow down",
                 "Help me find a small first step I can take",
-                "Just help me sort through what I'm feeling"
+                "What's really going on beneath this?",
+                "How would I explain this to myself clearly?"
             ],
             Directive: [
                 "What's the next best step I should take?",
@@ -3254,9 +3254,9 @@ class VoiceChatBot {
         // the conversation moving forward with beats natural to that persona.
         const continuation = {
             Supportive: [
-                "Tell me more",
                 "What's a small next step from here?",
-                "Can we slow down and stay with this?"
+                "What's underneath what I just said?",
+                "How does this connect to what matters most to me?"
             ],
             Directive: [
                 "What do I do next?",
@@ -3286,7 +3286,7 @@ class VoiceChatBot {
             Nurturing: [
                 "Say more about that",
                 "Help me name this feeling",
-                "Just sit with me for a moment"
+                "How can I move gently on this?"
             ],
             Strengths: [
                 "What strength can I use here?",
