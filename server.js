@@ -20,6 +20,7 @@ const admin = require('./lib/admin');
 // Session logger — persists Erica sessions for the Coach Studio observatory.
 const sessionLog = require('./lib/sessionLog');
 const studioAgent = require('./lib/studioAgent');
+const simulator = require('./lib/simulator');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -437,6 +438,7 @@ function fetchOpenAIKey() {
                         try {
                             vectorStore.initClient(openAIKey);
                             studioAgent.setClient(vectorStore.getClientOrNull());
+                            simulator.setClient(vectorStore.getClientOrNull());
                             console.log('[SERVER] vectorStore client initialised');
                         } catch (vsErr) {
                             console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
@@ -613,6 +615,54 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify(out));
             } catch (e) {
                 console.error('[SERVER] /api/admin/studio-chat error:', e?.message || e);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
+            }
+        });
+        return;
+    }
+
+    // Simulator — admin-only. body: { personaName, guardrails, extraDirective,
+    // userMessage, priorTurns?, replaySessionId?, replayTurnIndex? }
+    // If replaySessionId+replayTurnIndex are provided, we prefill userMessage
+    // and priorTurns from that session (if not redacted).
+    if (req.url === '/api/admin/simulate' && req.method === 'POST') {
+        const session = admin.requireAdminSession(req);
+        if (!session) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        let body = '';
+        req.on('data', (c) => { body += c.toString(); });
+        req.on('end', async () => {
+            try {
+                const p = body ? JSON.parse(body) : {};
+                let userMessage = p.userMessage;
+                let priorTurns = Array.isArray(p.priorTurns) ? p.priorTurns : [];
+                let originalResponse = null;
+                if (p.replaySessionId && Number.isFinite(p.replayTurnIndex)) {
+                    const rep = simulator.extractReplayableTurn(p.replaySessionId, p.replayTurnIndex);
+                    if (rep.error) {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ error: rep.error, replay: rep }));
+                        return;
+                    }
+                    userMessage = rep.userMessage;
+                    priorTurns = rep.priorTurns;
+                    originalResponse = rep.originalResponse;
+                }
+                const out = await simulator.simulate({
+                    personaName: p.personaName || 'Erica',
+                    guardrails: p.guardrails || '',
+                    extraDirective: p.extraDirective || '',
+                    userMessage,
+                    priorTurns
+                });
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: true, simulated: out, originalResponse, userMessage }));
+            } catch (e) {
+                console.error('[SERVER] /api/admin/simulate error:', e?.message || e);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
             }
