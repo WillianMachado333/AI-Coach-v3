@@ -19,6 +19,7 @@ const activity = require('./lib/activity');
 const admin = require('./lib/admin');
 // Session logger — persists Erica sessions for the Coach Studio observatory.
 const sessionLog = require('./lib/sessionLog');
+const studioAgent = require('./lib/studioAgent');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -435,6 +436,7 @@ function fetchOpenAIKey() {
                         // hit "client not initialised" — the handler surfaces that as a 503.
                         try {
                             vectorStore.initClient(openAIKey);
+                            studioAgent.setClient(vectorStore.getClientOrNull());
                             console.log('[SERVER] vectorStore client initialised');
                         } catch (vsErr) {
                             console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
@@ -574,6 +576,44 @@ const server = http.createServer(async (req, res) => {
             } catch (e) {
                 console.error('[SERVER] /api/session-log error:', e?.message || e);
                 res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
+            }
+        });
+        return;
+    }
+
+    // Studio agent chat — protected by admin cookie. Client posts
+    // { history: [...], message: '...' }, we run one agent turn and return
+    // { text, history } to be echoed back on the next call.
+    if (req.url === '/api/admin/studio-chat' && req.method === 'POST') {
+        const session = admin.requireAdminSession(req);
+        if (!session) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        let body = '';
+        req.on('data', (c) => { body += c.toString(); });
+        req.on('end', async () => {
+            try {
+                const p = body ? JSON.parse(body) : {};
+                const userMessage = String(p.message || '').trim();
+                if (!userMessage) {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'message required' }));
+                    return;
+                }
+                const history = Array.isArray(p.history) ? p.history : [];
+                const started = Date.now();
+                const out = await studioAgent.runTurn({ history, userMessage });
+                console.log('[SERVER] /api/admin/studio-chat ->', {
+                    ms: Date.now() - started, textLen: (out.text || '').length, historyLen: out.history.length
+                });
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(out));
+            } catch (e) {
+                console.error('[SERVER] /api/admin/studio-chat error:', e?.message || e);
+                res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
             }
         });
