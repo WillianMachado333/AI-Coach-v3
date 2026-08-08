@@ -606,8 +606,9 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
                 const history = Array.isArray(p.history) ? p.history : [];
+                const page = typeof p.page === 'string' ? p.page : null;
                 const started = Date.now();
-                const out = await studioAgent.runTurn({ history, userMessage });
+                const out = await studioAgent.runTurn({ history, userMessage, page });
                 console.log('[SERVER] /api/admin/studio-chat ->', {
                     ms: Date.now() - started, textLen: (out.text || '').length, historyLen: out.history.length
                 });
