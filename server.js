@@ -622,6 +622,17 @@ const server = http.createServer(async (req, res) => {
             const send = (evt) => {
                 try { res.write('data: ' + JSON.stringify(evt) + '\n\n'); } catch (_) {}
             };
+            // Ensure OpenAI client is up (external key service may have been
+            // down at boot). One retry per request; if it still fails, surface
+            // the error to the UI instead of silently returning "not initialised".
+            if (!openAIKey) {
+                try { await fetchOpenAIKey(); } catch (_) { /* handled below */ }
+            }
+            if (!openAIKey) {
+                send({ type: 'error', message: 'OpenAI key unavailable — external key service unreachable. Retry in a moment.' });
+                try { res.end(); } catch (_) {}
+                return;
+            }
             // Rebuild context from persisted history on disk.
             const history = agentHistory.rebuildInput(sess.sub);
             let finalText = '';
@@ -657,6 +668,14 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (c) => { body += c.toString(); });
         req.on('end', async () => {
             try {
+                if (!openAIKey) {
+                    try { await fetchOpenAIKey(); } catch (_) { /* handled below */ }
+                }
+                if (!openAIKey) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ suggestions: [] }));
+                    return;
+                }
                 const p = body ? JSON.parse(body) : {};
                 const items = agentHistory.readAll(sess.sub, { limit: 4 });
                 const last = items[items.length - 1] || null;
@@ -675,7 +694,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Load previously-persisted turns for the current actor (page load).
-    if (req.url === '/api/admin/agent/history' && req.method === 'GET') {
+    if (req.url.split('?')[0] === '/api/admin/agent/history' && req.method === 'GET') {
         const sess = admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -689,7 +708,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Clear the actor's conversation history.
-    if (req.url === '/api/admin/agent/history' && req.method === 'DELETE') {
+    if (req.url.split('?')[0] === '/api/admin/agent/history' && req.method === 'DELETE') {
         const sess = admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
