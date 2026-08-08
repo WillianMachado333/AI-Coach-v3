@@ -15,6 +15,8 @@ const crypto = require('crypto');
 // AI-Coach-v3: OpenAI Vector Store helpers for knowledge-search
 const vectorStore = require('./lib/vectorStore');
 const activity = require('./lib/activity');
+// Coach Studio admin — /admin/* login + protected pages (Phase 0 foundation).
+const admin = require('./lib/admin');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -499,11 +501,28 @@ function getPrepCacheKey(userId, email) {
 // Individual paths (rarely need overriding, but supported)
 const PREP_PATH = process.env.PREP_PATH || '/_functions/ericaPreparation';
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
     // Avoid spamming logs for static assets; focus on API requests.
     const isApi = typeof req.url === 'string' && req.url.startsWith('/api/');
     if (ERICA_LOG_ALL_REQUESTS || isApi) {
         logAt('info', `${req.method} ${req.url}`);
+    }
+
+    // Coach Studio admin routes: /admin/* (login, protected pages, JSON
+    // endpoints). Handled by lib/admin.js — if it takes the request, we
+    // return; otherwise fall through to the rest of the server.
+    if (typeof req.url === 'string' && req.url.startsWith('/admin')) {
+        try {
+            const handled = await admin.handle(req, res);
+            if (handled) return;
+        } catch (e) {
+            console.error('[SERVER] admin.handle error:', e?.message || e);
+            if (!res.headersSent) {
+                res.writeHead(500, { 'Content-Type': 'text/plain' });
+                res.end('Admin error');
+            }
+            return;
+        }
     }
 
     // Handle web search API requests
