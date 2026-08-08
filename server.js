@@ -600,8 +600,14 @@ const server = http.createServer(async (req, res) => {
         req.on('end', async () => {
             let p = {};
             try { p = body ? JSON.parse(body) : {}; } catch (_) { /* defaults */ }
-            const userMessage = String(p.message || '').trim();
+            let userMessage = String(p.message || '').trim();
             const page = typeof p.page === 'string' ? p.page : null;
+            const marker = (p.marker && typeof p.marker.text === 'string' && p.marker.text.trim())
+                ? { text: p.marker.text.trim().slice(0, 800), source: p.marker.source || null }
+                : null;
+            if (marker) {
+                userMessage = 'MARKED IN THE REPORT (from ' + (marker.source || 'unknown page') + '):\n"' + marker.text + '"\n\n' + userMessage;
+            }
             if (!userMessage) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'message required' }));
