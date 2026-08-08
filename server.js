@@ -17,6 +17,8 @@ const vectorStore = require('./lib/vectorStore');
 const activity = require('./lib/activity');
 // Coach Studio admin — /admin/* login + protected pages (Phase 0 foundation).
 const admin = require('./lib/admin');
+// Session logger — persists Erica sessions for the Coach Studio observatory.
+const sessionLog = require('./lib/sessionLog');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -523,6 +525,59 @@ const server = http.createServer(async (req, res) => {
             }
             return;
         }
+    }
+
+    // Session logger ingestion — the client posts turn events here so the
+    // Coach Studio observatory (/admin/sessions) can replay them.
+    // POST /api/session-log  body: { sessionId, kind, ... }
+    //   kind='user_turn'  { text }
+    //   kind='bot_turn'   { text, promptSnapshot? }
+    //   kind='tool_call'  { name, args, result, error, ms }
+    //   kind='event'      { name, meta }
+    if (req.url === '/api/session-log' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (c) => { body += c.toString(); });
+        req.on('end', () => {
+            try {
+                const p = body ? JSON.parse(body) : {};
+                const sid = p.sessionId;
+                if (!sid) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'sessionId required' }));
+                    return;
+                }
+                let promptHash = null;
+                if (typeof p.promptSnapshot === 'string' && p.promptSnapshot.length) {
+                    promptHash = sessionLog.savePromptSnapshot(p.promptSnapshot);
+                } else if (typeof p.promptHash === 'string') {
+                    promptHash = p.promptHash;
+                }
+                switch (p.kind) {
+                    case 'user_turn':
+                        sessionLog.logUserTurn(sid, { text: p.text, promptHash, meta: p.meta });
+                        break;
+                    case 'bot_turn':
+                        sessionLog.logBotTurn(sid, { text: p.text, promptHash, meta: p.meta });
+                        break;
+                    case 'tool_call':
+                        sessionLog.logToolCall(sid, {
+                            name: p.name, args: p.args, result: p.result, error: p.error, ms: p.ms
+                        });
+                        break;
+                    case 'event':
+                    default:
+                        sessionLog.logEvent(sid, { name: p.name || p.kind, meta: p.meta });
+                        break;
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ ok: true, promptHash }));
+            } catch (e) {
+                console.error('[SERVER] /api/session-log error:', e?.message || e);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: e?.message || 'Internal error' }));
+            }
+        });
+        return;
     }
 
     // Handle web search API requests
@@ -1172,6 +1227,16 @@ const server = http.createServer(async (req, res) => {
 
                 logAt('info', '[SERVER] /api/erica-preparation - Request for:', { userId: userId || null, email: email || null });
 
+                // Allocate a session id for the Coach Studio observatory.
+                // Deterministic on the strongest available identifier so a
+                // reconnect within the same browser reuses the same file
+                // instead of piling up empty NDJSONs.
+                const sessionId = sessionLog.startSession({
+                    email, userId, objectId,
+                    caller: requestData.caller || null,
+                    url: req.headers.referer || null
+                });
+
                 // Check cache first
                 const cacheKey = getPrepCacheKey(userId, email);
                 const cached = prepCache.get(cacheKey);
@@ -1188,8 +1253,10 @@ const server = http.createServer(async (req, res) => {
                     const responseHeaders = {
                         'Content-Type': cached.headers['content-type'] || 'application/json',
                         'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Expose-Headers': 'X-Session-Id',
                         'Cache-Control': cacheKey === '__guest__' ? 'public, max-age=86400' : 'private, max-age=120',
-                        'X-Cache': 'HIT'
+                        'X-Cache': 'HIT',
+                        'X-Session-Id': sessionId
                     };
 
                     res.writeHead(cached.statusCode, responseHeaders);
@@ -1278,8 +1345,10 @@ const server = http.createServer(async (req, res) => {
                         const responseHeaders = {
                             'Content-Type': externalRes.headers['content-type'] || 'application/json',
                             'Access-Control-Allow-Origin': '*',
+                            'Access-Control-Expose-Headers': 'X-Session-Id',
                             'Cache-Control': cacheKey === '__guest__' ? 'public, max-age=86400' : 'private, max-age=120',
-                            'X-Cache': 'MISS'
+                            'X-Cache': 'MISS',
+                            'X-Session-Id': sessionId
                         };
                         res.writeHead(statusCode, responseHeaders);
                         res.end(responseData);
