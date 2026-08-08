@@ -584,6 +584,49 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Studio agent — SSE streaming variant. Body: { message, history, page }.
+    // Emits event/data lines: task, delta, done, error. Includes the
+    // `X-Accel-Buffering: no` header so Railway's edge proxy doesn't buffer.
+    if (req.url === '/api/admin/agent' && req.method === 'POST') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        let body = '';
+        req.on('data', (c) => { body += c.toString(); });
+        req.on('end', async () => {
+            let p = {};
+            try { p = body ? JSON.parse(body) : {}; } catch (_) { /* fall through with defaults */ }
+            const userMessage = String(p.message || '').trim();
+            const history = Array.isArray(p.history) ? p.history : [];
+            const page = typeof p.page === 'string' ? p.page : null;
+            if (!userMessage) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'message required' }));
+                return;
+            }
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache, no-transform',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            });
+            const send = (evt) => {
+                try { res.write('data: ' + JSON.stringify(evt) + '\n\n'); } catch (_) { /* client gone */ }
+            };
+            try {
+                await studioAgent.runTurnStreamed({ history, userMessage, page }, send);
+            } catch (e) {
+                send({ type: 'error', message: e?.message || 'agent failure' });
+            } finally {
+                try { res.end(); } catch (_) {}
+            }
+        });
+        return;
+    }
+
     // Studio agent chat — protected by admin cookie. Client posts
     // { history: [...], message: '...' }, we run one agent turn and return
     // { text, history } to be echoed back on the next call.
