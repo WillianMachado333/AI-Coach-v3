@@ -396,9 +396,26 @@ function handleSearch(query, apiKey, res) {
     openaiReq.end();
 }
 
-// Function to fetch OpenAI key from external service
+// Function to fetch OpenAI key from external service.
+// Priority: (1) OPENAI_API_KEY env var — direct fallback used when the Wix
+// key service is flaky. (2) External Wix service — legacy source.
 function fetchOpenAIKey() {
     return new Promise((resolve, reject) => {
+        // (1) Direct env var wins — no external call required.
+        if (process.env.OPENAI_API_KEY) {
+            openAIKey = process.env.OPENAI_API_KEY;
+            openAISecondaryKey = process.env.OPENAI_SECONDARY_KEY || openAIKey;
+            try {
+                vectorStore.initClient(openAIKey);
+                studioAgent.setClient(vectorStore.getClientOrNull());
+                simulator.setClient(vectorStore.getClientOrNull());
+                console.log('[SERVER] OpenAI key loaded from OPENAI_API_KEY env var; vectorStore client initialised');
+            } catch (vsErr) {
+                console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
+            }
+            resolve({ openAIkey: openAIKey, openAISecondarykey: openAISecondaryKey });
+            return;
+        }
         try {
             console.log('[SERVER] Fetching OpenAI key from external service...');
 
