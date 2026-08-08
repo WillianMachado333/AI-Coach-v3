@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "init:frameworks": "node scripts/init-frameworks-store.js"
+    "init:frameworks": "node scripts/init-frameworks-store.js",
+    "gen:sessions": "node scripts/gen-synthetic-sessions.js"
   },
   "dependencies": {
     "dotenv": "^17.3.1",
