@@ -21,6 +21,7 @@ const admin = require('./lib/admin');
 const sessionLog = require('./lib/sessionLog');
 const studioAgent = require('./lib/studioAgent');
 const simulator = require('./lib/simulator');
+const agentHistory = require('./lib/agentHistory');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -584,9 +585,9 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Studio agent — SSE streaming variant. Body: { message, history, page }.
-    // Emits event/data lines: task, delta, done, error. Includes the
-    // `X-Accel-Buffering: no` header so Railway's edge proxy doesn't buffer.
+    // Studio agent — SSE streaming variant. Body: { message, page }.
+    // Server owns history: rebuilds context from disk instead of trusting
+    // the client. Client sends only the new message.
     if (req.url === '/api/admin/agent' && req.method === 'POST') {
         const sess = admin.requireAdminSession(req);
         if (!sess) {
@@ -598,9 +599,8 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (c) => { body += c.toString(); });
         req.on('end', async () => {
             let p = {};
-            try { p = body ? JSON.parse(body) : {}; } catch (_) { /* fall through with defaults */ }
+            try { p = body ? JSON.parse(body) : {}; } catch (_) { /* defaults */ }
             const userMessage = String(p.message || '').trim();
-            const history = Array.isArray(p.history) ? p.history : [];
             const page = typeof p.page === 'string' ? p.page : null;
             if (!userMessage) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -614,16 +614,56 @@ const server = http.createServer(async (req, res) => {
                 'X-Accel-Buffering': 'no'
             });
             const send = (evt) => {
-                try { res.write('data: ' + JSON.stringify(evt) + '\n\n'); } catch (_) { /* client gone */ }
+                try { res.write('data: ' + JSON.stringify(evt) + '\n\n'); } catch (_) {}
+            };
+            // Rebuild context from persisted history on disk.
+            const history = agentHistory.rebuildInput(sess.sub);
+            let finalText = '';
+            const wrappedSend = (evt) => {
+                if (evt && evt.type === 'done' && typeof evt.text === 'string') finalText = evt.text;
+                send(evt);
             };
             try {
-                await studioAgent.runTurnStreamed({ history, userMessage, page }, send);
+                await studioAgent.runTurnStreamed({ history, userMessage, page }, wrappedSend);
+                // Persist the turn AFTER the model completed so a failure
+                // mid-stream doesn't leave a half-answer in the log.
+                if (finalText) {
+                    agentHistory.append(sess.sub, { question: userMessage, answer: finalText, page });
+                }
             } catch (e) {
                 send({ type: 'error', message: e?.message || 'agent failure' });
             } finally {
                 try { res.end(); } catch (_) {}
             }
         });
+        return;
+    }
+
+    // Load previously-persisted turns for the current actor (page load).
+    if (req.url === '/api/admin/agent/history' && req.method === 'GET') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        const items = agentHistory.readAll(sess.sub, { limit: 40 });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ items }));
+        return;
+    }
+
+    // Clear the actor's conversation history.
+    if (req.url === '/api/admin/agent/history' && req.method === 'DELETE') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        agentHistory.clear(sess.sub);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
         return;
     }
 
