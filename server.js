@@ -639,6 +639,35 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Suggest 3 follow-up prompts after the last turn — separate cheap call.
+    if (req.url === '/api/admin/agent/suggestions' && req.method === 'POST') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        let body = '';
+        req.on('data', (c) => { body += c.toString(); });
+        req.on('end', async () => {
+            try {
+                const p = body ? JSON.parse(body) : {};
+                const items = agentHistory.readAll(sess.sub, { limit: 4 });
+                const last = items[items.length - 1] || null;
+                const suggestions = await studioAgent.suggestFollowups({
+                    lastQuestion: last?.question || null,
+                    lastAnswer: last?.answer || p.lastAnswer || null
+                });
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ suggestions }));
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: e?.message || 'suggestions failed' }));
+            }
+        });
+        return;
+    }
+
     // Load previously-persisted turns for the current actor (page load).
     if (req.url === '/api/admin/agent/history' && req.method === 'GET') {
         const sess = admin.requireAdminSession(req);
