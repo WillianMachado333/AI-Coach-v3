@@ -70,7 +70,7 @@ if (req.method === 'OPTIONS') {
 require('dotenv').config();
 
 const PORT = process.env.PORT || 8000;
-const ERICA_KEY_PASSWORD = process.env.ERICA_KEY_PASSWORD || 'ericaKeyPassword';
+// (removed — legacy Wix key-fetch was replaced by direct OPENAI_API_KEY env var)
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || ['*'];
 ```
 

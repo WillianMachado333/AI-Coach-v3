@@ -112,57 +112,19 @@ router.use((req, res, next) => {
 let openAIKey = null;
 let openAISecondaryKey = null;
 
-// Function to fetch OpenAI key from external service
+// Load OpenAI key from OPENAI_API_KEY env var. The legacy fallback that
+// POSTed a shared password to a Wix endpoint has been removed — the
+// password was hard-coded and this repo is public.
 function fetchOpenAIKey() {
     return new Promise((resolve, reject) => {
-        try {
-            const postData = JSON.stringify({
-                purpose: 'APPChat',
-                password: 'ericaKeyPassword'
-            });
-
-            const options = {
-                hostname: ERICA_API_HOST,
-                port: 443,
-                path: '/_functions/ericaOpenAiKey',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(postData, 'utf8')
-                }
-            };
-
-            const req = https.request(options, (res) => {
-                let responseData = '';
-
-                res.on('data', (chunk) => {
-                    responseData += chunk;
-                });
-
-                res.on('end', () => {
-                    try {
-                        const data = JSON.parse(responseData);
-                        openAIKey = data.openAIkey;
-                        openAISecondaryKey = data.openAISecondarykey;
-                        resolve(data);
-                    } catch (error) {
-                        console.error('[AgentErica] Error parsing OpenAI key response:', error);
-                        reject(error);
-                    }
-                });
-            });
-
-            req.on('error', (error) => {
-                console.error('[AgentErica] Error fetching OpenAI key:', error);
-                reject(error);
-            });
-
-            req.write(postData, 'utf8');
-            req.end();
-        } catch (error) {
-            console.error('[AgentErica] Error in fetchOpenAIKey:', error);
-            reject(error);
+        if (!process.env.OPENAI_API_KEY) {
+            const msg = 'OPENAI_API_KEY not set — legacy Wix key fetch removed for security.';
+            console.error('[AgentErica]', msg);
+            return reject(new Error(msg));
         }
+        openAIKey = process.env.OPENAI_API_KEY;
+        openAISecondaryKey = process.env.OPENAI_SECONDARY_KEY || openAIKey;
+        resolve({ openAIkey: openAIKey, openAISecondarykey: openAISecondaryKey });
     });
 }
 

@@ -399,93 +399,30 @@ function handleSearch(query, apiKey, res) {
     openaiReq.end();
 }
 
-// Function to fetch OpenAI key from external service.
-// Priority: (1) OPENAI_API_KEY env var — direct fallback used when the Wix
-// key service is flaky. (2) External Wix service — legacy source.
+// Load OpenAI key from OPENAI_API_KEY env var. This function used to fall
+// back to a Wix endpoint with a hard-coded shared password — that endpoint
+// + password were exposed in this public repo and have been removed. If
+// the env var is missing, we fail loudly instead of reaching for a
+// legacy credential.
 function fetchOpenAIKey() {
     return new Promise((resolve, reject) => {
-        // (1) Direct env var wins — no external call required.
-        if (process.env.OPENAI_API_KEY) {
-            openAIKey = process.env.OPENAI_API_KEY;
-            openAISecondaryKey = process.env.OPENAI_SECONDARY_KEY || openAIKey;
-            try {
-                vectorStore.initClient(openAIKey);
-                studioAgent.setClient(vectorStore.getClientOrNull());
-                simulator.setClient(vectorStore.getClientOrNull());
-                genSessions.setClient(vectorStore.getClientOrNull());
-                console.log('[SERVER] OpenAI key loaded from OPENAI_API_KEY env var; vectorStore client initialised');
-            } catch (vsErr) {
-                console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
-            }
-            resolve({ openAIkey: openAIKey, openAISecondarykey: openAISecondaryKey });
-            return;
+        if (!process.env.OPENAI_API_KEY) {
+            const msg = 'OPENAI_API_KEY not set. Configure it on Railway (or in .env for local) — the legacy Wix key-fetch has been removed for security.';
+            console.error('[SERVER]', msg);
+            return reject(new Error(msg));
         }
+        openAIKey = process.env.OPENAI_API_KEY;
+        openAISecondaryKey = process.env.OPENAI_SECONDARY_KEY || openAIKey;
         try {
-            console.log('[SERVER] Fetching OpenAI key from external service...');
-
-            const https = require('https');
-            const postData = JSON.stringify({
-                purpose: 'APPChat',
-                password: 'ericaKeyPassword'
-            });
-
-            const options = {
-                hostname: ERICA_API_HOST,
-                port: 443,
-                path: '/_functions/ericaOpenAiKey',
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(postData, 'utf8')
-                }
-            };
-
-            const req = https.request(options, (res) => {
-                let responseData = '';
-
-                res.on('data', (chunk) => {
-                    responseData += chunk;
-                });
-
-                res.on('end', () => {
-                    try {
-                        const data = JSON.parse(responseData);
-                        console.log('[SERVER] OpenAI key fetched successfully');
-                        openAIKey = data.openAIkey;
-                        openAISecondaryKey = data.openAISecondarykey;
-
-                        // Initialise the shared OpenAI client used by vectorStore helpers.
-                        // Any /api/knowledge-search call arriving before this fires would
-                        // hit "client not initialised" — the handler surfaces that as a 503.
-                        try {
-                            vectorStore.initClient(openAIKey);
-                            studioAgent.setClient(vectorStore.getClientOrNull());
-                            simulator.setClient(vectorStore.getClientOrNull());
-                            genSessions.setClient(vectorStore.getClientOrNull());
-                            console.log('[SERVER] vectorStore client initialised');
-                        } catch (vsErr) {
-                            console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
-                        }
-
-                        resolve(data);
-                    } catch (error) {
-                        console.error('[SERVER] Error parsing OpenAI key response:', error);
-                        reject(error);
-                    }
-                });
-            });
-
-            req.on('error', (error) => {
-                console.error('[SERVER] Error fetching OpenAI key:', error);
-                reject(error);
-            });
-
-            req.write(postData, 'utf8');
-            req.end();
-        } catch (error) {
-            console.error('[SERVER] Error in fetchOpenAIKey:', error);
-            reject(error);
+            vectorStore.initClient(openAIKey);
+            studioAgent.setClient(vectorStore.getClientOrNull());
+            simulator.setClient(vectorStore.getClientOrNull());
+            genSessions.setClient(vectorStore.getClientOrNull());
+            console.log('[SERVER] OpenAI key loaded from OPENAI_API_KEY env var; clients initialised');
+        } catch (vsErr) {
+            console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
         }
+        resolve({ openAIkey: openAIKey, openAISecondarykey: openAISecondaryKey });
     });
 }
 
