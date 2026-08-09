@@ -875,10 +875,14 @@ const server = http.createServer(async (req, res) => {
                 const fs = require('fs');
                 const { toFile } = require('openai/uploads');
                 const COURSES_DIR = path.join(__dirname, 'knowledge-base', 'courses');
-                const OVERLAY_DIR = process.env.COURSES_OVERLAY_DIR || '/data/courses';
-                // Collect all .md files from BOTH the repo-baked defaults and
-                // the on-disk overlay, keyed by relative path so overlay wins.
-                function walkMd(root) {
+                const COURSES_OVERLAY_DIR = process.env.COURSES_OVERLAY_DIR || '/data/courses';
+                const QUIZZES_DIR = path.join(__dirname, 'knowledge-base', 'quizzes');
+                const QUIZZES_OVERLAY_DIR = process.env.QUIZZES_OVERLAY_DIR || '/data/quizzes';
+                // Collect all .md files from BOTH courses AND quizzes, defaults
+                // and overlays. Overlay wins on collision. Relative path is
+                // prefixed with 'courses/' or 'quizzes/' so filenames are unique
+                // in the vector store.
+                function walkMd(root, prefix) {
                     const out = [];
                     if (!fs.existsSync(root)) return out;
                     function walk(dir) {
@@ -887,7 +891,7 @@ const server = http.createServer(async (req, res) => {
                             const stat = fs.statSync(full);
                             if (stat.isDirectory()) walk(full);
                             else if (name.endsWith('.md')) {
-                                out.push({ full, relative: path.relative(root, full).replace(/\\/g, '/') });
+                                out.push({ full, relative: prefix + '/' + path.relative(root, full).replace(/\\/g, '/') });
                             }
                         }
                     }
@@ -896,8 +900,10 @@ const server = http.createServer(async (req, res) => {
                 }
                 const STORE_NAME = 'courses-shared';
                 const byRel = new Map();
-                for (const f of walkMd(COURSES_DIR)) byRel.set(f.relative, f);
-                for (const f of walkMd(OVERLAY_DIR)) byRel.set(f.relative, f); // overlay wins
+                for (const f of walkMd(COURSES_DIR, 'courses')) byRel.set(f.relative, f);
+                for (const f of walkMd(COURSES_OVERLAY_DIR, 'courses')) byRel.set(f.relative, f);
+                for (const f of walkMd(QUIZZES_DIR, 'quizzes')) byRel.set(f.relative, f);
+                for (const f of walkMd(QUIZZES_OVERLAY_DIR, 'quizzes')) byRel.set(f.relative, f);
                 const files = Array.from(byRel.values()).sort((a, b) => a.relative.localeCompare(b.relative)).map((x) => x.full);
                 if (files.length === 0) {
                     send({ type: 'error', message: 'no course files on disk — build them first' });
