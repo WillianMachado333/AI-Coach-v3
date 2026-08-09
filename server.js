@@ -910,19 +910,30 @@ const server = http.createServer(async (req, res) => {
                 const fs = require('fs');
                 const { toFile } = require('openai/uploads');
                 const COURSES_DIR = path.join(__dirname, 'knowledge-base', 'courses');
-                function walkMd(dir) {
+                const OVERLAY_DIR = process.env.COURSES_OVERLAY_DIR || '/data/courses';
+                // Collect all .md files from BOTH the repo-baked defaults and
+                // the on-disk overlay, keyed by relative path so overlay wins.
+                function walkMd(root) {
                     const out = [];
-                    if (!fs.existsSync(dir)) return out;
-                    for (const name of fs.readdirSync(dir)) {
-                        const full = path.join(dir, name);
-                        const stat = fs.statSync(full);
-                        if (stat.isDirectory()) out.push(...walkMd(full));
-                        else if (name.endsWith('.md')) out.push(full);
+                    if (!fs.existsSync(root)) return out;
+                    function walk(dir) {
+                        for (const name of fs.readdirSync(dir)) {
+                            const full = path.join(dir, name);
+                            const stat = fs.statSync(full);
+                            if (stat.isDirectory()) walk(full);
+                            else if (name.endsWith('.md')) {
+                                out.push({ full, relative: path.relative(root, full).replace(/\\/g, '/') });
+                            }
+                        }
                     }
-                    return out.sort();
+                    walk(root);
+                    return out;
                 }
                 const STORE_NAME = 'courses-shared';
-                const files = walkMd(COURSES_DIR);
+                const byRel = new Map();
+                for (const f of walkMd(COURSES_DIR)) byRel.set(f.relative, f);
+                for (const f of walkMd(OVERLAY_DIR)) byRel.set(f.relative, f); // overlay wins
+                const files = Array.from(byRel.values()).sort((a, b) => a.relative.localeCompare(b.relative)).map((x) => x.full);
                 if (files.length === 0) {
                     send({ type: 'error', message: 'no course files on disk — build them first' });
                     return;
@@ -943,16 +954,16 @@ const server = http.createServer(async (req, res) => {
                 }
                 if (purged > 0) send({ type: 'log', text: 'purged ' + purged + ' old files' });
                 let i = 0;
-                for (const full of files) {
-                    const relative = path.relative(COURSES_DIR, full).replace(/\\/g, '/');
-                    const content = fs.readFileSync(full, 'utf8');
+                const merged = Array.from(byRel.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+                for (const [relative, meta] of merged) {
+                    const content = fs.readFileSync(meta.full, 'utf8');
                     const file = await client.files.create({
                         file: await toFile(Buffer.from(content, 'utf8'), relative, { type: 'text/markdown' }),
                         purpose: 'assistants'
                     });
                     await client.vectorStores.files.create(store.id, { file_id: file.id });
                     i++;
-                    send({ type: 'file', i, total: files.length, relative });
+                    send({ type: 'file', i, total: merged.length, relative });
                 }
                 const start = Date.now();
                 while (Date.now() - start < 60000) {
