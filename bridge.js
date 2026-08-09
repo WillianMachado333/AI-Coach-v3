@@ -57,7 +57,14 @@
         console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground) — skipping injection.');
         return;
     }
-    var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller=web';
+    // Base coach URL. When the HOST page is running under the Coach Studio
+    // simulator (?simulator=1), forward that flag to the coach iframe so it
+    // suppresses CleverTap analytics — otherwise a Wix-embed test would
+    // pollute v2 dashboards.
+    var _hostSearch = (window.location && window.location.search) || '';
+    var _isSimHost = /[?&]simulator=1\b/i.test(_hostSearch);
+    var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller='
+        + (_isSimHost ? 'admin-simulator&simulator=1' : 'web');
     var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
     // 84p is actually the HIGHEST resolution we have for Erica webm clips
     // (base /companions/idle/Erica.webm is smaller than the 84p variant —

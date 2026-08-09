@@ -1,0 +1,36 @@
+/* Shared style block for simulator host pages — Wix-ish look/feel. */
+* { box-sizing: border-box; }
+body { margin: 0; background: #fafaf7; color: #1a1a1a;
+  font: 15px/1.55 -apple-system,"Segoe UI",Roboto,system-ui,sans-serif;
+  -webkit-font-smoothing: antialiased; }
+a { color: #0f766e; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wixnav { background: #fff; border-bottom: 1px solid #ececec; padding: 14px 32px;
+  display: flex; align-items: center; gap: 22px; }
+.wixnav .brand { font-weight: 700; font-size: 15px; letter-spacing: -.01em; }
+.wixnav .brand span { color: #0f766e; }
+.wixnav a { color: #333; font-size: 14px; }
+.wixnav a.active { color: #0f766e; font-weight: 600; }
+.wixnav .spacer { flex: 1; }
+.wixnav .badge { font-size: 11px; padding: 3px 8px; border-radius: 999px;
+  background: linear-gradient(135deg, #0d9488, #3987e5); color: #fff; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+main { max-width: 920px; margin: 0 auto; padding: 30px 32px 120px; }
+h1 { font-size: 30px; font-weight: 700; letter-spacing: -.02em; margin: 0 0 6px; }
+.subtitle { font-size: 14px; color: #666; margin-bottom: 24px; }
+.card { background: #fff; border: 1px solid #ececec; border-radius: 14px;
+  padding: 20px 24px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.card h2 { font-size: 18px; margin: 0 0 10px; font-weight: 650; letter-spacing: -.01em; }
+.card h3 { font-size: 14px; margin: 14px 0 8px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: #666; }
+.card p { margin: 8px 0; color: #333; }
+.card ul { padding-left: 20px; margin: 8px 0; }
+.card li { margin: 4px 0; }
+.score-row { display: flex; align-items: center; gap: 14px; padding: 8px 0; }
+.score-row .name { flex: 1; font-weight: 500; }
+.score-row .bar { flex: 2; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; }
+.score-row .bar span { display: block; height: 100%; background: linear-gradient(90deg, #0d9488, #3987e5); border-radius: 4px; }
+.score-row .num { font-variant-numeric: tabular-nums; font-weight: 600; width: 40px; text-align: right; }
+.note { font-size: 12.5px; color: #888; background: #f4f4f0; padding: 8px 12px; border-radius: 8px; border-left: 3px solid #ddd; margin-top: 12px; }
+.chip { display: inline-block; padding: 3px 10px; border-radius: 999px; background: #e6f3f2; color: #0f766e; font-size: 12px; font-weight: 600; margin-right: 6px; margin-bottom: 4px; }
+.chip.warn { background: #fef3c7; color: #92400e; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
