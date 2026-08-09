@@ -693,6 +693,32 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Attachment GET — serve a stored image by its opaque id so the message
+    // bubble can render <img src="/api/admin/attachments/{id}"> without
+    // reloading the payload. Admin-only.
+    if (req.url.startsWith('/api/admin/attachments/') && req.method === 'GET') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        const id = decodeURIComponent(req.url.slice('/api/admin/attachments/'.length).split('?')[0]);
+        const rec = attachments.load(id);
+        if (!rec) {
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
+            res.end('not found');
+            return;
+        }
+        res.writeHead(200, {
+            'Content-Type': rec.contentType,
+            'Content-Length': rec.buffer.length,
+            'Cache-Control': 'private, max-age=3600'
+        });
+        res.end(rec.buffer);
+        return;
+    }
+
     // Attachment upload — used by the Coach Studio composer for pasted
     // screenshots. Body: { dataUrl } (base64-encoded image data URL). Server
     // validates by magic bytes, caps size after decoding, stores on the
@@ -749,7 +775,8 @@ const server = http.createServer(async (req, res) => {
         req.on('end', async () => {
             let p = {};
             try { p = body ? JSON.parse(body) : {}; } catch (_) { /* defaults */ }
-            let userMessage = String(p.message || '').trim();
+            const originalUserText = String(p.message || '').trim();
+            let userMessage = originalUserText;
             const page = typeof p.page === 'string' ? p.page : null;
             const attachmentIds = Array.isArray(p.attachments) ? p.attachments.slice(0, 3) : [];
             const attachmentsForModel = [];
@@ -816,7 +843,8 @@ const server = http.createServer(async (req, res) => {
                 // mid-stream doesn't leave a half-answer in the log.
                 if (finalText) {
                     agentHistory.append(sess.sub, {
-                        question: userMessage,
+                        question: originalUserText,
+                        marker: marker || null,
                         answer: finalText,
                         page,
                         attachments: attachmentsForModel.map((a) => a.id)
