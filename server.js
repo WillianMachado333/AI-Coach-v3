@@ -1909,7 +1909,13 @@ const server = http.createServer(async (req, res) => {
                     console.warn('[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
                 }
 
-                logAt('info', '[SERVER] /api/erica-preparation - Request for:', { userId: userId || null, email: email || null });
+                // Simulator mode: coach embedded in admin simulator (?simulator=1
+                // OR caller=admin-simulator). We skip CleverTap activity sync so
+                // testing does not read/write anything that could pollute v2.
+                const isSimulatorMode = String(requestData.caller || '').toLowerCase().includes('simulator')
+                    || String(req.url || '').includes('simulator=1');
+
+                logAt('info', '[SERVER] /api/erica-preparation - Request for:', { userId: userId || null, email: email || null, simulator: isSimulatorMode });
 
                 // Allocate a session id for the Coach Studio observatory.
                 // Deterministic on the strongest available identifier so a
@@ -1952,7 +1958,7 @@ const server = http.createServer(async (req, res) => {
                     // Activity keeps its own on-disk cache so a repeated cache-hit
                     // here is still cheap. Signed-in users use userId; guest users
                     // use their bridged objectId.
-                    syncActivityForSession(userId, objectId);
+                    if (!isSimulatorMode) syncActivityForSession(userId, objectId);
                     return;
                 }
 
@@ -2042,7 +2048,7 @@ const server = http.createServer(async (req, res) => {
                         // And pull latest CleverTap activity delta, index to
                         // vector store. Uses userId when present, otherwise
                         // the guest objectId bridged from the parent page.
-                        syncActivityForSession(userId, objectId);
+                        if (!isSimulatorMode) syncActivityForSession(userId, objectId);
                     });
                 });
 

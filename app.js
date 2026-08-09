@@ -3066,6 +3066,21 @@ class VoiceChatBot {
 
     // --- Analytics Helper ---
     trackCoachEvent(eventName, props = {}) {
+        // SIMULATOR MODE: when the coach is embedded in the admin simulator
+        // (?simulator=1), suppress all outbound analytics so testing does
+        // NOT pollute CleverTap → v2 dashboards. Log locally so devs can
+        // still verify the event WOULD have fired.
+        if (typeof window !== 'undefined') {
+            try {
+                if (!this.__simulatorMode) {
+                    this.__simulatorMode = new URLSearchParams(window.location.search).get('simulator') === '1';
+                }
+            } catch (_) { /* URL parse issues fall through as false */ }
+            if (this.__simulatorMode) {
+                console.log('[SIMULATOR] suppressed CleverTap event:', eventName, props);
+                return;
+            }
+        }
         console.log('[Erica Debug] trackCoachEvent called:', eventName, props);
 
         const currentPersona =
