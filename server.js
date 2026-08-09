@@ -1122,6 +1122,49 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Real multi-turn simulator — runs a conversation of `maxTurns` turns
+    // between a fake user persona and the coach persona, streaming each
+    // turn as it lands via SSE.
+    if (req.url === '/api/admin/simulate-conversation' && req.method === 'POST') {
+        const sessCheck = admin.requireAdminSession(req);
+        if (!sessCheck) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        let body = '';
+        req.on('data', (c) => { body += c.toString(); });
+        req.on('end', async () => {
+            res.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache, no-transform',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            });
+            const send = (evt) => { try { res.write('data: ' + JSON.stringify(evt) + '\n\n'); } catch (_) {} };
+            try {
+                if (!openAIKey) { try { await fetchOpenAIKey(); } catch (_) {} }
+                if (!openAIKey) { send({ type: 'error', message: 'OpenAI key unavailable' }); return; }
+                const p = body ? JSON.parse(body) : {};
+                await simulator.simulateConversation({
+                    coach: {
+                        name: p.coachName || 'Erica',
+                        guardrails: p.guardrails || '',
+                        extraDirective: p.extraDirective || ''
+                    },
+                    userPersona: p.userPersona || '',
+                    seedMessage: p.seedMessage || '',
+                    maxTurns: Math.min(20, Math.max(2, parseInt(p.maxTurns, 10) || 8))
+                }, send);
+            } catch (e) {
+                send({ type: 'error', message: e?.message || 'simulation failed' });
+            } finally {
+                try { res.end(); } catch (_) {}
+            }
+        });
+        return;
+    }
+
     // Handle web search API requests
     if (req.url.startsWith('/api/search')) {
         logAt('info', '[SERVER] /api/search request received:', req.url);
