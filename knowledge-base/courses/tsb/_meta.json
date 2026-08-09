@@ -1,0 +1,28 @@
+{
+  "course_id": "tsb",
+  "title": "Understanding Traits, Skills, and Behaviors",
+  "description": "A foundational course that teaches learners to distinguish personal traits (stable tendencies) from skills (learned capabilities) and behaviors (situational actions) — and to use that distinction to develop themselves and communicate effectively at work. 8 sections × 3 units, each with a section-level knowledge check.",
+  "artifacts": [
+    {
+      "key": "course-content",
+      "label": "Course content",
+      "path": "course-content.md",
+      "chars": 22842
+    },
+    {
+      "key": "competency-framework",
+      "label": "Competency framework",
+      "path": "competency-framework.md",
+      "chars": 61230
+    },
+    {
+      "key": "quizzes-list",
+      "label": "Quizzes",
+      "path": "quizzes-list.md",
+      "chars": 2436
+    }
+  ],
+  "section_count": 8,
+  "unit_count": 24,
+  "quiz_count": 8
+}
