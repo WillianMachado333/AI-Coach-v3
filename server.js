@@ -20,6 +20,7 @@ const admin = require('./lib/admin');
 // Session logger — persists Erica sessions for the Coach Studio observatory.
 const sessionLog = require('./lib/sessionLog');
 const studioAgent = require('./lib/studioAgent');
+const genSessions = require('./lib/genSessions');
 const simulator = require('./lib/simulator');
 const agentHistory = require('./lib/agentHistory');
 
@@ -409,6 +410,7 @@ function fetchOpenAIKey() {
                 vectorStore.initClient(openAIKey);
                 studioAgent.setClient(vectorStore.getClientOrNull());
                 simulator.setClient(vectorStore.getClientOrNull());
+                genSessions.setClient(vectorStore.getClientOrNull());
                 console.log('[SERVER] OpenAI key loaded from OPENAI_API_KEY env var; vectorStore client initialised');
             } catch (vsErr) {
                 console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
@@ -457,6 +459,7 @@ function fetchOpenAIKey() {
                             vectorStore.initClient(openAIKey);
                             studioAgent.setClient(vectorStore.getClientOrNull());
                             simulator.setClient(vectorStore.getClientOrNull());
+                            genSessions.setClient(vectorStore.getClientOrNull());
                             console.log('[SERVER] vectorStore client initialised');
                         } catch (vsErr) {
                             console.warn('[SERVER] vectorStore init failed:', vsErr?.message || vsErr);
@@ -721,6 +724,45 @@ const server = http.createServer(async (req, res) => {
         const items = agentHistory.readAll(sess.sub, { limit: 40 });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ items }));
+        return;
+    }
+
+    // Dev: generate N synthetic sessions using the server's own OpenAI key.
+    // Streams SSE progress events. Admin-only. Idempotent-ish (each run adds
+    // fresh sessions with new IDs).
+    if (req.url.split('?')[0] === '/api/admin/dev/gen-sessions' && req.method === 'POST') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        const parsed = new URL(req.url, 'http://x');
+        const count = Math.min(100, Math.max(1, parseInt(parsed.searchParams.get('count') || '30', 10)));
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        });
+        const send = (evt) => { try { res.write('data: ' + JSON.stringify(evt) + '\n\n'); } catch (_) {} };
+        (async () => {
+            if (!openAIKey) {
+                try { await fetchOpenAIKey(); } catch (_) {}
+            }
+            if (!openAIKey) {
+                send({ type: 'error', message: 'OpenAI key unavailable' });
+                try { res.end(); } catch (_) {}
+                return;
+            }
+            try {
+                await genSessions.run({ count }, send);
+            } catch (e) {
+                send({ type: 'error', message: e?.message || 'generation failed' });
+            } finally {
+                try { res.end(); } catch (_) {}
+            }
+        })();
         return;
     }
 
