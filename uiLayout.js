@@ -1614,6 +1614,28 @@
 
             insertMessageInOrder(app, messageDiv, message);
             app.messageElements.set(message.id, messageDiv);
+
+            // A new bubble just arrived — any PREVIOUSLY-latest long assistant
+            // bubble is no longer latest and should now be collapsible. Sweep
+            // any other bubbles above this one and apply the collapse UI to
+            // long ones that don't have it yet.
+            try {
+                let sib = messageDiv.previousElementSibling;
+                while (sib) {
+                    if (sib.hasAttribute && sib.hasAttribute('data-message-id')) {
+                        const olderText = sib._textElement;
+                        const alreadyToggled = sib.querySelector('[data-collapse-toggle]');
+                        if (olderText && !alreadyToggled) {
+                            const olderRaw = (olderText.textContent || '').trim();
+                            const olderLong = olderRaw.length > 480 || (olderRaw.match(/\n/g) || []).length >= 6;
+                            // Only collapse assistant bubbles (user bubbles are user-authored).
+                            const isAssistant = sib.classList.contains('justify-end');
+                            if (olderLong && isAssistant) applyCollapse(sib, olderText);
+                        }
+                    }
+                    sib = sib.previousElementSibling;
+                }
+            } catch (_) { /* non-fatal */ }
         }
 
         // Update Text
@@ -1632,65 +1654,83 @@
         // to assistant bubbles (user messages are user-authored, no need).
         // Threshold: 480 chars OR 6+ line breaks. Preview shows first ~280
         // chars followed by an ellipsis + "Show more" toggle.
+        //
+        // IMPORTANT: the LATEST bubble is never collapsed — half the reply
+        // disappearing the moment it arrives is a bad experience. We only
+        // collapse older messages, after the user has had a chance to read
+        // them. When a NEWER bubble is inserted below, that older bubble
+        // will get collapsed on its next update (or via a sweep — see below).
+        function isLatestAssistantBubble(div) {
+            if (!div) return true;
+            // Consider it latest if no later assistant bubble exists in DOM
+            // below it. (Non-message elements after it like pill containers
+            // don't count.)
+            let sib = div.nextElementSibling;
+            while (sib) {
+                if (sib.hasAttribute && sib.hasAttribute('data-message-id')) {
+                    // Any later bubble means this one is no longer latest.
+                    return false;
+                }
+                sib = sib.nextElementSibling;
+            }
+            return true;
+        }
+        function applyCollapse(bubbleDiv, txtEl) {
+            if (!bubbleDiv || !txtEl) return;
+            if (bubbleDiv.querySelector('[data-collapse-toggle]')) return; // already collapsed
+            txtEl.setAttribute('data-collapsed', '1');
+            txtEl.style.maxHeight = '7.2em';
+            txtEl.style.overflow = 'hidden';
+            txtEl.style.position = 'relative';
+            txtEl.style.webkitMaskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
+            txtEl.style.maskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.setAttribute('data-collapse-toggle', '1');
+            toggle.className = 'block mt-2 text-xs font-semibold text-white/90 hover:text-white underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-white/40 rounded';
+            toggle.textContent = 'Show more';
+            toggle.addEventListener('click', () => {
+                const collapsed = txtEl.getAttribute('data-collapsed') === '1';
+                if (collapsed) {
+                    txtEl.setAttribute('data-collapsed', '0');
+                    txtEl.style.maxHeight = '';
+                    txtEl.style.overflow = '';
+                    txtEl.style.webkitMaskImage = '';
+                    txtEl.style.maskImage = '';
+                    toggle.textContent = 'Show less';
+                } else {
+                    txtEl.setAttribute('data-collapsed', '1');
+                    txtEl.style.maxHeight = '7.2em';
+                    txtEl.style.overflow = 'hidden';
+                    txtEl.style.webkitMaskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
+                    txtEl.style.maskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
+                    toggle.textContent = 'Show more';
+                    bubbleDiv.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                }
+            });
+            (bubbleDiv._contentWrapper || txtEl.parentElement || bubbleDiv).appendChild(toggle);
+        }
+        function removeCollapse(bubbleDiv, txtEl) {
+            const t = bubbleDiv?.querySelector('[data-collapse-toggle]');
+            if (t) t.remove();
+            if (txtEl) {
+                txtEl.removeAttribute('data-collapsed');
+                txtEl.style.maxHeight = '';
+                txtEl.style.overflow = '';
+                txtEl.style.webkitMaskImage = '';
+                txtEl.style.maskImage = '';
+            }
+        }
         if (message.final && message.role !== 'user' && textElement) {
             const raw = (message.text || '').trim();
             const isLong = raw.length > 480 || (raw.match(/\n/g) || []).length >= 6;
+            const isLatest = isLatestAssistantBubble(messageDiv);
             const existingToggle = messageDiv.querySelector('[data-collapse-toggle]');
-            if (isLong) {
-                // Only build UI the first time; on subsequent updates (streaming
-                // → final) preserve the user's current expand state.
-                if (!existingToggle) {
-                    // Wrap textElement so we can clip its max height.
-                    textElement.setAttribute('data-collapsed', '1');
-                    textElement.style.maxHeight = '7.2em';
-                    textElement.style.overflow = 'hidden';
-                    textElement.style.position = 'relative';
-                    // Gradient fade at the bottom to hint "more below".
-                    textElement.style.webkitMaskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
-                    textElement.style.maskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
-
-                    const toggle = document.createElement('button');
-                    toggle.type = 'button';
-                    toggle.setAttribute('data-collapse-toggle', '1');
-                    // Bubble bg for assistant is bg-primary (teal), so a
-                    // text-primary button on it is INVISIBLE. Use white with
-                    // opacity + underline so it reads on both bubble colours
-                    // and is obvious as a clickable affordance.
-                    toggle.className = 'block mt-2 text-xs font-semibold text-white/90 hover:text-white underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-white/40 rounded';
-                    toggle.textContent = 'Show more';
-                    toggle.addEventListener('click', () => {
-                        const collapsed = textElement.getAttribute('data-collapsed') === '1';
-                        if (collapsed) {
-                            textElement.setAttribute('data-collapsed', '0');
-                            textElement.style.maxHeight = '';
-                            textElement.style.overflow = '';
-                            textElement.style.webkitMaskImage = '';
-                            textElement.style.maskImage = '';
-                            toggle.textContent = 'Show less';
-                        } else {
-                            textElement.setAttribute('data-collapsed', '1');
-                            textElement.style.maxHeight = '7.2em';
-                            textElement.style.overflow = 'hidden';
-                            textElement.style.webkitMaskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
-                            textElement.style.maskImage = 'linear-gradient(to bottom, black 70%, transparent 100%)';
-                            toggle.textContent = 'Show more';
-                            // Scroll bubble back into view after collapsing.
-                            messageDiv.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-                        }
-                    });
-                    // Append the toggle to the content wrapper (bubble) so
-                    // it appears inside the bubble, right below the text.
-                    (messageDiv._contentWrapper || textElement.parentElement || messageDiv).appendChild(toggle);
-                }
+            if (isLong && !isLatest) {
+                if (!existingToggle) applyCollapse(messageDiv, textElement);
             } else if (existingToggle) {
-                // Message shrank below threshold (edit/rewrite) — remove toggle
-                // and restore full display.
-                existingToggle.remove();
-                textElement.removeAttribute('data-collapsed');
-                textElement.style.maxHeight = '';
-                textElement.style.overflow = '';
-                textElement.style.webkitMaskImage = '';
-                textElement.style.maskImage = '';
+                // Latest OR shrank below threshold → show in full.
+                removeCollapse(messageDiv, textElement);
             }
         }
 
