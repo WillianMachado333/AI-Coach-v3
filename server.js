@@ -727,6 +727,95 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Dev: rebuild the shared "courses-shared" vector store from the on-disk
+    // knowledge-base/courses/ tree. Streams SSE progress. Prints the store id
+    // to set as COURSES_STORE_ID. Admin-only.
+    if (req.url.split('?')[0] === '/api/admin/dev/init-courses-store' && req.method === 'POST') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'
+        });
+        const send = (evt) => { try { res.write('data: ' + JSON.stringify(evt) + '\n\n'); } catch (_) {} };
+        (async () => {
+            try {
+                if (!openAIKey) { try { await fetchOpenAIKey(); } catch (_) {} }
+                if (!openAIKey) { send({ type: 'error', message: 'OpenAI key unavailable' }); return; }
+                // Reuse the client vectorStore already initialised with.
+                const OpenAI = require('openai');
+                const client = new OpenAI({ apiKey: openAIKey });
+                const path = require('path');
+                const fs = require('fs');
+                const { toFile } = require('openai/uploads');
+                const COURSES_DIR = path.join(__dirname, 'knowledge-base', 'courses');
+                function walkMd(dir) {
+                    const out = [];
+                    if (!fs.existsSync(dir)) return out;
+                    for (const name of fs.readdirSync(dir)) {
+                        const full = path.join(dir, name);
+                        const stat = fs.statSync(full);
+                        if (stat.isDirectory()) out.push(...walkMd(full));
+                        else if (name.endsWith('.md')) out.push(full);
+                    }
+                    return out.sort();
+                }
+                const STORE_NAME = 'courses-shared';
+                const files = walkMd(COURSES_DIR);
+                if (files.length === 0) {
+                    send({ type: 'error', message: 'no course files on disk — build them first' });
+                    return;
+                }
+                send({ type: 'start', count: files.length });
+                const page = await client.vectorStores.list({ limit: 100 });
+                let store = (page.data || []).find((s) => s.name === STORE_NAME);
+                if (store) send({ type: 'log', text: 'reusing store ' + store.id });
+                else { store = await client.vectorStores.create({ name: STORE_NAME }); send({ type: 'log', text: 'created store ' + store.id }); }
+                let existing = await client.vectorStores.files.list(store.id, { limit: 100 });
+                let purged = 0;
+                for (const f of existing.data || []) {
+                    try {
+                        await client.vectorStores.files.delete(f.id, { vector_store_id: store.id });
+                        try { await client.files.delete(f.id); } catch (_) {}
+                        purged++;
+                    } catch (_) {}
+                }
+                if (purged > 0) send({ type: 'log', text: 'purged ' + purged + ' old files' });
+                let i = 0;
+                for (const full of files) {
+                    const relative = path.relative(COURSES_DIR, full).replace(/\\/g, '/');
+                    const content = fs.readFileSync(full, 'utf8');
+                    const file = await client.files.create({
+                        file: await toFile(Buffer.from(content, 'utf8'), relative, { type: 'text/markdown' }),
+                        purpose: 'assistants'
+                    });
+                    await client.vectorStores.files.create(store.id, { file_id: file.id });
+                    i++;
+                    send({ type: 'file', i, total: files.length, relative });
+                }
+                const start = Date.now();
+                while (Date.now() - start < 60000) {
+                    const s = await client.vectorStores.retrieve(store.id);
+                    const c = s.file_counts || {};
+                    if (c.in_progress === 0) { send({ type: 'indexed', completed: c.completed, failed: c.failed }); break; }
+                    await new Promise((r) => setTimeout(r, 1500));
+                }
+                send({ type: 'done', storeId: store.id, hint: 'Set COURSES_STORE_ID=' + store.id + ' on Railway and redeploy.' });
+            } catch (e) {
+                send({ type: 'error', message: e?.message || 'init failed' });
+            } finally {
+                try { res.end(); } catch (_) {}
+            }
+        })();
+        return;
+    }
+
     // Dev: generate N synthetic sessions using the server's own OpenAI key.
     // Streams SSE progress events. Admin-only. Idempotent-ish (each run adds
     // fresh sessions with new IDs).

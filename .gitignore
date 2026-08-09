@@ -42,3 +42,10 @@ lcov.info
 .sass-cache/
 .claude/
 preview_cache/
+
+# Proprietary docs (course materials, competency frameworks, internal notes).
+# Keep locally; never commit. Any pre-existing tracked file stays tracked
+# until explicitly removed with `git rm --cached`.
+docs/
+knowledge-base/courses/
+knowledge-base/quizzes/

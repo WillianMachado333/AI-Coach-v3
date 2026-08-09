@@ -5393,6 +5393,13 @@ class VoiceChatBot {
                     "- When the user asks about their OWN results, quizzes, reports, values,",
                     '  strengths, patterns, or anything specific to them, CALL search_knowledge',
                     "  with scope='user_data' BEFORE answering.",
+                    "- When the user asks about course content, lessons, competencies (traits,",
+                    '  skills, behaviors), quiz questions or answers, learning objectives, or',
+                    "  says things like 'I got this question wrong', CALL search_knowledge with",
+                    "  scope='courses'. Courses carry pedagogical content, the competency",
+                    '  framework (Knowledge / Skills / Observable Behaviors / Performance',
+                    '  Indicators from Limited to Consistent / Misconceptions / Conversation',
+                    '  Starters) AND the quiz Q&A with correct/incorrect feedback.',
                     "- Only say you don't know AFTER search_knowledge returns no relevant chunks.",
                     '',
                     'MANDATORY BEHAVIOR FOR deep_think:',
@@ -6269,7 +6276,7 @@ class VoiceChatBot {
                     {
                         type: 'function',
                         name: 'search_knowledge',
-                        description: 'Search the coaching knowledge base for relevant information to ground your response. Use this whenever the user asks about their assessments, personal results, coaching frameworks, past sessions, or wants specific insights tied to their data. Choose scope: "user_data" for anything about THIS user (their quiz results, reports, past sessions), "frameworks" for general coaching approaches, "all" when unsure.',
+                        description: 'Search the coaching knowledge base for relevant information to ground your response. Use this whenever the user asks about their assessments, personal results, coaching frameworks, course content, quiz feedback, past sessions, or wants specific insights tied to their data. Choose scope: "user_data" for anything about THIS user, "frameworks" for coaching approaches, "courses" for pedagogical course content and quiz questions (Understanding Traits, Skills, and Behaviors), "all" when unsure.',
                         parameters: {
                             type: 'object',
                             properties: {
@@ -6279,8 +6286,8 @@ class VoiceChatBot {
                                 },
                                 scope: {
                                     type: 'string',
-                                    enum: ['user_data', 'frameworks', 'all'],
-                                    description: 'user_data = this user\'s report/history. frameworks = general coaching frameworks. all = both (default).'
+                                    enum: ['user_data', 'frameworks', 'courses', 'all'],
+                                    description: 'user_data = this user\'s report/history. frameworks = general coaching frameworks. courses = pedagogical course content + competency framework + quiz questions (e.g. Understanding Traits, Skills, and Behaviors). all = every store (default).'
                                 }
                             },
                             required: ['query']
