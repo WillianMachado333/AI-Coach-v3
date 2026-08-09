@@ -622,11 +622,23 @@ const server = http.createServer(async (req, res) => {
             try { p = body ? JSON.parse(body) : {}; } catch (_) { /* defaults */ }
             let userMessage = String(p.message || '').trim();
             const page = typeof p.page === 'string' ? p.page : null;
+            const ALLOWED_MARKER_TYPES = ['chart', 'model_sentence', 'number', 'quote', 'text'];
             const marker = (p.marker && typeof p.marker.text === 'string' && p.marker.text.trim())
-                ? { text: p.marker.text.trim().slice(0, 800), source: p.marker.source || null }
+                ? {
+                    text: p.marker.text.trim().slice(0, 800),
+                    source: p.marker.source || null,
+                    type: ALLOWED_MARKER_TYPES.includes(p.marker.type) ? p.marker.type : 'text'
+                }
                 : null;
             if (marker) {
-                userMessage = 'MARKED IN THE REPORT (from ' + (marker.source || 'unknown page') + '):\n"' + marker.text + '"\n\n' + userMessage;
+                const typeLabel = {
+                    chart: 'CHART',
+                    model_sentence: 'MODEL-GENERATED SENTENCE',
+                    number: 'NUMBER',
+                    quote: 'USER QUOTE',
+                    text: 'PLAIN TEXT'
+                }[marker.type] || 'TEXT';
+                userMessage = 'MARKED IN THE REPORT [type=' + typeLabel + ', from ' + (marker.source || 'unknown page') + ']:\n"' + marker.text + '"\n\n' + userMessage;
             }
             if (!userMessage) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
