@@ -22,6 +22,7 @@ const sessionLog = require('./lib/sessionLog');
 const studioAgent = require('./lib/studioAgent');
 const genSessions = require('./lib/genSessions');
 const attachments = require('./lib/attachments');
+const metrics = require('./lib/metrics');
 const simulator = require('./lib/simulator');
 const agentHistory = require('./lib/agentHistory');
 
