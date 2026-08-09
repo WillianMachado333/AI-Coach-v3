@@ -1161,6 +1161,65 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Simulator: coach presets — one entry per coaching framework file so the
+    // operator picks "Supportive" / "Directive" / etc and the guardrails
+    // textarea auto-fills with real production framework text.
+    if (req.url === '/api/admin/simulator/presets' && req.method === 'GET') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        const contentStore = require('./lib/contentStore');
+        const names = contentStore.listFrameworks();
+        const presets = names.map((n) => {
+            const r = contentStore.readFramework(n);
+            return { id: n, name: n, source: r?.source || 'default', guardrails: r?.text || '' };
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ presets }));
+        return;
+    }
+
+    // Simulator: seed candidates — recent real (non-tester, non-synthetic)
+    // sessions with their first user turn text as a seed for simulations.
+    if (req.url.startsWith('/api/admin/simulator/seeds') && req.method === 'GET') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        const sessionLog = require('./lib/sessionLog');
+        const parsed = new URL(req.url, 'http://x');
+        const limit = Math.min(40, Math.max(1, parseInt(parsed.searchParams.get('limit') || '15', 10)));
+        const list = sessionLog.listSessions({ tester: 'exclude', limit: 200 });
+        const seeds = [];
+        for (const row of list) {
+            if (seeds.length >= limit) break;
+            if (row.actor?.caller === 'synthetic') continue;
+            const data = sessionLog.readSession(row.sessionId);
+            if (!data) continue;
+            const firstUser = data.entries.find((e) => e.type === 'turn' && e.role === 'user' && e.text);
+            if (!firstUser) continue;
+            const text = typeof firstUser.text === 'string'
+                ? firstUser.text
+                : (firstUser.text?.redacted ? null : (firstUser.text?.text || null));
+            if (!text || text.length < 8) continue;
+            seeds.push({
+                sessionId: row.sessionId,
+                actor: row.actor?.email || row.actor?.userId || row.actor?.objectId || 'guest',
+                turns: row.turns,
+                startedAt: row.startedAt,
+                seed: text.slice(0, 400)
+            });
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ seeds }));
+        return;
+    }
+
     // Real multi-turn simulator — runs a conversation of `maxTurns` turns
     // between a fake user persona and the coach persona, streaming each
     // turn as it lands via SSE.
@@ -1193,6 +1252,7 @@ const server = http.createServer(async (req, res) => {
                     },
                     userPersona: p.userPersona || '',
                     seedMessage: p.seedMessage || '',
+                    priorTranscript: Array.isArray(p.priorTranscript) ? p.priorTranscript : [],
                     maxTurns: Math.min(20, Math.max(2, parseInt(p.maxTurns, 10) || 8))
                 }, send);
             } catch (e) {
