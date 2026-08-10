@@ -46,7 +46,22 @@ Convenções:
   - Testar caminho completo: co-worker renderiza chart → reload → chart continua visível idêntico.
 - **Sai daqui quando:** reload da página do Studio preserva 100% dos widgets (chart + table) em pelo menos 3 sessões diferentes do volume.
 
-### 5. Interação contextual em nível de elemento
+### 5. Visibilidade da camada de raciocínio (Erica) — admin + simulador
+- **Custo:** S
+- **Por que agora:** era uma das prioridades declaradas pra essa versão. Hoje a infra do `deepThink` já pede `reasoning.effort: 'medium'` mas NÃO pede `summary: 'auto'`, e nada é persistido em session log. Resultado: admin abre `/admin/sessions/:id` e não vê nenhum reasoning da Erica — só o reasoning do próprio co-worker do Studio (que é outra coisa). Falta pouco código pra fechar o loop.
+- **Escopo:**
+  - `lib/vectorStore.deepThink()`: adicionar `summary: 'auto'` no bloco `reasoning`. Retornar o summary junto com `reasoning` + `answer` no payload.
+  - `/api/deep-think` no server: propagar o summary de volta pro cliente.
+  - Client (app.js): quando recebe deep_think result, POSTa `session-log { kind: 'event', name: 'reasoning_summary', meta: { source: 'deep_think', summary, effort, model } }`. Não bloquear resposta.
+  - Client (app.js): tentar `reasoning: { effort: 'medium', summary: 'auto' }` no `session.update` do Realtime. Escutar reasoning nos `response.done` events; se aparecer, POSTa `session-log { kind: 'event', name: 'reasoning_summary', meta: { source: 'realtime', summary } }`. Se a API rejeitar o config, log warning e não quebrar o coach.
+  - `lib/sessionLog`: reconhecer `event.name === 'reasoning_summary'` sem cap de tamanho (ou mover pra arquivo separado dedup se ficar grande, mesmo padrão dos prompt snapshots).
+  - `/admin/sessions/:id`: renderizar bloco expansível "Reasoning ▸" na linha do tool_call (deep_think) OU do turn (Realtime), com destaque visual distinto — borda âmbar, ícone 🧠, source label ("deep_think" vs "realtime") visível.
+  - Simulador (`/admin/simulator`): quando rodar pipeline completo com deep_think ativado, mostrar o reasoning summary num painel lateral abaixo da resposta simulada.
+  - `/admin/metrics`: adicionar `% de sessões com reasoning capturado` e `avg summary length` na tabela existente.
+- **NÃO faz:** expor reasoning pro usuário final (botão "por que você disse isso?"). Só admin. Também não altera `reasoning.effort` — fica em `medium`.
+- **Sai daqui quando:** Willian abre 3 sessões recentes no admin e vê reasoning summary da Erica renderizado em pelo menos 1 turn de cada; simulador com pipeline completo mostra reasoning ao lado da resposta.
+
+### 6. Interação contextual em nível de elemento
 - **Custo:** M
 - **Por que agora:** o simulador já mostra o cenário site-embeds-coach funcionando. Prova de conceito madura. Próximo salto de valor é a coach saber *o que o usuário está olhando/marcando na página*, não só a página inteira.
 - **Escopo:** bridge.js escuta `selectionchange` / `focusin` / click em elementos com `data-erica-hint` no site → posta `PAGE_ELEMENT_FOCUS` para o iframe. Coach system prompt aprende a citar o elemento marcado.

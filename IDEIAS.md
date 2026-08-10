@@ -46,6 +46,7 @@ Convenções:
 - **[💡] Skip forward na voz** — pular pedaços do turno atual (útil quando ela repete algo).
 - **[💡] Multi-language switch** — hoje detecta idioma auto, mas dá pra ter toggle explícito.
 - **[💡] Save / name a coaching session** — usuário nomeia e volta a uma conversa específica depois ("Semana da decisão do trabalho").
+- **[💡] Seta discreta de minimizar no topo do chat** — hoje só tap na Erica minimiza (e funciona bem). Willian: intuição visual pede uma seta pra baixo discreta no top-right do chat expandido, perto do menu `⋮`. Ambas afordâncias em paralelo — tap na Erica continua funcionando, seta é reforço visual pra quem não descobriu o gesto.
 
 ## Voz / Realtime
 
