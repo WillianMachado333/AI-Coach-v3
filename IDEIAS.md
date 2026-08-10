@@ -53,6 +53,7 @@ Convenções:
 
 - **[⚠️] Barge-in robusto** — hoje funciona segundo Willian testou, mas VAD threshold=0.95 e handler sem `response.cancel` explícito. Se voltar a falhar, root cause já mapeado em [ai-coach-voice-barge-in-broken].
 - **[💡] Detectar silêncio prolongado → pergunta suave** — se user parou de falar por N segundos sem intenção clara, coach faz uma pergunta gentil ao invés de esperar.
+- **[🐛] Ícone em animação falante o tempo todo no modo voz** — ao entrar no modo voz, o ícone da Erica fica em animação "ela-está-falando" permanentemente, mesmo quando ela está em silêncio (escutando o usuário, esperando, ou entre turnos). Deveria animar SÓ enquanto áudio da Erica está sendo emitido. Impacto: cue visual perde sentido — pra usuário parece que ela ficou congelada num loop de fala. Conflita diretamente com a intenção descrita em [[ai-coach-voice-natural-by-default]] (animação = "ela está falando"). Hipótese: state machine no bridge/app.js entra em `speaking` no `session.updated` e não sai; ou não escuta `response.audio.done` / `output_audio_buffer.stopped`. Investigar handlers de eventos Realtime em `app.js` e classes CSS aplicadas no ícone.
 
 ## Coach Studio (observatório + editor)
 
@@ -64,7 +65,6 @@ Convenções:
 - **[💡] Diff visual entre versões** — hoje mostra hunk texto; poderia ser side-by-side proper.
 - **[💡] Session bookmarks para Varsha/Eric** — marca sessão como "exemplar" / "problema" com nota, aparece na home.
 - **[💡] Cost tracking** — quanto cada sessão custou em OpenAI tokens (aproximado). Ajuda a decidir modelos.
-- **[📋] Hierarquia de nav do Studio — promover ajuste, arquivar observação** — hoje sessions / users / metrics / audit dividem o topo com simulator / frameworks / personas. Willian: as ferramentas de tuning (simulator, frameworks, personas) são o uso diário e devem estar proeminentes; observatório (sessions, users, metrics, audit) é uso reativo — deveria estar numa prateleira secundária menor. Reorganizar top-nav ou dividir em dois grupos visuais (ex: um grupo "Tune" grande, um grupo "Observe" menor/dropdown).
 
 ## Segurança / operação
 
