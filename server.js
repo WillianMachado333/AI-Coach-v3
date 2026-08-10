@@ -606,7 +606,16 @@ const server = http.createServer(async (req, res) => {
                 '  Tool failure sessions: ' + m.qualitySignals.toolFailureCount,
                 '',
                 'Top tool usage (all-time, aggregated):',
-                ...Object.entries(m.toolUsage || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([n, c]) => '  - ' + n + ': ' + c + ' calls' + (m.toolErrors?.[n] ? ' (' + m.toolErrors[n] + ' errors)' : '')),
+                // metrics.compute() returns toolUsage as a sorted array of
+                // [name, count] tuples — iterate it directly. (Old code did
+                // Object.entries on the array, producing numeric-keyed rows
+                // like "- 0: my-tool,3 calls" in the export.)
+                ...(Array.isArray(m.toolUsage) ? m.toolUsage : Object.entries(m.toolUsage || {})).slice(0, 8).map(([n, c]) => {
+                    const errArr = Array.isArray(m.toolErrors) ? m.toolErrors : Object.entries(m.toolErrors || {});
+                    const errRow = errArr.find((r) => r[0] === n);
+                    const err = errRow ? errRow[1] : 0;
+                    return '  - ' + n + ': ' + c + ' calls' + (err ? ' (' + err + ' errors)' : '');
+                }),
                 '',
                 '=== RECENT SESSIONS (up to 20 within window) ===',
                 '',
