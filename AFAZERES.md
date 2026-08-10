@@ -3,6 +3,8 @@
 Ordem de implementação decidida. Cada item já foi ponderado no backlog e trouxe pra cá por razão explícita.
 Regra: no máximo 5-7 itens comprometidos por vez — se algo entra aqui, algo sai (ou volta pro backlog).
 
+_Status batch 2026-08-10 (Willian sprint "faz 1,2,3,5,6"): #1 shipped e verificado, #2 shipped, #4 já resolvido no batch anterior, #5 shipped (com fallback pra org não verificada — ver commit 8297371), #3 primeira camada shipped (nav + Real Time + hubs), #6 shipped e verificado ponta-a-ponta no simulador (score row → PAGE_ELEMENT_FOCUS → coach prompt injection)._
+
 Convenções:
 - **Custo:** S (≤ 1 dia) · M (2-5 dias) · L (semana +)
 - **Por que agora:** a razão explícita — evita entrar por impulso
