@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-07T09:00-preview-gate';
+    var VERSION = '2026-08-10T02:20-element-focus';
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -169,6 +169,82 @@
             return;
         }
     });
+
+    // --- Element-level focus bridge ---
+    // The coach becomes more useful when she knows what the user is looking at
+    // right now — not just the page, but a specific chart row, a definition
+    // paragraph, a checkbox they just picked. Two channels feed this:
+    //   a) any element carrying `data-erica-hint="short description"` (or plain
+    //      data-erica-hint with textContent), when clicked or focused
+    //   b) any text the user selects on the page (selectionchange)
+    // We post `PAGE_ELEMENT_FOCUS` to the iframe with a compact snapshot.
+    // Debounced to avoid flooding during drag-selection.
+    var _lastFocusPayload = null;
+    var _focusDebounceTimer = null;
+    function postElementFocus(payload) {
+        if (!payload) return;
+        // Skip identical repeats.
+        var serialized = payload.kind + '|' + (payload.hint || '') + '|' + (payload.text || '').slice(0, 200);
+        if (serialized === _lastFocusPayload) return;
+        _lastFocusPayload = serialized;
+        var iframe = document.getElementById(IFRAME_ID);
+        if (!iframe || !iframe.contentWindow) return;
+        try {
+            iframe.contentWindow.postMessage(
+                Object.assign({ type: 'PAGE_ELEMENT_FOCUS' }, payload),
+                '*'
+            );
+            console.log('[CTBridge] PAGE_ELEMENT_FOCUS →', payload.kind, (payload.hint || payload.text || '').slice(0, 60));
+        } catch (_) { /* non-fatal */ }
+    }
+    function debouncedPostFocus(payload) {
+        if (_focusDebounceTimer) clearTimeout(_focusDebounceTimer);
+        _focusDebounceTimer = setTimeout(function () { postElementFocus(payload); }, 180);
+    }
+    function extractHint(el) {
+        if (!el || !el.getAttribute) return null;
+        var hint = el.getAttribute('data-erica-hint');
+        if (hint == null) return null;
+        return {
+            hint: (hint || '').trim(),
+            text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+            tag: (el.tagName || '').toLowerCase(),
+            role: el.getAttribute('role') || null
+        };
+    }
+    function attachElementFocusListeners() {
+        // Global click — pick the nearest ancestor carrying data-erica-hint.
+        document.addEventListener('click', function (e) {
+            var el = e.target && e.target.closest ? e.target.closest('[data-erica-hint]') : null;
+            var info = extractHint(el);
+            if (!info) return;
+            debouncedPostFocus(Object.assign({ kind: 'click' }, info));
+        }, true);
+        // Global focusin — same probe.
+        document.addEventListener('focusin', function (e) {
+            var el = e.target && e.target.closest ? e.target.closest('[data-erica-hint]') : null;
+            var info = extractHint(el);
+            if (!info) return;
+            debouncedPostFocus(Object.assign({ kind: 'focus' }, info));
+        }, true);
+        // Text selection — anywhere on the page. Sends the selected text so
+        // Erica can react to "what did I just highlight?". Fires only when
+        // the selection stabilises (debounced) and is non-trivial.
+        document.addEventListener('selectionchange', function () {
+            var sel = null;
+            try { sel = window.getSelection && window.getSelection(); } catch (_) {}
+            if (!sel || sel.isCollapsed) return;
+            var text = (sel.toString() || '').replace(/\s+/g, ' ').trim();
+            if (text.length < 6) return; // ignore accidental micro-selections
+            debouncedPostFocus({
+                kind: 'selection',
+                hint: 'selection',
+                text: text.slice(0, 500),
+                tag: null,
+                role: null
+            });
+        });
+    }
 
     // Capture a compact snapshot of the current page. Prefers <main>/<article>
     // for content-first pages (report / journey / quiz result pages); falls
@@ -644,9 +720,13 @@
 
     // --- Boot ---
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', function () { setTimeout(injectUI, 500); });
+        document.addEventListener('DOMContentLoaded', function () {
+            setTimeout(injectUI, 500);
+            attachElementFocusListeners();
+        });
     } else {
         setTimeout(injectUI, 500);
+        attachElementFocusListeners();
     }
 
     console.log('[CTBridge] Loaded (version ' + VERSION + ')');

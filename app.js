@@ -2520,6 +2520,25 @@ class VoiceChatBot {
                 waiters.forEach((fn) => { try { fn(data.context); } catch (_) {} });
                 return;
             }
+            if (data.type === 'PAGE_ELEMENT_FOCUS' && data && (data.hint || data.text)) {
+                // Bridge announces that the user is looking at / interacted
+                // with a specific element on the parent page. Stash it so the
+                // next user turn is enriched with this context — Erica can
+                // then cite that specific row / paragraph / choice.
+                this._lastElementFocus = {
+                    kind: data.kind || 'unknown',
+                    hint: (data.hint || '').slice(0, 200),
+                    text: (data.text || '').slice(0, 500),
+                    tag: data.tag || null,
+                    role: data.role || null,
+                    at: Date.now()
+                };
+                try {
+                    console.log('[Erica] page element focus:', this._lastElementFocus.kind, '·',
+                        (this._lastElementFocus.hint || this._lastElementFocus.text).slice(0, 80));
+                } catch (_) {}
+                return;
+            }
             if (data.type === 'SEND_PILL_INDEX' && typeof data.label === 'string' && data.label.trim()) {
                 // Route through the exact same code path as clicking an
                 // inline pill (see _paintQuickActionButtons onclick):
@@ -3200,6 +3219,26 @@ class VoiceChatBot {
             this.botStartTimestamp = userTimestamp + 100; // 100ms after user message
         }
 
+        // If the bridge told us the user just clicked / focused / selected
+        // something on the host page, prepend that as a silent context line
+        // so Erica can cite the specific element without the user having to
+        // describe it. Consume it (single-use) so a stale focus doesn't leak
+        // into unrelated later turns.
+        let sendText = text;
+        try {
+            const focus = this._lastElementFocus;
+            if (focus && (Date.now() - focus.at) < 60000) {
+                const kindLabel = focus.kind === 'selection' ? 'selected' :
+                    focus.kind === 'click' ? 'clicked on' : 'focused on';
+                const desc = focus.hint || focus.text;
+                if (desc) {
+                    sendText = '[Context — user just ' + kindLabel + ' on the page: '
+                        + desc.slice(0, 300) + ']\n\n' + text;
+                }
+                this._lastElementFocus = null;
+            }
+        } catch (_) { /* non-fatal */ }
+
         // Send text message to Realtime API
         this.sendMessage({
             type: 'conversation.item.create',
@@ -3209,7 +3248,7 @@ class VoiceChatBot {
                 content: [
                     {
                         type: 'input_text',
-                        text: text
+                        text: sendText
                     }
                 ]
             }
@@ -5498,6 +5537,23 @@ class VoiceChatBot {
                     '- One-column lists (just narrate them).',
                     '- Decoration when prose would be clearer.',
                     '- Missing values — never send zero as a stand-in. Omit the point/bar entirely.',
+                    '',
+                    '=== ELEMENT-LEVEL PAGE FOCUS ===',
+                    'When a user message starts with a bracketed marker like',
+                    '   [Context — user just clicked on the page: …]',
+                    '   [Context — user just selected on the page: …]',
+                    '   [Context — user just focused on the page: …]',
+                    'that is a silent hint from the site — the user has interacted with',
+                    'a specific element (a table row, a paragraph, a checkbox) and the',
+                    'coach should react as if the user pointed at it. Rules:',
+                    '- Do NOT read the marker aloud. Do NOT say "I see you clicked on".',
+                    '- Weave the referenced item naturally into your reply ("that",',
+                    '  "the row you highlighted", "the definition you\'re on").',
+                    '- The user\'s real question comes AFTER the marker — answer that,',
+                    '  grounded in the element.',
+                    '- If the marker is alone (no question), treat it as an invitation',
+                    '  to comment briefly on the item and offer ONE next thought.',
+                    '=== END ELEMENT-LEVEL PAGE FOCUS ===',
                     '=== END KNOWLEDGE GROUNDING & REASONING ==='
                 ].join('\n');
 
