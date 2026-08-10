@@ -25,6 +25,7 @@ const attachments = require('./lib/attachments');
 const metrics = require('./lib/metrics');
 const simulator = require('./lib/simulator');
 const agentHistory = require('./lib/agentHistory');
+const runtimeConfig = require('./lib/runtimeConfig');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -1898,11 +1899,11 @@ const server = http.createServer(async (req, res) => {
 
                     // Best-effort sync to user's vector store. Cheap when unchanged
                     // (hash cache short-circuits). Never blocks the response.
-                    syncPreparationToVectorStore(userId, cached.data);
+                    if (runtimeConfig.isEnabled('user_report')) syncPreparationToVectorStore(userId, cached.data);
                     // Activity keeps its own on-disk cache so a repeated cache-hit
                     // here is still cheap. Signed-in users use userId; guest users
                     // use their bridged objectId.
-                    if (!isSimulatorMode) syncActivityForSession(userId, objectId);
+                    if (!isSimulatorMode && runtimeConfig.isEnabled('activity_timeline')) syncActivityForSession(userId, objectId);
                     return;
                 }
 
@@ -1988,11 +1989,11 @@ const server = http.createServer(async (req, res) => {
                         res.end(responseData);
 
                         // Best-effort sync to user's vector store (see helper above).
-                        syncPreparationToVectorStore(userId, responseData);
+                        if (runtimeConfig.isEnabled('user_report')) syncPreparationToVectorStore(userId, responseData);
                         // And pull latest CleverTap activity delta, index to
                         // vector store. Uses userId when present, otherwise
                         // the guest objectId bridged from the parent page.
-                        if (!isSimulatorMode) syncActivityForSession(userId, objectId);
+                        if (!isSimulatorMode && runtimeConfig.isEnabled('activity_timeline')) syncActivityForSession(userId, objectId);
                     });
                 });
 
