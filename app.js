@@ -5113,6 +5113,20 @@ class VoiceChatBot {
                             { label: 'preparation fetch', retries: 8 }
                         );
 
+                        // Capture the observatory session id from the response
+                        // header before consuming the body. Used for POSTing
+                        // client-side events (e.g. reasoning_summary) into the
+                        // NDJSON stream on /data/sessions/*.
+                        try {
+                            const sid = response.headers && response.headers.get
+                                ? response.headers.get('X-Session-Id')
+                                : null;
+                            if (sid) {
+                                this.sessionId = sid;
+                                this.dlog('[Erica] Captured session id:', sid);
+                            }
+                        } catch (_) { /* header read never blocks flow */ }
+
                         // Read text once so we can debug even on errors
                         const responseText = await response.text();
 
@@ -6928,8 +6942,30 @@ class VoiceChatBot {
                             console.log('[Erica] ✅ deep_think returned:', {
                                 model: dtData.model,
                                 reasoningChars: (dtData.reasoning || '').length,
+                                summaryChars: (dtData.reasoningSummary || '').length,
                                 answerChars: (dtData.answer || '').length
                             });
+                            // Log the reasoning summary to the session store so
+                            // admin can inspect it later — fire and forget.
+                            const summary = dtData.reasoningSummary || dtData.reasoning || null;
+                            if (summary && this.sessionId) {
+                                fetch(this.apiUrl('/api/session-log'), {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        sessionId: this.sessionId,
+                                        kind: 'event',
+                                        name: 'reasoning_summary',
+                                        meta: {
+                                            source: 'deep_think',
+                                            summary,
+                                            model: dtData.model || null,
+                                            queryPreview: query.slice(0, 120),
+                                            chars: summary.length
+                                        }
+                                    })
+                                }).catch(() => { /* non-blocking */ });
+                            }
                             result = JSON.stringify({
                                 instruction: 'Use the reasoning and answer below to compose your reply. Do NOT read the reasoning aloud — it is internal deliberation. Deliver the answer in your own coaching voice.',
                                 reasoning: dtData.reasoning || null,

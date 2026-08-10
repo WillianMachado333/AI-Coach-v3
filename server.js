@@ -1787,6 +1787,7 @@ const server = http.createServer(async (req, res) => {
                 logAt('info', '[SERVER] /api/deep-think ->', {
                     model: result.model,
                     reasoningChars: (result.reasoning || '').length,
+                    reasoningSummaryChars: (result.reasoningSummary || '').length,
                     answerChars: (result.answer || '').length
                 });
 
