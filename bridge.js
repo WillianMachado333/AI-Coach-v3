@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-10T02:20-element-focus';
+    var VERSION = '2026-08-10T03:20-focus-hardened';
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -213,6 +213,12 @@
         };
     }
     function attachElementFocusListeners() {
+        // Guard against double-attachment (script re-injected by Wix editor
+        // preview reloads, live-reload during dev, etc). Capture-phase
+        // listeners stack cleanly and every event would fire twice.
+        if (window.__ctBridgeFocusAttached) return;
+        window.__ctBridgeFocusAttached = true;
+
         // Global click — pick the nearest ancestor carrying data-erica-hint.
         document.addEventListener('click', function (e) {
             var el = e.target && e.target.closest ? e.target.closest('[data-erica-hint]') : null;
@@ -220,20 +226,29 @@
             if (!info) return;
             debouncedPostFocus(Object.assign({ kind: 'click' }, info));
         }, true);
-        // Global focusin — same probe.
+        // Global focusin — same probe. Bail on inputs/textareas so we don't
+        // treat "user tabbed into a form field" as a focus intent event.
         document.addEventListener('focusin', function (e) {
-            var el = e.target && e.target.closest ? e.target.closest('[data-erica-hint]') : null;
+            var t = e.target;
+            if (t && t.matches && t.matches('input,textarea,[contenteditable="true"]')) return;
+            var el = t && t.closest ? t.closest('[data-erica-hint]') : null;
             var info = extractHint(el);
             if (!info) return;
             debouncedPostFocus(Object.assign({ kind: 'focus' }, info));
         }, true);
         // Text selection — anywhere on the page. Sends the selected text so
         // Erica can react to "what did I just highlight?". Fires only when
-        // the selection stabilises (debounced) and is non-trivial.
+        // the selection stabilises (debounced) and is non-trivial. Explicitly
+        // skips selections that live inside an input/textarea/contenteditable
+        // — that's the user drafting text into a form (Wix search box,
+        // signup, etc.) and posting it out would be a privacy leak.
         document.addEventListener('selectionchange', function () {
             var sel = null;
             try { sel = window.getSelection && window.getSelection(); } catch (_) {}
             if (!sel || sel.isCollapsed) return;
+            var anchor = sel.anchorNode;
+            var host = anchor && anchor.nodeType === 1 ? anchor : (anchor && anchor.parentElement);
+            if (host && host.closest && host.closest('input,textarea,[contenteditable="true"]')) return;
             var text = (sel.toString() || '').replace(/\s+/g, ' ').trim();
             if (text.length < 6) return; // ignore accidental micro-selections
             debouncedPostFocus({
@@ -244,6 +259,11 @@
                 role: null
             });
         });
+
+        // Reset the dedup fingerprint every ~15s so the same click twice
+        // (deliberate follow-up on the same row) fires PAGE_ELEMENT_FOCUS
+        // both times instead of silently dropping the second.
+        setInterval(function () { _lastFocusPayload = null; }, 15000);
     }
 
     // Capture a compact snapshot of the current page. Prefers <main>/<article>

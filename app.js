@@ -2497,6 +2497,36 @@ class VoiceChatBot {
     //   - Bridge sends SEND_PILL_INDEX when the user clicks one of those
     //     hover pills → we treat it exactly as if the user clicked the
     //     inline pill (send that text as a message).
+    // Only trusted parent origins may steer the coach (send messages as if
+    // the user typed them, or feed context that will end up in the prompt).
+    // Anything else on the page — a Wix third-party embed, an ad tag — can
+    // reach into parent.frames but should NOT be able to walk our iframe.
+    // Read-only handshake messages (GET_PILL_LABELS, PAGE_CONTEXT_RESPONSE)
+    // stay open — those come from our own bridge and are idempotent probes.
+    _isTrustedBridgeOrigin(origin) {
+        if (!origin || origin === 'null') return false;
+        try {
+            const u = new URL(origin);
+            // Same origin as the coach — always safe.
+            if (u.origin === window.location.origin) return true;
+            const host = u.hostname.toLowerCase();
+            // The real Wix production + the awav.com preview + admin/simulator.
+            const allowed = [
+                'talenttransformation.com',
+                'www.talenttransformation.com',
+                'awav.com',
+                'www.awav.com',
+                'web-production-2c7ff.up.railway.app'
+            ];
+            if (allowed.includes(host)) return true;
+            // Wix editor sub-hosts (a.wix.com, editor.wix.com, etc). Keep
+            // scoped to Wix domain family so a random `wix-something.com`
+            // can't spoof.
+            if (host.endsWith('.wixsite.com') || host.endsWith('.wix.com') || host.endsWith('.editorx.io')) return true;
+            return false;
+        } catch (_) { return false; }
+    }
+
     setupBridgeMessaging() {
         if (this._bridgeListenerAttached) return;
         this._bridgeListenerAttached = true;
@@ -2521,6 +2551,13 @@ class VoiceChatBot {
                 return;
             }
             if (data.type === 'PAGE_ELEMENT_FOCUS' && data && (data.hint || data.text)) {
+                // State-changing message: enforce trusted-origin allowlist so
+                // a co-hosted iframe (ad, third-party embed) can't feed
+                // arbitrary prompt-injection text into Erica's next turn.
+                if (!this._isTrustedBridgeOrigin(event.origin)) {
+                    console.warn('[Erica] Rejected PAGE_ELEMENT_FOCUS from untrusted origin:', event.origin);
+                    return;
+                }
                 // Bridge announces that the user is looking at / interacted
                 // with a specific element on the parent page. Stash it so the
                 // next user turn is enriched with this context — Erica can
@@ -2540,6 +2577,13 @@ class VoiceChatBot {
                 return;
             }
             if (data.type === 'SEND_PILL_INDEX' && typeof data.label === 'string' && data.label.trim()) {
+                // State-changing message: enforce trusted-origin allowlist —
+                // any co-hosted iframe could otherwise post SEND_PILL_INDEX
+                // and inject text as if the user typed it.
+                if (!this._isTrustedBridgeOrigin(event.origin)) {
+                    console.warn('[Erica] Rejected SEND_PILL_INDEX from untrusted origin:', event.origin);
+                    return;
+                }
                 // Route through the exact same code path as clicking an
                 // inline pill (see _paintQuickActionButtons onclick):
                 // sendTextMessage handles composing + dispatching to the
@@ -4374,6 +4418,45 @@ class VoiceChatBot {
         }
     }
 
+    // Lightweight WebRTC teardown used by silent auto-reconnect. Closes the
+    // dataChannel + pc + local stream, drops the remote <audio> element,
+    // closes the AudioContext, clears the level intervals. Does NOT touch
+    // the UI (no updateStatus, no button disabling, no pill clears) so
+    // silent reconnect never flashes a "disconnected" state. Old code
+    // called this.connect() directly without teardown, orphaning an
+    // RTCPeerConnection + <audio> + intervals on every reconnect —
+    // catastrophic on a flaky network.
+    _teardownWebRTCOnly() {
+        try { if (this.dataChannel) { this.dataChannel.close(); this.dataChannel = null; } } catch (_) {}
+        try { if (this.pc) { this.pc.close(); this.pc = null; } } catch (_) {}
+        this.audioSender = null;
+        try {
+            if (this.localStream) {
+                this.localStream.getTracks().forEach((t) => t.stop());
+                this.localStream = null;
+            }
+        } catch (_) {}
+        try {
+            if (this.remoteAudio) {
+                this.remoteAudio.pause();
+                this.remoteAudio.srcObject = null;
+                if (this.remoteAudio.parentNode) this.remoteAudio.parentNode.removeChild(this.remoteAudio);
+                this.remoteAudio = null;
+            }
+        } catch (_) {}
+        try {
+            if (this.audioContext) { this.audioContext.close(); this.audioContext = null; }
+        } catch (_) {}
+        try { if (this.audioLevelInterval) { clearInterval(this.audioLevelInterval); this.audioLevelInterval = null; } } catch (_) {}
+        try { if (this.audioCheckInterval) { clearInterval(this.audioCheckInterval); this.audioCheckInterval = null; } } catch (_) {}
+        try { if (this.remoteLevelInterval) { clearInterval(this.remoteLevelInterval); this.remoteLevelInterval = null; } } catch (_) {}
+        this.remoteAnalyser = null;
+        try { if (this.remoteAudioSource) { this.remoteAudioSource.disconnect(); this.remoteAudioSource = null; } } catch (_) {}
+        try { if (this.remoteAudioGain) { this.remoteAudioGain.disconnect(); this.remoteAudioGain = null; } } catch (_) {}
+        try { if (this.pendingResponses) this.pendingResponses.clear(); } catch (_) {}
+        try { if (this.activeAudioResponses) this.activeAudioResponses.clear(); } catch (_) {}
+    }
+
     async disconnect() {
         // Stop recording if active
         if (this.isRecording) {
@@ -5114,6 +5197,21 @@ class VoiceChatBot {
             if (!force && cached && now - cached.ts < 60_000) {
                 this.dlog('[Erica] Using cached preparation', { cacheKey });
                 data = cached.data;
+                // Cache-hit branch didn't populate sessionId, so reasoning
+                // capture / session-log POSTs silently no-op'd for entire
+                // sessions that hit the cache. Restore it from the last
+                // network fetch's stash, or synthesise one client-side so
+                // observability never depends on a network header.
+                if (!this.sessionId) {
+                    if (this._lastPrepSessionId) {
+                        this.sessionId = this._lastPrepSessionId;
+                    } else if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                        this.sessionId = 's-c-' + crypto.randomUUID().slice(0, 20).replace(/-/g, '');
+                    } else {
+                        this.sessionId = 's-c-' + Math.random().toString(36).slice(2, 14);
+                    }
+                    this.dlog('[Erica] Fallback session id for cache-hit branch:', this.sessionId);
+                }
             } else {
                 // Single-flight: share the same network call across concurrent attempts
                 if (!this._prepFetchInFlight) {
@@ -5153,18 +5251,23 @@ class VoiceChatBot {
                         );
 
                         // Capture the observatory session id from the response
-                        // header before consuming the body. Used for POSTing
-                        // client-side events (e.g. reasoning_summary) into the
-                        // NDJSON stream on /data/sessions/*.
+                        // header before consuming the body. Also cache it on
+                        // the cache entry so the cache-hit branch upstairs
+                        // can restore it without needing a network round trip.
+                        // Client-side events (reasoning_summary etc.) POST
+                        // into the NDJSON stream on /data/sessions/* using it.
+                        let capturedSid = null;
                         try {
-                            const sid = response.headers && response.headers.get
+                            capturedSid = response.headers && response.headers.get
                                 ? response.headers.get('X-Session-Id')
                                 : null;
-                            if (sid) {
-                                this.sessionId = sid;
-                                this.dlog('[Erica] Captured session id:', sid);
+                            if (capturedSid) {
+                                this.sessionId = capturedSid;
+                                this.dlog('[Erica] Captured session id:', capturedSid);
                             }
                         } catch (_) { /* header read never blocks flow */ }
+                        // Stash for the cache-hit path (referenced below).
+                        this._lastPrepSessionId = capturedSid || this.sessionId || null;
 
                         // Read text once so we can debug even on errors
                         const responseText = await response.text();
@@ -6022,6 +6125,12 @@ class VoiceChatBot {
                             window.uiLayout.updateStatusDot(this, 'connecting');
                         }
 
+                        // Tear down the dead WebRTC stack FIRST so we don't
+                        // orphan an RTCPeerConnection + <audio> element +
+                        // level-check intervals on every reconnect. On a
+                        // flaky network the old code stacked all of these.
+                        try { this._teardownWebRTCOnly(); } catch (_) {}
+
                         // Small delay to let the connection fully close
                         setTimeout(() => {
                             this.connect({ skipOpeningLine: true })
@@ -6293,9 +6402,15 @@ class VoiceChatBot {
                         },
                         turn_detection: {
                             type: 'server_vad',
-                            threshold: 0.95,
-                            prefix_padding_ms: 600,
-                            silence_duration_ms: 2000
+                            // Threshold 0.5 is the OpenAI default and makes
+                            // barge-in feel natural. 0.95 (the old value)
+                            // meant the user had to nearly shout to be heard
+                            // over Erica's own TTS. Silence window trimmed
+                            // to 700 ms so short user acknowledgements
+                            // ("uh-huh") don't get merged into one long turn.
+                            threshold: 0.5,
+                            prefix_padding_ms: 300,
+                            silence_duration_ms: 700
                         }
                     },
                     output: {
@@ -6636,7 +6751,15 @@ class VoiceChatBot {
             console.log('[Erica] 🔁 Skipping duplicate function call (already executed):', functionName, callId);
             return;
         }
-        if (callId) this._executedCallIds.add(callId);
+        if (callId) {
+            this._executedCallIds.add(callId);
+            // Cap the set at ~200 entries so a long-lived tab doesn't grow
+            // unbounded. Deletion order = insertion order for Sets.
+            if (this._executedCallIds.size > 200) {
+                const first = this._executedCallIds.values().next().value;
+                if (first !== undefined) this._executedCallIds.delete(first);
+            }
+        }
 
         try {
             console.log('[Erica] 🔍 Function call received:', functionName, functionArgs);
@@ -6651,6 +6774,13 @@ class VoiceChatBot {
                     result = JSON.stringify({ error: 'Search query is required' });
                 } else {
                     console.log('[Erica] 🔍 Web search requested for:', query);
+
+                    // Show the typing indicator while the fetch is inflight —
+                    // web search commonly takes 3-8s; without this the user
+                    // sees dead silence and thinks the coach is stuck.
+                    if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
+                        window.uiLayout.setWaitingState(this, true);
+                    }
 
                     // Call secure server-side proxy (API key never exposed to client)
                     try {
@@ -6675,30 +6805,50 @@ class VoiceChatBot {
                                 statusText: searchResponse.statusText,
                                 error: errorText.substring(0, 500)
                             });
-                            throw new Error(`Search API error: ${searchResponse.status} - ${errorText.substring(0, 200)}`);
-                        }
-
-                        const searchData = await searchResponse.json();
-                        console.log('[Erica] ✅ Search response received');
-
-                        // Extract the answer from the response
-                        if (searchData.answer) {
-                            result = searchData.answer;
-                            console.log('[Erica] ✅ Search completed, answer length:', result.length);
+                            // DO NOT throw — the outer catch that follows the
+                            // tool dispatch does not fire response.create, so
+                            // the model would hang forever with a typing dot.
+                            // Feed the error back as a normal tool result and
+                            // let the coach acknowledge the failure.
+                            result = JSON.stringify({
+                                error: 'Web search failed',
+                                status: searchResponse.status,
+                                detail: errorText.substring(0, 200)
+                            });
                         } else {
-                            console.warn('[Erica] ⚠️ No answer in search response');
-                            result = `A web search was performed for "${query}" but no results were returned.`;
+                            const searchData = await searchResponse.json();
+                            console.log('[Erica] ✅ Search response received');
+
+                            // Extract the answer from the response
+                            if (searchData.answer) {
+                                result = searchData.answer;
+                                console.log('[Erica] ✅ Search completed, answer length:', result.length);
+                            } else {
+                                console.warn('[Erica] ⚠️ No answer in search response');
+                                result = `A web search was performed for "${query}" but no results were returned.`;
+                            }
                         }
 
                     } catch (error) {
                         console.error('[Erica] ❌ Error performing web search:', error);
-                        throw new Error(`Web search failed: ${error.message}`);
+                        result = JSON.stringify({
+                            error: 'Web search exception: ' + (error?.message || String(error))
+                        });
+                    } finally {
+                        if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
+                            window.uiLayout.setWaitingState(this, false);
+                        }
                     }
                 }
             } else if (functionName === 'get_helpful_resources') {
                 const query = typeof safeArgs.query === 'string' ? safeArgs.query : '';
                 const type = typeof safeArgs.type === 'string' ? safeArgs.type : '';
                 const limit = Number.isFinite(safeArgs.limit) ? safeArgs.limit : undefined;
+
+                // Waiting indicator while the resources fetch runs.
+                if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
+                    window.uiLayout.setWaitingState(this, true);
+                }
 
                 try {
                     const resourcesUrl = this.apiUrl('/api/helpful-resources');
@@ -6721,37 +6871,50 @@ class VoiceChatBot {
                             statusText: resourcesResponse.statusText,
                             error: errorText.substring(0, 500)
                         });
-                        throw new Error(`Helpful resources API error: ${resourcesResponse.status} - ${errorText.substring(0, 200)}`);
-                    }
-
-                    const resourcesData = await resourcesResponse.json();
-                    const items = Array.isArray(resourcesData?.items) ? resourcesData.items : [];
-                    const itemPreview = items.slice(0, 3).map((item) => ({
-                        name: item?.Name || item?.name || null,
-                        type: item?.type || null,
-                        link: item?.link || null
-                    }));
-
-                    console.log('[Erica] ✅ Helpful resources response received:', {
-                        total: resourcesData?.total,
-                        filtered: resourcesData?.filtered,
-                        returned: items.length,
-                        preview: itemPreview
-                    });
-
-                    if (items.length === 0) {
+                        // Return the error as a tool result so the model can
+                        // acknowledge it — throwing here previously left the
+                        // response silent forever (no response.create fired).
                         result = JSON.stringify({
-                            error: 'No helpful resources matched the query.',
-                            query,
-                            type,
-                            total: resourcesData?.total ?? 0
+                            error: 'Helpful resources API failed',
+                            status: resourcesResponse.status,
+                            detail: errorText.substring(0, 200)
                         });
                     } else {
-                        result = JSON.stringify(resourcesData);
+                        const resourcesData = await resourcesResponse.json();
+                        const items = Array.isArray(resourcesData?.items) ? resourcesData.items : [];
+                        const itemPreview = items.slice(0, 3).map((item) => ({
+                            name: item?.Name || item?.name || null,
+                            type: item?.type || null,
+                            link: item?.link || null
+                        }));
+
+                        console.log('[Erica] ✅ Helpful resources response received:', {
+                            total: resourcesData?.total,
+                            filtered: resourcesData?.filtered,
+                            returned: items.length,
+                            preview: itemPreview
+                        });
+
+                        if (items.length === 0) {
+                            result = JSON.stringify({
+                                error: 'No helpful resources matched the query.',
+                                query,
+                                type,
+                                total: resourcesData?.total ?? 0
+                            });
+                        } else {
+                            result = JSON.stringify(resourcesData);
+                        }
                     }
                 } catch (error) {
                     console.error('[Erica] ❌ Error fetching helpful resources:', error);
-                    throw new Error(`Helpful resources fetch failed: ${error.message}`);
+                    result = JSON.stringify({
+                        error: 'Helpful resources exception: ' + (error?.message || String(error))
+                    });
+                } finally {
+                    if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
+                        window.uiLayout.setWaitingState(this, false);
+                    }
                 }
             } else if (functionName === 'change_coach_name') {
                 const newName = typeof safeArgs.new_name === 'string' ? safeArgs.new_name.trim() : '';
@@ -7159,6 +7322,40 @@ class VoiceChatBot {
                 this.userSpeechStartTime = Date.now();
                 console.log('[Erica] Speech started, captured timestamp:', this.userSpeechStartTime);
 
+                // ---- BARGE-IN ----
+                // If Erica is currently producing a response (voice or text),
+                // the user talking over her IS a barge-in — kill the active
+                // response immediately so she stops mid-word, and mute the
+                // remote audio so any already-buffered TTS doesn't keep
+                // playing after the cancel lands. Previously this handler
+                // only stamped a timestamp; the model kept talking through
+                // the user's voice, which reads as "she doesn't listen".
+                if (this._activeResponseId || (this.pendingResponses && this.pendingResponses.size > 0)) {
+                    try {
+                        console.log('[Erica] 🛑 Barge-in — cancelling active response(s)');
+                        this.cancelActiveResponses();
+                    } catch (e) {
+                        console.warn('[Erica] barge-in cancel failed:', e);
+                    }
+                    try {
+                        if (this.remoteAudio) {
+                            this.remoteAudio.muted = true;
+                            // Un-mute a second later once the cancel has
+                            // propagated and any late audio frames flushed.
+                            if (this._bargeInUnmuteTimer) clearTimeout(this._bargeInUnmuteTimer);
+                            this._bargeInUnmuteTimer = setTimeout(() => {
+                                try {
+                                    if (this.remoteAudio && !this.callModeManuallyMuted) {
+                                        this.remoteAudio.muted = false;
+                                    }
+                                } catch (_) {}
+                            }, 900);
+                        }
+                    } catch (e) {
+                        console.warn('[Erica] barge-in mute failed:', e);
+                    }
+                }
+
                 // PAUSE inactivity timer while user is speaking
                 console.log('[Erica Inactivity] User speaking - PAUSING timer');
                 this.clearVoiceInactivityTimer();
@@ -7288,6 +7485,36 @@ class VoiceChatBot {
                     const finalId = message.item_id || `user-${Date.now()}`;
                     // console.log('[Erica] Finalizing user message, id:', finalId, 'transcript length:', finalTranscript.length);
                     this.updateUserMessage(finalId, finalTranscript, true, ts);
+
+                    // If the user just committed a VOICE turn while a fresh
+                    // element focus is stashed, consume the focus now — send
+                    // it as a supplementary user note so the coach's next
+                    // reply is grounded in what they were looking at. This
+                    // used to only fire on text sends; voice turns ignored
+                    // the focus entirely, and it could then leak into a much
+                    // later text turn up to 60s later.
+                    try {
+                        const focus = this._lastElementFocus;
+                        if (focus && (Date.now() - focus.at) < 60000) {
+                            const kindLabel = focus.kind === 'selection' ? 'selected' :
+                                focus.kind === 'click' ? 'clicked on' : 'focused on';
+                            const desc = focus.hint || focus.text;
+                            if (desc && this.dataChannel && this.dataChannel.readyState === 'open') {
+                                this.sendMessage({
+                                    type: 'conversation.item.create',
+                                    item: {
+                                        type: 'message',
+                                        role: 'user',
+                                        content: [{
+                                            type: 'input_text',
+                                            text: '[Context — user just ' + kindLabel + ' on the page: ' + desc.slice(0, 300) + ']'
+                                        }]
+                                    }
+                                });
+                            }
+                            this._lastElementFocus = null;
+                        }
+                    } catch (_) { /* non-fatal */ }
 
                     // Reset for next message
                     this.currentUserMessageElement = null;
@@ -8712,9 +8939,15 @@ class PreviewSession {
                         },
                         turn_detection: {
                             type: 'server_vad',
-                            threshold: 0.95,
-                            prefix_padding_ms: 600,
-                            silence_duration_ms: 2000
+                            // Threshold 0.5 is the OpenAI default and makes
+                            // barge-in feel natural. 0.95 (the old value)
+                            // meant the user had to nearly shout to be heard
+                            // over Erica's own TTS. Silence window trimmed
+                            // to 700 ms so short user acknowledgements
+                            // ("uh-huh") don't get merged into one long turn.
+                            threshold: 0.5,
+                            prefix_padding_ms: 300,
+                            silence_duration_ms: 700
                         }
                     },
                     output: {
