@@ -500,11 +500,17 @@
         iframe.src = IFRAME_SRC;
         iframe.setAttribute('allow', 'microphone; autoplay; fullscreen');
         iframe.setAttribute('allowfullscreen', '');
-        // Iframe stays at 420×640 regardless of container size so the coach
-        // app doesn't reflow when we expand/collapse. Container clips it.
+        // Iframe fills the container — the container is what enforces the
+        // 420×640 target size PLUS the viewport caps (max-width: 100vw-40, max-height: 100vh-128).
+        // Older code pinned the iframe to a literal 420×640, which meant on a
+        // short viewport the container's overflow:hidden cropped the coach's
+        // composer at the bottom, leaving the user with no way to type. Now
+        // the iframe follows the container size and the coach's internal
+        // flex layout reflows correctly (chat area shrinks, composer stays
+        // pinned to the bottom via its position:fixed).
         applyStyle(iframe, {
-            width: '420px',
-            height: '640px',
+            width: '100%',
+            height: '100%',
             border: '0',
             display: 'block'
         });
