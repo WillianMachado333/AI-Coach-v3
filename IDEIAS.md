@@ -9,6 +9,7 @@ Convenções:
 - **[🔨]** parcialmente construído em algum lugar
 - **[✋]** decisão adiada / esperando outra coisa antes
 - **[⚠️]** valor incerto — pode ser impulso bonitinho
+- **[🐛]** bug observado que precisa investigação — não é wishlist
 
 ---
 
@@ -61,6 +62,7 @@ Convenções:
 - **[💡] Diff visual entre versões** — hoje mostra hunk texto; poderia ser side-by-side proper.
 - **[💡] Session bookmarks para Varsha/Eric** — marca sessão como "exemplar" / "problema" com nota, aparece na home.
 - **[💡] Cost tracking** — quanto cada sessão custou em OpenAI tokens (aproximado). Ajuda a decidir modelos.
+- **[📋] Hierarquia de nav do Studio — promover ajuste, arquivar observação** — hoje sessions / users / metrics / audit dividem o topo com simulator / frameworks / personas. Willian: as ferramentas de tuning (simulator, frameworks, personas) são o uso diário e devem estar proeminentes; observatório (sessions, users, metrics, audit) é uso reativo — deveria estar numa prateleira secundária menor. Reorganizar top-nav ou dividir em dois grupos visuais (ex: um grupo "Tune" grande, um grupo "Observe" menor/dropdown).
 
 ## Segurança / operação
 

@@ -36,7 +36,17 @@ Convenções:
   - Undo (revert to previous overlay version) — usa audit log
 - **Sai daqui quando:** Eric consegue subir uma docx nova, editar quiz feedback, re-indexar e ver a Erica respondendo com o novo conteúdo — tudo sem ajuda.
 
-### 4. Interação contextual em nível de elemento
+### 4. Bug: widgets do co-worker somem no reload
+- **Custo:** S
+- **Por que agora:** confirmado por Willian. Degradação de confiança no Studio já na primeira vez que o usuário recarrega a página com histórico do co-worker aberto — todo insight visual (chart/table) vira transiente. Enquanto não fixar, o co-worker rico parece um chat comum na segunda visita.
+- **Escopo:**
+  - Verificar como o histórico do co-worker está sendo serializado no armazenamento (localStorage / sessionStorage / server) — hipótese: array de objetos `{role, content}` só com texto, perdendo o tipo de bloco.
+  - Se blocos são só strings, migrar pro modelo `{type: 'text' | 'chart' | 'table', data}` e persistir dessa forma. Hidratar cada block no page-load chamando o mesmo renderer que criou originalmente.
+  - Se blocos já têm tipo mas o renderer não é chamado no boot, adicionar hook de hidratação no mount da página.
+  - Testar caminho completo: co-worker renderiza chart → reload → chart continua visível idêntico.
+- **Sai daqui quando:** reload da página do Studio preserva 100% dos widgets (chart + table) em pelo menos 3 sessões diferentes do volume.
+
+### 5. Interação contextual em nível de elemento
 - **Custo:** M
 - **Por que agora:** o simulador já mostra o cenário site-embeds-coach funcionando. Prova de conceito madura. Próximo salto de valor é a coach saber *o que o usuário está olhando/marcando na página*, não só a página inteira.
 - **Escopo:** bridge.js escuta `selectionchange` / `focusin` / click em elementos com `data-erica-hint` no site → posta `PAGE_ELEMENT_FOCUS` para o iframe. Coach system prompt aprende a citar o elemento marcado.
