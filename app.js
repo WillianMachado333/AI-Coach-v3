@@ -6432,7 +6432,8 @@ class VoiceChatBot {
                 const accountedFor = bd.persona + bd.voiceStyle + bd.languageDetection + bd.reinforcement
                     + bd.activity + bd.pageContext + bd.knowledgeGrounding;
                 bd.wixPreamble = Math.max(0, instructions.length - accountedFor);
-                const personaName = persona && (persona.label || persona.role || persona.companionId || persona.id) || null;
+                const personaLabel = persona && (persona.label || persona.role) || null;
+                const personaId = persona && (persona.companionId || persona.id) || null;
                 fetch(this.apiUrl('/api/session-log'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -6440,7 +6441,16 @@ class VoiceChatBot {
                         sessionId: this.sessionId,
                         kind: 'event',
                         name: 'prompt_breakdown',
-                        meta: { persona: personaName, blocks: bd, total: instructions.length }
+                        meta: {
+                            // Prefer the id (matches framework file names)
+                            // so the server-side analyzer can measure the
+                            // persona from disk. Label kept alongside for UI.
+                            persona: personaId || personaLabel,
+                            personaLabel,
+                            personaId,
+                            blocks: bd,
+                            total: instructions.length
+                        }
                     })
                 }).catch(() => { /* fire and forget */ });
             }

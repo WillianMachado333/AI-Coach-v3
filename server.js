@@ -541,7 +541,11 @@ const server = http.createServer(async (req, res) => {
                                 runtimeConfig; // ensure module already loaded
                                 const promptBudget = require('./lib/promptBudget');
                                 promptBudget.recordBreakdown({
-                                    persona: p.meta.persona || null,
+                                    // The id maps to a framework file on disk, so
+                                    // the analyzer can read the persona markdown
+                                    // directly. Label kept separately for display.
+                                    persona: p.meta.personaId || p.meta.persona || null,
+                                    personaLabel: p.meta.personaLabel || p.meta.persona || null,
                                     blocks: p.meta.blocks || {},
                                     session: { sessionId: sid, at: new Date().toISOString() }
                                 });
