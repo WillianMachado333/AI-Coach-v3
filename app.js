@@ -4251,13 +4251,105 @@ class VoiceChatBot {
     }
 
     _buildChartSvg({ type, labels, values, valueLabel }) {
+        const svgNS = 'http://www.w3.org/2000/svg';
+
+        // Radar / windmill uses a square viewport centred; different padding
+        // shape from bar/line. Handled early so we don't apply bar-axis
+        // metrics to a radial chart.
+        if (type === 'radar') {
+            const S = 260;                 // square canvas
+            const cx = S / 2, cy = S / 2;
+            const r = S * 0.34;            // outer ring radius
+            const svg = document.createElementNS(svgNS, 'svg');
+            svg.setAttribute('viewBox', `0 0 ${S} ${S}`);
+            svg.setAttribute('width', '100%');
+            svg.setAttribute('height', String(S));
+            svg.setAttribute('role', 'img');
+
+            const n = values.length;
+            const max = Math.max(1, ...values.map((v) => Number(v) || 0));
+            // Angle: start at top, go clockwise. -90° so the first axis is up.
+            const angleFor = (i) => (Math.PI * 2 * i) / n - Math.PI / 2;
+
+            // Concentric guide rings + spokes.
+            [0.33, 0.66, 1].forEach((f) => {
+                const ring = document.createElementNS(svgNS, 'polygon');
+                let pts = '';
+                for (let i = 0; i < n; i++) {
+                    const a = angleFor(i);
+                    pts += (cx + Math.cos(a) * r * f) + ',' + (cy + Math.sin(a) * r * f) + ' ';
+                }
+                ring.setAttribute('points', pts.trim());
+                ring.setAttribute('fill', 'none');
+                ring.setAttribute('stroke', '#e5e7eb');
+                ring.setAttribute('stroke-width', '1');
+                svg.appendChild(ring);
+            });
+            for (let i = 0; i < n; i++) {
+                const a = angleFor(i);
+                const spoke = document.createElementNS(svgNS, 'line');
+                spoke.setAttribute('x1', cx); spoke.setAttribute('y1', cy);
+                spoke.setAttribute('x2', cx + Math.cos(a) * r);
+                spoke.setAttribute('y2', cy + Math.sin(a) * r);
+                spoke.setAttribute('stroke', '#e5e7eb');
+                spoke.setAttribute('stroke-width', '1');
+                svg.appendChild(spoke);
+            }
+
+            // Filled polygon of the values.
+            const shape = document.createElementNS(svgNS, 'polygon');
+            let shapePts = '';
+            const pointCoords = [];
+            for (let i = 0; i < n; i++) {
+                const a = angleFor(i);
+                const v = Number(values[i]) || 0;
+                const rr = (v / max) * r;
+                const x = cx + Math.cos(a) * rr;
+                const y = cy + Math.sin(a) * rr;
+                shapePts += x + ',' + y + ' ';
+                pointCoords.push({ x, y, v });
+            }
+            shape.setAttribute('points', shapePts.trim());
+            shape.setAttribute('fill', '#14b8a6');
+            shape.setAttribute('fill-opacity', '0.22');
+            shape.setAttribute('stroke', '#0d9488');
+            shape.setAttribute('stroke-width', '2');
+            svg.appendChild(shape);
+
+            // Value dots (subtle).
+            pointCoords.forEach(({ x, y }) => {
+                const c = document.createElementNS(svgNS, 'circle');
+                c.setAttribute('cx', x); c.setAttribute('cy', y); c.setAttribute('r', '3');
+                c.setAttribute('fill', '#0d9488');
+                svg.appendChild(c);
+            });
+
+            // Axis labels around the perimeter.
+            const labelR = r + 14;
+            for (let i = 0; i < n; i++) {
+                const a = angleFor(i);
+                const lx = cx + Math.cos(a) * labelR;
+                const ly = cy + Math.sin(a) * labelR;
+                const t = document.createElementNS(svgNS, 'text');
+                const tx = Math.cos(a);
+                t.setAttribute('x', lx);
+                t.setAttribute('y', ly + 3);
+                t.setAttribute('text-anchor', tx > 0.3 ? 'start' : tx < -0.3 ? 'end' : 'middle');
+                t.setAttribute('font-size', '10');
+                t.setAttribute('fill', '#374151');
+                const s = String(labels[i] || '');
+                t.textContent = s.length > 14 ? s.slice(0, 13) + '…' : s;
+                svg.appendChild(t);
+            }
+            return svg;
+        }
+
         const W = 300, H = 180;
         const padL = 30, padR = 10, padT = 12, padB = 34;
         const innerW = W - padL - padR;
         const innerH = H - padT - padB;
         const max = Math.max(1, ...values.map((v) => Number(v) || 0));
 
-        const svgNS = 'http://www.w3.org/2000/svg';
         const svg = document.createElementNS(svgNS, 'svg');
         svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
         svg.setAttribute('width', '100%');
@@ -5634,29 +5726,38 @@ class VoiceChatBot {
                     'VISUAL WIDGETS (render_chart / render_table) — CHART-FIRST DISCIPLINE:',
                     'When a chart or table would help the user grasp the answer, CALL THE TOOL — do NOT ask permission, do NOT offer to draw one, do NOT list numbers in prose first and then ask "want me to visualise this?". Just draw it. Reader preference is documented: visuals absorb far better than paragraphs for these shapes.',
                     '',
+                    'CHART TYPE — pick deliberately (Eric-2026-08-10):',
+                    '- **radar** for PROFILE-shape data — traits, EI facets, values, personality dimensions, communication styles, learning styles, anything that describes WHO the user is. Radar shows proportion without imposing order. This is the DEFAULT for quiz/report results.',
+                    '- **bar** only when the categories are INHERENTLY rankable — time-of-day frequency, count of things, money amounts, side-by-side comparison of two external items. Never use bar for user profile data — bar invites the reader to rank themselves ("I\'m a 78, she\'s an 82") which is the exact anti-pattern.',
+                    '- **line** for change over time or ordered progression.',
+                    '',
                     'HARD triggers (must call render_chart):',
-                    '- ≥2 categories with values (bar). YES even for exactly 2 — a two-bar comparison reads faster than "A is 42 and B is 65".',
-                    '- ≥3 points along a time axis (line). Progress, frequency, engagement over days/weeks.',
-                    '- Ranking / weighting / distribution across ≥2 items numerically.',
-                    '- Any answer where you would naturally say "you scored X on A, Y on B, Z on C".',
-                    '- Quiz sub-scores, EI facets, personality traits, values distribution — every time.',
+                    '- ≥3 categories with values on a user profile → RADAR (EI facets, personality, values, traits).',
+                    '- ≥2 rankable categories with values → BAR (2+ IS enough for bar comparison of external items).',
+                    '- ≥3 points along a time axis → LINE.',
                     '',
                     'HARD triggers (must call render_table):',
                     '- ≥2 items × ≥2 attributes (comparison, side-by-side, feature grid).',
                     '- Any answer where you would naturally say "here are the differences between A and B in terms of X and Y".',
                     '- Small pros/cons or approach-by-focus grids.',
                     '',
+                    'RESULT LANGUAGE — NEVER "score" (Eric-2026-08-10):',
+                    '- Never say "your score", "score of X", "you scored Y". Use "your result", "your profile", "your pattern", or just describe the shape ("empathy sits high in your profile, while self-regulation is lower").',
+                    '- Never imply normative ranking — the highest is not "best", just "more present here". Explicitly say so if the user reads it as ranking.',
+                    '- Chart titles and value_label must never contain "score" — use "Result", "Level", "%", or leave blank. Same rule for table headers.',
+                    '- Labels (personality types, coaching styles, MBTI-like tags) are a trap — the user asks for them but the label implies being stuck. If asked "what am I?", give the shape, not the label.',
+                    '',
                     'ANTI-PERMISSION rules (never do this):',
                     '- Never say "want me to show a chart?", "posso gerar um gráfico?", "should I make a table?", or any variant. Draw first, comment second.',
                     '- Never list numbers in prose then offer to visualise them. If the numbers deserve a chart, draw it directly.',
-                    '- Never re-read the numbers verbatim in prose AFTER the chart — the reader sees them. Point to the pattern or the outlier, not the raw values.',
+                    '- Never re-read the numbers verbatim in prose AFTER the chart — the reader sees them. Point to the SHAPE (proportion, balance, outlier) — not the raw values.',
                     '',
                     'AFTER RENDERING:',
-                    '- One or two sentences of framing: what the shape shows, and explicitly what it does NOT show (a totals bar chart does not speak to causation; a 7-day line says nothing about last hour).',
+                    '- One or two sentences of framing: what the shape shows, and explicitly what it does NOT show (a radar of trait profile does not say who is "better"; a 7-day line says nothing about last hour).',
                     '- Never re-read chart values or table cells line by line — the user sees them.',
                     '',
                     'AVOID (real cases where a chart hurts):',
-                    '- Single number or 1-2 number scalar ("your score is 78" needs no chart).',
+                    '- Single number or 1-2 number scalar ("your result on X sits high" needs no chart).',
                     '- One-column lists (just narrate them).',
                     '- Decoration when prose would be clearer.',
                     '- Missing values — never send zero as a stand-in. Omit the point/bar entirely.',
@@ -6624,23 +6725,23 @@ class VoiceChatBot {
                     {
                         type: 'function',
                         name: 'render_chart',
-                        description: 'Render a chart inline in the chat when a visual would make a concept dramatically clearer than words alone. Use for: comparing dimensions of the user\'s quiz results, showing distributions across categories (e.g. personality traits, emotional intelligence subscales, values), tracking progress over time, illustrating relative weights. Do NOT use for simple lists (use render_table), single numbers, or as decoration. After calling, briefly narrate what the chart shows in your coaching voice.',
+                        description: 'Render a chart inline in the chat when a visual would make a concept dramatically clearer than words alone. Prefer radar for profile-shape data (traits, EI facets, values, personality, communication styles) — radar shows proportion without implying ranking. Use bar only when the categories are inherently rankable (time, count, money). Use line for change over time. Do NOT use for single numbers, one-column lists, or decoration. After calling, briefly narrate the shape (not the numbers) in your coaching voice.',
                         parameters: {
                             type: 'object',
                             properties: {
                                 type: {
                                     type: 'string',
-                                    enum: ['bar', 'line'],
-                                    description: 'bar for comparing categories, line for change over time or ordered progression.'
+                                    enum: ['radar', 'bar', 'line'],
+                                    description: 'radar for profile shapes (traits/EI/values/personality — never ranked), bar for inherently rankable comparisons, line for time series.'
                                 },
                                 title: {
                                     type: 'string',
-                                    description: 'Short chart title (2-6 words).'
+                                    description: 'Short chart title (2-6 words). Prefer neutral phrasing — "Your profile", "EI facets", "Your values" — never "score" or "ranking".'
                                 },
                                 labels: {
                                     type: 'array',
                                     items: { type: 'string' },
-                                    description: 'X-axis labels — one per data point. Keep them short.'
+                                    description: 'Axis labels — one per data point. Keep them short.'
                                 },
                                 values: {
                                     type: 'array',
@@ -6649,7 +6750,7 @@ class VoiceChatBot {
                                 },
                                 value_label: {
                                     type: 'string',
-                                    description: 'Optional Y-axis label (e.g. "Score", "%", "days").'
+                                    description: 'Optional value axis label (e.g. "%", "days", "level"). Never use "Score" — use "Result" or "Level" if a label is needed at all.'
                                 }
                             },
                             required: ['type', 'title', 'labels', 'values']
@@ -7320,12 +7421,17 @@ class VoiceChatBot {
                 // nothing to CDN-load.
                 try {
                     const spec = {
-                        type: (safeArgs.type === 'line' ? 'line' : 'bar'),
+                        type: (safeArgs.type === 'line' ? 'line' : safeArgs.type === 'radar' ? 'radar' : 'bar'),
                         title: String(safeArgs.title || '').slice(0, 80),
                         labels: Array.isArray(safeArgs.labels) ? safeArgs.labels.map(String) : [],
                         values: Array.isArray(safeArgs.values) ? safeArgs.values.map((v) => Number(v)) : [],
                         valueLabel: safeArgs.value_label ? String(safeArgs.value_label).slice(0, 24) : ''
                     };
+                    // Radar needs at least 3 axes; auto-fallback to bar for 2.
+                    if (spec.type === 'radar' && spec.values.length < 3) {
+                        console.warn('[Erica] radar with <3 values, downgrading to bar');
+                        spec.type = 'bar';
+                    }
                     if (spec.labels.length === 0 || spec.values.length === 0 || spec.labels.length !== spec.values.length) {
                         result = JSON.stringify({ error: 'labels and values must be non-empty and same length' });
                     } else if (typeof this._renderInlineWidget === 'function') {
