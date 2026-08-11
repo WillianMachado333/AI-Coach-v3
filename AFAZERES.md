@@ -69,6 +69,36 @@ Convenções:
 - **NÃO faz:** não muda outros personas (Directive/Discovery/etc — cada um tem seu ritmo próprio). Não mexe no VAD ou barge-in (aquilo é técnico do voice mode, não tom).
 - **Sai daqui quando:** simulador mostra 3 conversas com preset "decisão pragmática" onde Erica não usa "let's pause" ou "take a breath" em turnos que não são crise.
 
+### 5. Wire-up dos canonical blocks no system prompt
+- **Custo:** S
+- **Por que agora:** o storage está pronto e populado (55 canonical entries, 6.379 chars agregados) mas nenhum consumer chama `injectedDataStore.computeSystemPromptBlock`. Erica ainda não vê as listas — os link errors que Eric mencionou continuam abertos. Fechar o loop leva ~1h; sem isso as duas horas gastas no #3 ficaram só como demo de storage.
+- **Escopo:**
+  - No boot da preparation ou em `configureSession` (app.js), montar 3 blocks: canonical courses, canonical quizzes, safety rules (só regras `enabled`). Injetar depois do bloco de knowledge grounding, antes da language detection.
+  - Cada bloco vem via `injectedDataStore.computeSystemPromptBlock(kind)`. Se retorno vazio, não injeta o header vazio.
+  - Adicionar diretiva perto dos blocos: "Quando citar um curso ou quiz, use EXCLUSIVAMENTE o nome e URL destas listas canônicas. Nunca invente URL. Se URL vazio, cita só o nome e diz 'posso te mandar o link — verifica no sistema'."
+  - Client-side `promptBudget` já reporta `blocks.canonical` via `injectedDataStore.computeChars()` no home card — bônus visível.
+- **NÃO faz:** não indexa em vector store — canonicals são hard data, ficam sempre no prompt (injected data). Não re-invade lista Wix — se URL vazio, coach ainda ajuda com nome.
+- **Sai daqui quando:** conversa de teste sobre "quais cursos vocês têm sobre X" traz nomes exatos da lista canônica e nunca inventa URL. Card home mostra chars measured no bloco Injected Data.
+
+### 6. Language rule — nunca "score" → "results"
+- **Custo:** S
+- **Por que agora:** Eric explicitamente na call: *"As soon as you put in score, people think, oh, I need to be 100% extrovert or I need to be 100% conscientious."* Sem essa mudança o coach continua reforçando a moldura normativa que Eric disse ser o principal risco. Também aplica ao label chart e header do render_chart. Ficaria melhor fechar antes de próxima demo.
+- **Escopo:**
+  - System prompt de todo persona (arquivo `framework_*.md`): adicionar regra explícita "Nunca use 'score'. Use 'result', 'profile' ou 'pattern'. Nunca sugira normativo — o mais alto não é 'bom', só 'mais presente aqui'."
+  - VISUAL WIDGETS block (app.js): label default do render_chart passa de "Score" pra "Result" ou "Level".
+  - Sub-item bloqueado — **discutir com Varsha se termos alternativos precisam ser mais específicos por contexto (traits vs values vs biases)**. Enquanto ela não decide, roda com "result".
+- **NÃO faz:** não muda o wording nos reports do Wix — cross-project. Não bane label completamente (Eric marcou como armadilha em ambas direções — bane só "score").
+- **Sai daqui quando:** amostra de 5 respostas do coach em quiz-report não mostra "score", e chart labels default estão em "Result".
+
+### 7. Preferir visuais proporcionais a barras quando dimensões são de perfil
+- **Custo:** S
+- **Por que agora:** Eric no demo: bars convidam ranking (*"eu sou 78, ela é 82"*), radar mostra proporção sem impor ordem. AFAZERES antigo #1 shipou charts agressivos mas sem preferência de tipo. Sem isso, coach continua puxando bar chart em EI, valores, personalidade — todos casos onde radar é semanticamente melhor.
+- **Escopo:**
+  - Adicionar bloco no VISUAL WIDGETS do system prompt: "Prefer radar / windmill quando as dimensões são de PERFIL do usuário (traits, EI facets, values, personality dimensions, communication styles). Use bar quando as dimensões são inerentemente rankeáveis (tempo, contagem, dinheiro, comparação de itens externos)."
+  - Se `render_chart` já suporta `type: 'radar'` — verificar. Se não, adicionar como opção com fallback pra bar quando N<3 dimensões.
+- **NÃO faz:** não muda o widget do Wix (cross-project). Não força radar em todo caso — só onde apropriado.
+- **Sai daqui quando:** conversa sobre EI results num quiz-report mostra radar, não bar. Bar continua aparecendo em séries temporais e comparações rankeáveis.
+
 ---
 
 ## Concluído — histórico do sprint 2026-08-10
