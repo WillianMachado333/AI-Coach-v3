@@ -26,6 +26,7 @@ const metrics = require('./lib/metrics');
 const simulator = require('./lib/simulator');
 const agentHistory = require('./lib/agentHistory');
 const runtimeConfig = require('./lib/runtimeConfig');
+const injectedDataStore = require('./lib/injectedDataStore');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -88,6 +89,78 @@ function syncPreparationToVectorStore(userId, prepJsonText) {
         .catch((err) => {
             logAt('warn', '[SERVER] ⚠️ user report sync failed:', err?.message || err);
         });
+}
+
+/**
+ * Take a preparation response body (JSON text) and prepend the three
+ * canonical Injected Data blocks (courses / quizzes / safety rules) plus
+ * a short usage directive to its `customInstructions` field.
+ *
+ * The prep response is sometimes wrapped: `{ data: <string of JSON> }` or
+ * top-level JSON depending on the upstream. We handle both.
+ *
+ * Idempotent: strips any previously injected block before re-injecting so
+ * repeated boots don't stack.
+ *
+ * Returns the mutated JSON string. If parsing fails, returns the original
+ * body unchanged — never take down the preparation path over this.
+ */
+const CANONICAL_MARKER_START = '=== CANONICAL LISTS (hard data — never invent) ===';
+const CANONICAL_MARKER_END = '=== END CANONICAL LISTS ===';
+function injectCanonicalBlocksIntoPrep(bodyText) {
+    if (typeof bodyText !== 'string' || !bodyText.trim()) return bodyText;
+    let parsed;
+    try { parsed = JSON.parse(bodyText); } catch (_) { return bodyText; }
+
+    const coursesBlock = injectedDataStore.computeSystemPromptBlock('canonical-courses');
+    const quizzesBlock = injectedDataStore.computeSystemPromptBlock('canonical-quizzes');
+    const safetyBlock = injectedDataStore.computeSystemPromptBlock('safety-rules');
+    if (!coursesBlock && !quizzesBlock && !safetyBlock) return bodyText;
+
+    const parts = [CANONICAL_MARKER_START,
+        'The lists below are the ONLY canonical source for course / quiz names',
+        'and URLs. When you cite one:',
+        '- Use the exact name and URL from this list — never invent.',
+        '- If a row has an empty URL, cite the name only and say you can share',
+        '  the link once it is configured (do not fabricate a URL).',
+        '- Only recommend an item when it clearly fits the user\'s goal, skill',
+        '  or current situation — do not suggest items just because they exist.',
+        '',
+        coursesBlock,
+        quizzesBlock,
+        safetyBlock,
+        CANONICAL_MARKER_END
+    ].filter(Boolean).join('\n');
+
+    // Two shapes: preparation body may itself be a wrapped `data` field
+    // whose value is a JSON string. Walk down.
+    function tryPatchObject(obj) {
+        if (!obj || typeof obj !== 'object') return false;
+        if (typeof obj.customInstructions === 'string') {
+            // Strip prior canonical section so we don't stack across boots.
+            let stripped = obj.customInstructions.replace(
+                new RegExp('\\n?' + CANONICAL_MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                    + '[\\s\\S]*?' + CANONICAL_MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n?', 'g'),
+                ''
+            );
+            obj.customInstructions = parts + '\n\n' + stripped;
+            return true;
+        }
+        return false;
+    }
+    let patched = tryPatchObject(parsed);
+    if (!patched && parsed && typeof parsed.data === 'string') {
+        // Wrapped shape — parse the inner blob, patch it, re-encode.
+        try {
+            const inner = JSON.parse(parsed.data);
+            if (tryPatchObject(inner)) {
+                parsed.data = JSON.stringify(inner);
+                patched = true;
+            }
+        } catch (_) { /* leave as-is */ }
+    }
+    if (!patched) return bodyText;
+    return JSON.stringify(parsed);
 }
 
 /**
@@ -1966,8 +2039,13 @@ const server = http.createServer(async (req, res) => {
                         'X-Session-Id': sessionId
                     };
 
+                    // Inject canonical Injected Data blocks (courses / quizzes /
+                    // safety rules) into customInstructions before returning.
+                    // Idempotent — strips prior injection so cache-hit boots
+                    // pick up latest admin edits.
+                    const patchedData = injectCanonicalBlocksIntoPrep(cached.data);
                     res.writeHead(cached.statusCode, responseHeaders);
-                    res.end(cached.data);
+                    res.end(patchedData);
 
                     // Best-effort sync to user's vector store. Cheap when unchanged
                     // (hash cache short-circuits). Never blocks the response.
@@ -2057,8 +2135,11 @@ const server = http.createServer(async (req, res) => {
                             'X-Cache': 'MISS',
                             'X-Session-Id': sessionId
                         };
+                        // Inject canonical Injected Data blocks — same
+                        // idempotent helper the cache-hit branch uses.
+                        const patchedResponse = injectCanonicalBlocksIntoPrep(responseData);
                         res.writeHead(statusCode, responseHeaders);
-                        res.end(responseData);
+                        res.end(patchedResponse);
 
                         // Best-effort sync to user's vector store (see helper above).
                         if (runtimeConfig.isEnabled('user_report')) syncPreparationToVectorStore(userId, responseData);
@@ -2126,7 +2207,9 @@ const server = http.createServer(async (req, res) => {
                 'X-Erica-Fallback': 'true',
                 'X-Cache': 'MISS'
             });
-            res.end(data);
+            // Fallback path also gets canonical blocks — Erica still needs
+            // the right names/URLs even in degraded mode.
+            res.end(injectCanonicalBlocksIntoPrep(data));
         });
     }
 
