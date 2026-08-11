@@ -6386,6 +6386,66 @@ class VoiceChatBot {
             }
         } catch (_) { /* non-fatal */ }
 
+        // Report a per-block breakdown of the composed system prompt so the
+        // Coach Studio home card shows real numbers, not estimates. We break
+        // the compound string down using the known section markers app.js
+        // itself emits above; anything we can't slice ends up in the global
+        // preamble bucket.
+        try {
+            if (this.sessionId) {
+                const bd = { persona: 0, voiceStyle: 0, wixPreamble: 0, knowledgeGrounding: 0, activity: 0, pageContext: 0, languageDetection: 0, reinforcement: 0 };
+                // The persona/voice-style block ends at "--- GENERAL GUIDELINES ---"
+                const sepIdx = instructions.indexOf('--- GENERAL GUIDELINES ---');
+                if (sepIdx > 0) {
+                    // Split persona intro from voice style at the first blank
+                    // line (voice style is appended immediately after the intro).
+                    const preSep = instructions.slice(0, sepIdx);
+                    const firstBreak = preSep.indexOf('\n\n');
+                    bd.persona = firstBreak > 0 ? firstBreak : Math.min(preSep.length, 300);
+                    bd.voiceStyle = Math.max(0, preSep.length - bd.persona);
+                }
+                // Language block is our fixed constant.
+                const langBlock = 'Always respond in the same language';
+                const langIdx = instructions.indexOf(langBlock);
+                if (langIdx > 0) bd.languageDetection = Math.min(500, instructions.length - langIdx);
+                // Reinforcement at the very end.
+                const reinIdx = instructions.indexOf('CRITICAL COACHING STYLE REMINDER');
+                if (reinIdx > 0) bd.reinforcement = instructions.length - reinIdx - bd.languageDetection;
+                // Sub-blocks the client itself prepends into customInstructions.
+                const activityIdx2 = instructions.indexOf('USER ACTIVITY TIMELINE');
+                if (activityIdx2 >= 0) {
+                    // The block runs to the next '===' section marker.
+                    const end = instructions.indexOf('===', activityIdx2 + 30);
+                    if (end > activityIdx2) bd.activity = end - activityIdx2 + 3;
+                }
+                const pageIdx = instructions.indexOf('CURRENT PAGE CONTEXT');
+                if (pageIdx >= 0) {
+                    const end = instructions.indexOf('END CURRENT PAGE CONTEXT', pageIdx);
+                    if (end > pageIdx) bd.pageContext = (end - pageIdx) + 25;
+                }
+                const knowIdx = instructions.indexOf('KNOWLEDGE GROUNDING');
+                if (knowIdx >= 0) {
+                    const end = instructions.indexOf('=== END', knowIdx);
+                    if (end > knowIdx) bd.knowledgeGrounding = end - knowIdx + 8;
+                }
+                // Whatever is left in the middle is the Wix preamble.
+                const accountedFor = bd.persona + bd.voiceStyle + bd.languageDetection + bd.reinforcement
+                    + bd.activity + bd.pageContext + bd.knowledgeGrounding;
+                bd.wixPreamble = Math.max(0, instructions.length - accountedFor);
+                const personaName = persona && (persona.label || persona.role || persona.companionId || persona.id) || null;
+                fetch(this.apiUrl('/api/session-log'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sessionId: this.sessionId,
+                        kind: 'event',
+                        name: 'prompt_breakdown',
+                        meta: { persona: personaName, blocks: bd, total: instructions.length }
+                    })
+                }).catch(() => { /* fire and forget */ });
+            }
+        } catch (_) { /* non-fatal — instrumentation only */ }
+
         // Configure the OpenAI Realtime GA session
         // GA uses nested audio.input / audio.output structure (not flat fields)
         const config = {

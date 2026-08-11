@@ -532,6 +532,23 @@ const server = http.createServer(async (req, res) => {
                     case 'event':
                     default:
                         sessionLog.logEvent(sid, { name: p.name || p.kind, meta: p.meta });
+                        // Also feed the prompt-budget analyzer so the admin
+                        // home surfaces the exact chars of the last live
+                        // session's system prompt breakdown, not just an
+                        // estimate.
+                        if ((p.name || p.kind) === 'prompt_breakdown' && p.meta && typeof p.meta === 'object') {
+                            try {
+                                runtimeConfig; // ensure module already loaded
+                                const promptBudget = require('./lib/promptBudget');
+                                promptBudget.recordBreakdown({
+                                    persona: p.meta.persona || null,
+                                    blocks: p.meta.blocks || {},
+                                    session: { sessionId: sid, at: new Date().toISOString() }
+                                });
+                            } catch (err) {
+                                console.warn('[SERVER] prompt_breakdown record failed:', err?.message || err);
+                            }
+                        }
                         break;
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
