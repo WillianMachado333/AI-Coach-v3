@@ -1023,6 +1023,48 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Purge empty sessions — drops every session on disk that has zero turns
+    // and zero tool calls (session_start only). Handy after a failed run of
+    // gen-sessions so the observatory doesn't fill up with placeholders.
+    if (req.url.split('?')[0] === '/api/admin/dev/purge-empty-sessions' && req.method === 'POST') {
+        const sess = admin.requireAdminSession(req);
+        if (!sess) {
+            res.writeHead(401, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'auth_required' }));
+            return;
+        }
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const dir = process.env.SESSION_DATA_DIR || '/data/sessions';
+            let deleted = 0, kept = 0;
+            for (const f of fs.readdirSync(dir)) {
+                if (!f.endsWith('.ndjson')) continue;
+                const p = path.join(dir, f);
+                const raw = fs.readFileSync(p, 'utf8');
+                let hasTurn = false;
+                for (const ln of raw.split('\n')) {
+                    if (!ln.trim()) continue;
+                    try {
+                        const obj = JSON.parse(ln);
+                        if (obj.type === 'turn' || obj.type === 'tool_call') { hasTurn = true; break; }
+                    } catch (_) { /* skip bad line */ }
+                }
+                if (!hasTurn) {
+                    try { fs.unlinkSync(p); deleted++; } catch (_) {}
+                } else {
+                    kept++;
+                }
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ deleted, kept }));
+        } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: e?.message || 'purge failed' }));
+        }
+        return;
+    }
+
     // Clear the actor's conversation history. Also drops any attachments the
     // cleared turns referenced (PADROES 2.21 — apagar conversa apaga o que
     // ela carregava).
