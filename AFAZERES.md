@@ -7,6 +7,8 @@ _Status batch 2026-08-10 (Willian sprint "faz 1,2,3,5,6"): #1 shipped e verifica
 
 _Boost 2026-08-11 (pré-call Eric): Boost A "Coach identity card" na Home shipado — mostra persona ativa, chars por bloco do system prompt (measured/reported/estimated), Real Time channels, contagens semantic store. Boost B "Session bookmarks + notas" shipado — ⭐/⚠️ + nota na lista de sessões, filtros All/Marked/Exemplars/Problems, bloco na Home. Ambos verificados live. Commits c44fdf1, 7019a3c, 2afcdc1, 6cdbb82._
 
+_Pós-review Willian 2026-08-11 (3 ondas antes da call): Onda 1 Sessions QoL — ⭐/⚠️ no detail, semantic labels na lista + Home, human date format, fix STORE_MESSAGE_TEXT=redacted skip pra sessões synthetic (51b0409). Onda 2 promoted editors — 3 áreas Injected Data funcionais (canonical courses/quizzes/safety rules) com persistência + system prompt preview + audit; Semantic Store ganhou Company + Website tiles com editor markdown completo (10011c8). Onda 3 polish do card — tooltips por bloco, rename "Knowledge grounding" → "Coach tool + visual widget rules", "Wix preparation preamble" → "External prep from Wix (rules + user report)", notas expandidas explicando primacy/recency (0502bc1). Fix bônus: genSessions destructure bug + endpoint /api/admin/dev/purge-empty-sessions pra limpeza (a76c53e, 5e20505)._
+
 Convenções:
 - **Custo:** S (≤ 1 dia) · M (2-5 dias) · L (semana +)
 - **Por que agora:** a razão explícita — evita entrar por impulso
