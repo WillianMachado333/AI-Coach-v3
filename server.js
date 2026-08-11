@@ -117,9 +117,14 @@ function injectCanonicalBlocksIntoPrep(bodyText) {
     const safetyBlock = injectedDataStore.computeSystemPromptBlock('safety-rules');
     if (!coursesBlock && !quizzesBlock && !safetyBlock) return bodyText;
 
+    // Directive supersedes the older Wix preamble line that says "Do not
+    // provide URLs to resources" — that predates the canonical lists, and
+    // now that we have vetted names + URLs the coach should cite them.
     const parts = [CANONICAL_MARKER_START,
         'The lists below are the ONLY canonical source for course / quiz names',
-        'and URLs. When you cite one:',
+        'and URLs. This SUPERSEDES any earlier instruction that says "do not',
+        'provide URLs" — the URLs in this list are vetted, approved resources.',
+        'When you cite one:',
         '- Use the exact name and URL from this list — never invent.',
         '- If a row has an empty URL, cite the name only and say you can share',
         '  the link once it is configured (do not fabricate a URL).',
@@ -132,25 +137,28 @@ function injectCanonicalBlocksIntoPrep(bodyText) {
         CANONICAL_MARKER_END
     ].filter(Boolean).join('\n');
 
-    // Two shapes: preparation body may itself be a wrapped `data` field
-    // whose value is a JSON string. Walk down.
+    // The Wix preparation exposes the system prompt in the `message` field
+    // (10k+ chars of persona guidance + rules). Client reads it as
+    // customInstructions. We patch `message` on the top-level object; some
+    // response shapes wrap the payload in a `data` string, so walk both.
+    const FIELDS = ['message', 'customInstructions'];
     function tryPatchObject(obj) {
         if (!obj || typeof obj !== 'object') return false;
-        if (typeof obj.customInstructions === 'string') {
-            // Strip prior canonical section so we don't stack across boots.
-            let stripped = obj.customInstructions.replace(
-                new RegExp('\\n?' + CANONICAL_MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-                    + '[\\s\\S]*?' + CANONICAL_MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n?', 'g'),
-                ''
-            );
-            obj.customInstructions = parts + '\n\n' + stripped;
-            return true;
+        for (const field of FIELDS) {
+            if (typeof obj[field] === 'string') {
+                let stripped = obj[field].replace(
+                    new RegExp('\\n?' + CANONICAL_MARKER_START.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                        + '[\\s\\S]*?' + CANONICAL_MARKER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n?', 'g'),
+                    ''
+                );
+                obj[field] = parts + '\n\n' + stripped;
+                return true;
+            }
         }
         return false;
     }
     let patched = tryPatchObject(parsed);
     if (!patched && parsed && typeof parsed.data === 'string') {
-        // Wrapped shape — parse the inner blob, patch it, re-encode.
         try {
             const inner = JSON.parse(parsed.data);
             if (tryPatchObject(inner)) {
