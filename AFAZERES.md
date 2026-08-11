@@ -9,6 +9,8 @@ _Boost 2026-08-11 (pré-call Eric): Boost A "Coach identity card" na Home shipad
 
 _Pós-review Willian 2026-08-11 (3 ondas antes da call): Onda 1 Sessions QoL — ⭐/⚠️ no detail, semantic labels na lista + Home, human date format, fix STORE_MESSAGE_TEXT=redacted skip pra sessões synthetic (51b0409). Onda 2 promoted editors — 3 áreas Injected Data funcionais (canonical courses/quizzes/safety rules) com persistência + system prompt preview + audit; Semantic Store ganhou Company + Website tiles com editor markdown completo (10011c8). Onda 3 polish do card — tooltips por bloco, rename "Knowledge grounding" → "Coach tool + visual widget rules", "Wix preparation preamble" → "External prep from Wix (rules + user report)", notas expandidas explicando primacy/recency (0502bc1). Fix bônus: genSessions destructure bug + endpoint /api/admin/dev/purge-empty-sessions pra limpeza (a76c53e, 5e20505)._
 
+_Promoção pós-call Eric 2026-08-11 (feedback assimilado do doc `2026-08-10-eric-transcript.md`): promovidos 4 itens curtos que endereçam os dois defeitos que Eric viveu no demo (echo chamber + wrong-link) + fix persona pacing que ele confirmou como config._
+
 Convenções:
 - **Custo:** S (≤ 1 dia) · M (2-5 dias) · L (semana +)
 - **Por que agora:** a razão explícita — evita entrar por impulso
@@ -17,65 +19,68 @@ Convenções:
 
 ## Fila comprometida
 
-### 1. Charts/tables mais agressivos no coach
+### 1. Fix echo chamber — page context é situational, source é o Semantic Store
 - **Custo:** S
-- **Por que agora:** os tools `render_chart` / `render_table` JÁ existem e são underused. Prompt tuning de meia hora vira o ativo mais visual do coach imediatamente. Willian mencionou que sente falta de comunicação visual e não sabia que já tinha.
-- **Escopo:** editar `app.js` system prompt para "MANDATORY trigger" mais claro (comparações ≥ 2 categorias, séries temporais ≥ 3 pontos, listas de 3+ atributos). Verificar em produção que Erica dispara em uma pergunta comparativa.
-- **Sai daqui quando:** telemetria mostra ≥1 chart ou table em 20%+ das respostas com mais de 2 números.
-
-### 2. Emojis por default no tom da Erica
-- **Custo:** S
-- **Por que agora:** custo trivial, valor de comunicação humano alto. Willian pediu explicitamente ("as pessoas usam no WhatsApp"). Deve vir antes de imagens/GIFs.
-- **Escopo:** persona prompt de cada framework recebe orientação — 1-2 emojis por turno, colocados nos beats emocionais (não decorativos). Erica leva mais que os coaches diretivos.
-- **Sai daqui quando:** shipped + verificado no simulador que a voz da coach ficou humana sem virar cringe.
-
-### 3. Reorganizar Coach Studio em três áreas (Semantic Store / Injected Data / Real Time) + migrar persona/guardrails do Wix
-- **Custo:** L (a terceira área — Real Time — requer também estruturar o schema de runtime, que hoje é ad-hoc)
-- **Por que agora:** Eric pediu como **crítico pra ir a produção** — ele precisa administrar a Erica pelo Studio, sem CLI e sem Wix. Hoje é cognitivamente incoerente: temos "Coach Studio" mas a **alma da Erica (persona, guardrails) vive em Wix collections** — o site é o admin da coach, o "admin do coach" só cuida de conteúdo semântico. Além disso, a arquitetura híbrida de dados hard vs soft (ver [[ai-coach-hard-vs-soft-data]]) precisa de lugares administrativos distintos e **auto-explicativos**, senão qualquer editor mistura categorias — alguém enfia uma URL no vector store e a Erica alucina link.
+- **Por que agora:** Eric identificou como defeito principal do demo. *"This is living in an echo chamber. What you've done is you've distilled something to key points, and then you're asking her about the key points, you're showing the key points to the individual. She should have a wider scope of knowledge. She's going to be shallow."* O comportamento observado: coach responde do conteúdo destilado do report renderizado na página, ficando fluente e rasa ao mesmo tempo. Mesma forma da falha da conversa de crise no caso da conta apagada — profundidade da fonte é o fix, não tom.
 - **Escopo:**
-  - **Três áreas nomeadas** (decidido por Willian, plataforma é toda em inglês):
-    1. **`Semantic Store`** — conteúdo longo, semântico, contextual → **indexado no vector store**. Descrição semântica de cursos (competências, 40+ pgs ok), artigos, blog posts, framework theory. Upload `.docx` / `.md` → converte + overlay. Painel de sync: última re-index, contagem de docs, diff overlay vs default, undo via audit log.
-    2. **`Injected Data`** — conteúdo curto, rigoroso, canônico → **injetado no system prompt**. Personas (Erica, coaches diretivos): nome + tom + guardrails. Lista canônica de cursos (nome + URL). Lista canônica de quizzes (nome + URL). Regras de segurança / recusa. Frases-âncora de tom. UI mostra limite de tamanho visível: "cada palavra custa contexto".
-    3. **`Real Time`** — dados que chegam em runtime → **estrutura + controle do que a Erica recebe do site**. Schema explícito das fontes: página atual (URL, tipo, elemento focado), sessão (histórico curto, tempo aberto), usuário (perfil, histórico de cursos, últimos resultados de quiz), relatório (dados estruturados quando presente), curso em contexto. Hoje isso chega ad-hoc via `/api/erica-preparation` + function calls sob demanda — desestruturado. Aqui admin vê: **quais campos chegam, quando (boot vs sob demanda), formato exemplo, toggle on/off**. Sem esta área não dá pra debugar "por que Erica não sabia disso?" nem controlar over-fetching.
-  - **Migração Wix → Studio** (o pedaço mais crítico pro Eric):
-    - Varredura: descobrir quais Wix collections a coach lê hoje (persona? guardrails? outras?) — checar bridge/preparação
-    - Migrar cada campo pro Coach Studio (vira Injected Data), source-of-truth único aqui
-    - Site passa a receber persona/guardrails via API do Coach Studio
-    - Remover collections do Wix depois de validado, senão vira dois lugares e confusão futura
-  - **Restructure de nav** — absorve o antigo [📋] `Hierarquia de nav do Studio`: topo do Studio destaca `Semantic Store`, `Injected Data`, `Real Time`, `Simulator`. Observatório (sessions/users/metrics/audit) num grupo secundário (dropdown ou prateleira menor). Achar usuário passa a ser via sessão.
-- **NÃO faz:** não migra Wix automaticamente — cada campo passa por validação com Eric. Não muda o formato do vector store — só a superfície administrativa. Não expõe reasoning pro usuário final (fica no item #5). Real Time não vira novo canal de dados agora — só estrutura+expõe o que já chega.
-- **Sai daqui quando:** Eric consegue (a) abrir Studio, editar Injected Data da Erica, ver mudança em produção sem tocar em Wix; (b) subir docx nova de curso no Semantic Store, rodar re-index, ver Erica citando novo conteúdo; (c) abrir Real Time, ver o schema completo do que a Erica está recebendo naquela sessão; (d) navegação do Studio deixa óbvio o que vai em cada área — teste com o próprio Eric sem explicação prévia.
+  - Editar a instrução no system prompt (`app.js`, bloco de PAGE CONTEXT injetado por `_syncPageContextIntoPrompt`) — hoje é `Ground your next reply in the following page context. Reference specific parts naturally`. Mudar pra algo tipo:
+    ```
+    Page context tells you WHERE the user is right now — nothing more.
+    For SUBSTANCE, call search_knowledge against the semantic store
+    (frameworks, courses, quizzes, company). Never source facts from
+    the page. You may cross-reference the page ("what you see on
+    the report says X") but the depth of your reply comes from
+    the store, not from the page.
+    ```
+  - Reforçar no bloco de tools que `search_knowledge` é a fonte default, não fallback. Adicionar exemplo negativo ("do NOT answer from the report you can see").
+  - Verificar em produção: repetir o cenário do demo (usuário no report EI, pergunta específica sobre self-regulation) — a Erica deve chamar `search_knowledge` ANTES de responder, e a resposta deve trazer conteúdo do framework, não do report.
+- **NÃO faz:** não altera o canal `page_context` do Real Time (continua toggle ligado por default). Não bloqueia cross-reference com a página — só demove a página como fonte de substância.
+- **Sai daqui quando:** telemetria mostra ≥80% das respostas em páginas de report chamam `search_knowledge` antes de responder (hoje é ~0 nas conversas do demo), e amostra manual de 5 sessões mostra que Erica cita framework/curso quando pergunta é sobre substância.
 
-### 4. Bug: widgets do co-worker somem no reload
-- **Custo:** S
-- **Por que agora:** confirmado por Willian. Degradação de confiança no Studio já na primeira vez que o usuário recarrega a página com histórico do co-worker aberto — todo insight visual (chart/table) vira transiente. Enquanto não fixar, o co-worker rico parece um chat comum na segunda visita.
+### 2. Popular competency frameworks
+- **Custo:** S (mecânico) — o corpo do trabalho é escrever conteúdo semântico, não código
+- **Por que agora:** Eric marcou como causa mecânica do echo chamber. Hoje 7 das 8 personas têm framework file vazio; só *Understanding Traits Skills* tem conteúdo real. Sem esse corpo semântico, `search_knowledge scope=frameworks` retorna pouco e a Erica responde da página (Item #1 acima falha se este não for feito). Sem os frameworks populados o fix do echo chamber não termina de fechar.
 - **Escopo:**
-  - Verificar como o histórico do co-worker está sendo serializado no armazenamento (localStorage / sessionStorage / server) — hipótese: array de objetos `{role, content}` só com texto, perdendo o tipo de bloco.
-  - Se blocos são só strings, migrar pro modelo `{type: 'text' | 'chart' | 'table', data}` e persistir dessa forma. Hidratar cada block no page-load chamando o mesmo renderer que criou originalmente.
-  - Se blocos já têm tipo mas o renderer não é chamado no boot, adicionar hook de hidratação no mount da página.
-  - Testar caminho completo: co-worker renderiza chart → reload → chart continua visível idêntico.
-- **Sai daqui quando:** reload da página do Studio preserva 100% dos widgets (chart + table) em pelo menos 3 sessões diferentes do volume.
+  - Uma passada por framework file no `/admin/frameworks` — a estrutura já existe (competências, comportamentos, contra-exemplos). Preencher o corpo real de cada persona, mesmo que curto — melhor curto e verdadeiro que longo e genérico.
+  - Ordem sugerida por peso na experiência do usuário: Supportive (Erica default) → Directive → Discovery → Empowering → resto.
+  - Cada write vai automático pro overlay `/data/frameworks/`, então é ao vivo.
+  - **Dependência estratégica:** decisão CP-01 (multi-persona vs Erica-única + 8 vozes) ainda em aberto. Se decidir "Erica única", o conteúdo semântico é um só, não 8×. Vale conversar com Eric ANTES de escrever 8 versões — talvez o trabalho seja escrever 1 framework rico + 7 stubs de "voz". Marcado no comment de CP-01 no IDEIAS.
+- **NÃO faz:** não escreve framework do zero se Varsha for a autora natural desse conteúdo — colocar rascunho, marcar pra ela revisar. Não muda o vector store até re-indexar (endpoint já existe).
+- **Sai daqui quando:** os 8 frameworks têm pelo menos 1000 chars de conteúdo próprio, `search_knowledge scope=frameworks` num tópico como "self-regulation" traz chunks de 3+ frameworks distintos, e o Item #1 (echo chamber fix) passa no seu critério de saída.
 
-### 5. Visibilidade da camada de raciocínio (Erica) — admin + simulador
+### 3. Popular canonical courses + canonical quizzes
 - **Custo:** S
-- **Por que agora:** era uma das prioridades declaradas pra essa versão. Hoje a infra do `deepThink` já pede `reasoning.effort: 'medium'` mas NÃO pede `summary: 'auto'`, e nada é persistido em session log. Resultado: admin abre `/admin/sessions/:id` e não vê nenhum reasoning da Erica — só o reasoning do próprio co-worker do Studio (que é outra coisa). Falta pouco código pra fechar o loop.
+- **Por que agora:** Eric identificou wrong-link como defeito separado do echo chamber. Os editores Injected Data que shipei na Onda 2 pós-review estão no ar mas com as listas vazias. Sem populado, Erica não consegue relacionar nome, ID ou URL — inventa e alucina. Causa mecânica; fix mecânico.
 - **Escopo:**
-  - `lib/vectorStore.deepThink()`: adicionar `summary: 'auto'` no bloco `reasoning`. Retornar o summary junto com `reasoning` + `answer` no payload.
-  - `/api/deep-think` no server: propagar o summary de volta pro cliente.
-  - Client (app.js): quando recebe deep_think result, POSTa `session-log { kind: 'event', name: 'reasoning_summary', meta: { source: 'deep_think', summary, effort, model } }`. Não bloquear resposta.
-  - Client (app.js): tentar `reasoning: { effort: 'medium', summary: 'auto' }` no `session.update` do Realtime. Escutar reasoning nos `response.done` events; se aparecer, POSTa `session-log { kind: 'event', name: 'reasoning_summary', meta: { source: 'realtime', summary } }`. Se a API rejeitar o config, log warning e não quebrar o coach.
-  - `lib/sessionLog`: reconhecer `event.name === 'reasoning_summary'` sem cap de tamanho (ou mover pra arquivo separado dedup se ficar grande, mesmo padrão dos prompt snapshots).
-  - `/admin/sessions/:id`: renderizar bloco expansível "Reasoning ▸" na linha do tool_call (deep_think) OU do turn (Realtime), com destaque visual distinto — borda âmbar, ícone 🧠, source label ("deep_think" vs "realtime") visível.
-  - Simulador (`/admin/simulator`): quando rodar pipeline completo com deep_think ativado, mostrar o reasoning summary num painel lateral abaixo da resposta simulada.
-  - `/admin/metrics`: adicionar `% de sessões com reasoning capturado` e `avg summary length` na tabela existente.
-- **NÃO faz:** expor reasoning pro usuário final (botão "por que você disse isso?"). Só admin. Também não altera `reasoning.effort` — fica em `medium`.
-- **Sai daqui quando:** Willian abre 3 sessões recentes no admin e vê reasoning summary da Erica renderizado em pelo menos 1 turn de cada; simulador com pipeline completo mostra reasoning ao lado da resposta.
+  - Extrair a lista canônica de cursos do `knowledge-base/courses/` (36 já existem) — cada um vira uma linha em `/admin/injected-data/canonical-courses` com `course_id`, `name`, `url` (a URL Wix real), `one_line` (10-15 palavras).
+  - Mesmo com quizzes do `knowledge-base/quizzes/` (~20) — vira `/admin/injected-data/canonical-quizzes`.
+  - URLs Wix reais podem ser puxadas do Wix dashboard ou de um export existente — se lista de URLs não tá em mãos, marcar `url` vazio e priorizar `name` + `one_line` (Erica ainda consegue citar o nome canonical, só não linka).
+  - Depois de populado, `computeSystemPromptBlock('canonical-courses')` no `promptBudget` vai mostrar chars reais adicionados ao prompt — Home identity card deve refletir.
+- **NÃO faz:** não inclui description longa nesses tiles (isso é semantic store, não injected data). Não wire-up ainda no boot do coach — precisa passar de "storage OK" pra "sistema prompt realmente inclui os blocks" (Item futuro, separado).
+- **Sai daqui quando:** ambas as listas populadas na UI (contagem visível no hub) e a Erica em teste responde a "quais cursos vocês têm sobre X?" citando nomes canônicos + URLs corretas.
 
-### 6. Interação contextual em nível de elemento
-- **Custo:** M
-- **Por que agora:** o simulador já mostra o cenário site-embeds-coach funcionando. Prova de conceito madura. Próximo salto de valor é a coach saber *o que o usuário está olhando/marcando na página*, não só a página inteira.
-- **Escopo:** bridge.js escuta `selectionchange` / `focusin` / click em elementos com `data-erica-hint` no site → posta `PAGE_ELEMENT_FOCUS` para o iframe. Coach system prompt aprende a citar o elemento marcado.
-- **Sai daqui quando:** no simulador (quiz-report host), user seleciona uma linha da tabela de scores e Erica responde citando aquela linha especificamente.
+### 4. Fix persona pacing — "enough with the pauses"
+- **Custo:** S (edit de persona file, sem código)
+- **Por que agora:** Eric disse no demo *"that can all be changed by instructions and the configuration of the coach"* após ter que pedir "sê mais diretiva". Willian confirmou *"enough with the pauses"*. É config edit; deve subir imediatamente. Fica desconfortável demonstrar de novo com Erica pausando entre cada frase — dá impressão de coach lenta, não coach calma.
+- **Escopo:**
+  - Abrir `/admin/frameworks/framework_Supportive` no editor. Encontrar linhas que empurram pausa por default ("slow down", "take a breath", "let's pause") e reduzir a beats emocionais claros — não uso ambiental.
+  - Adicionar diretiva: "acalma quando o usuário está em desregulação evidente (ansiedade, urgência, medo); mantém ritmo normal em conversas exploratórias ou de decisão pragmática".
+  - Verificar no simulador com preset "Rita career decision" que Erica responde em ritmo normal, e com preset de crise/desregulação que ela ainda desacelera.
+- **NÃO faz:** não muda outros personas (Directive/Discovery/etc — cada um tem seu ritmo próprio). Não mexe no VAD ou barge-in (aquilo é técnico do voice mode, não tom).
+- **Sai daqui quando:** simulador mostra 3 conversas com preset "decisão pragmática" onde Erica não usa "let's pause" ou "take a breath" em turnos que não são crise.
+
+---
+
+## Concluído — histórico do sprint 2026-08-10
+
+Preservado pra rastreabilidade. Detalhes do escopo original de cada um no commit history.
+
+- **Charts/tables mais agressivos no coach** — shipped 2026-08-10 (commit `67db27c`).
+- **Emojis por default no tom da Erica** — shipped 2026-08-10 no mesmo batch.
+- **Reorganizar Coach Studio em três áreas + migrar persona/guardrails do Wix** — primeira camada shipped (nav + Real Time + hubs). Migração Wix→Studio segue como AFAZERES futuro quando decisão CP-01 (multi-persona) fechar.
+- **Bug: widgets do co-worker somem no reload** — resolvido em batch anterior; verificado no ourobouros de 2026-08-10.
+- **Visibilidade da camada de raciocínio (Erica) — admin + simulador** — shipped 2026-08-10 (commit `8297371` inclui fallback para org OpenAI não verificada). Renderização do 🧠 Reasoning verificada live em sessão de deep_think.
+- **Interação contextual em nível de elemento** — shipped 2026-08-10 e verificado ponta-a-ponta (score row → `PAGE_ELEMENT_FOCUS` → coach prompt injection).
 
 ---
 
@@ -89,4 +94,4 @@ Convenções:
 
 ---
 
-_Última revisão: 2026-08-09._
+_Última revisão: 2026-08-11 — 4 itens promovidos de IDEIAS pós-call Eric. Sprint 2026-08-10 movido para "Concluído"._
