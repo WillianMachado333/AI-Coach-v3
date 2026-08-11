@@ -5,6 +5,8 @@ Regra: no máximo 5-7 itens comprometidos por vez — se algo entra aqui, algo s
 
 _Status batch 2026-08-10 (Willian sprint "faz 1,2,3,5,6"): #1 shipped e verificado, #2 shipped, #4 já resolvido no batch anterior, #5 shipped (com fallback pra org não verificada — ver commit 8297371), #3 primeira camada shipped (nav + Real Time + hubs), #6 shipped e verificado ponta-a-ponta no simulador (score row → PAGE_ELEMENT_FOCUS → coach prompt injection)._
 
+_Boost 2026-08-11 (pré-call Eric): Boost A "Coach identity card" na Home shipado — mostra persona ativa, chars por bloco do system prompt (measured/reported/estimated), Real Time channels, contagens semantic store. Boost B "Session bookmarks + notas" shipado — ⭐/⚠️ + nota na lista de sessões, filtros All/Marked/Exemplars/Problems, bloco na Home. Ambos verificados live. Commits c44fdf1, 7019a3c, 2afcdc1, 6cdbb82._
+
 Convenções:
 - **Custo:** S (≤ 1 dia) · M (2-5 dias) · L (semana +)
 - **Por que agora:** a razão explícita — evita entrar por impulso
