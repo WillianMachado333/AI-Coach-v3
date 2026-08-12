@@ -934,16 +934,21 @@ class VoiceChatBot {
         return true;
     }
 
+    // The tuning channel WRITES to the prompt (guardrails, custom instructions,
+    // opening line). It must be at least as strict as the bridge listener that
+    // only reads. Reuse the bridge allowlist so drift can't reintroduce the
+    // wildcard hosting a wide-open write endpoint on shared platforms.
     isAllowedTuningOrigin(origin) {
-        if (!origin || typeof origin !== 'string') return false;
-        // Allow local dev + production TT origins for boss demos
-        if (origin.startsWith('http://localhost')) return true;
-        if (origin.startsWith('http://127.0.0.1')) return true;
-        if (origin === 'https://apps.talenttransformation.com') return true;
-        if (origin === 'https://talenttransformation.com') return true;
-        if (origin.endsWith('.up.railway.app')) return true;
-        if (origin.endsWith('.awav.com') || origin === 'https://awav.com') return true;
-        return false;
+        if (!origin || typeof origin !== 'string' || origin === 'null') return false;
+        try {
+            const u = new URL(origin);
+            const host = u.hostname.toLowerCase();
+            // Local dev: exact hostname match (guards against
+            // http://localhost.attacker.com under a startsWith check).
+            if ((host === 'localhost' || host === '127.0.0.1') && u.protocol === 'http:') return true;
+            // Everything else falls through to the strict bridge allowlist.
+            return this._isTrustedBridgeOrigin(origin);
+        } catch (_) { return false; }
     }
 
     setupTuningMessaging() {
@@ -956,9 +961,16 @@ class VoiceChatBot {
                 const data = event.data;
                 if (!data || typeof data !== 'object') return;
 
-                // Optional shared token check (if iframe URL includes tuneToken)
-                if (this.tuningToken && data.token !== this.tuningToken) {
-                    return;
+                // Token gate: same-origin (simulator/admin embedding its own
+                // iframe on Railway or awav) can skip, since anyone with a page
+                // on that origin already controls the coach. Every other
+                // trusted origin MUST present the shared token — a forwarded
+                // demo link becomes usable only if the receiver has the token.
+                const sameOrigin = event.origin === window.location.origin;
+                if (!sameOrigin) {
+                    if (!this.tuningToken || data.token !== this.tuningToken) {
+                        return;
+                    }
                 }
 
                 if (data.type === 'erica-request-tuning-state') {
@@ -2514,6 +2526,7 @@ class VoiceChatBot {
             const allowed = [
                 'talenttransformation.com',
                 'www.talenttransformation.com',
+                'apps.talenttransformation.com',
                 'awav.com',
                 'www.awav.com',
                 'web-production-2c7ff.up.railway.app'
