@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Coach Studio logo</title>
+  <desc id="desc">A flowing letter C converging toward two directional stars.</desc>
+  <defs>
+    <linearGradient id="flow" x1="18" y1="104" x2="102" y2="20" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#087F79"/>
+      <stop offset="0.55" stop-color="#10A7B0"/>
+      <stop offset="1" stop-color="#32C5E5"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Open C: two tapered flow paths -->
+  <path d="M91 27C82 20 71 16 59 16 32.5 16 11 37.5 11 64s21.5 48 48 48c12 0 23-4.4 31.5-11.7L76.8 84.7A27.2 27.2 0 0 1 59 91.3 27.3 27.3 0 1 1 76.6 43.8L91 27Z" fill="url(#flow)"/>
+  <path d="M79.5 48.5A21.8 21.8 0 0 0 64 42v15.5c2.5 0 4.8.8 6.7 2.2l8.8-11.2Z" fill="#071D26" opacity=".16"/>
+
+  <!-- Main convergence star -->
+  <path d="M101 43c1.8 9.6 4.4 12.2 14 14-9.6 1.8-12.2 4.4-14 14-1.8-9.6-4.4-12.2-14-14 9.6-1.8 12.2-4.4 14-14Z" fill="#32C5E5"/>
+
+  <!-- Secondary direction node -->
+  <path d="M109 16c1.1 5.9 2.7 7.5 8.6 8.6-5.9 1.1-7.5 2.7-8.6 8.6-1.1-5.9-2.7-7.5-8.6-8.6 5.9-1.1 7.5-2.7 8.6-8.6Z" fill="#10A7B0"/>
+</svg>
