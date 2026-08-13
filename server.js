@@ -651,7 +651,7 @@ const server = http.createServer(async (req, res) => {
     // window, prefixed with the known DATA PITFALLS so whoever the operator
     // pastes this into (ChatGPT, Claude) inherits the caveats — PADROES 1B.7.
     if (req.url.split('?')[0] === '/api/admin/export' && req.method === 'GET') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -746,7 +746,7 @@ const server = http.createServer(async (req, res) => {
     // bubble can render <img src="/api/admin/attachments/{id}"> without
     // reloading the payload. Admin-only.
     if (req.url.startsWith('/api/admin/attachments/') && req.method === 'GET') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -773,7 +773,7 @@ const server = http.createServer(async (req, res) => {
     // validates by magic bytes, caps size after decoding, stores on the
     // Railway volume, returns { id, contentType, bytes }.
     if (req.url === '/api/admin/attachments' && req.method === 'POST') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -813,7 +813,7 @@ const server = http.createServer(async (req, res) => {
     // the client. Client sends only the new message. Attachments referenced
     // by id are pulled from the volume and passed inline as data URLs.
     if (req.url === '/api/admin/agent' && req.method === 'POST') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -910,7 +910,7 @@ const server = http.createServer(async (req, res) => {
 
     // Suggest 3 follow-up prompts after the last turn — separate cheap call.
     if (req.url === '/api/admin/agent/suggestions' && req.method === 'POST') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -947,7 +947,7 @@ const server = http.createServer(async (req, res) => {
 
     // Load previously-persisted turns for the current actor (page load).
     if (req.url.split('?')[0] === '/api/admin/agent/history' && req.method === 'GET') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -963,7 +963,7 @@ const server = http.createServer(async (req, res) => {
     // knowledge-base/courses/ tree. Streams SSE progress. Prints the store id
     // to set as COURSES_STORE_ID. Admin-only.
     if (req.url.split('?')[0] === '/api/admin/dev/init-courses-store' && req.method === 'POST') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -1069,7 +1069,7 @@ const server = http.createServer(async (req, res) => {
     // Streams SSE progress events. Admin-only. Idempotent-ish (each run adds
     // fresh sessions with new IDs).
     if (req.url.split('?')[0] === '/api/admin/dev/gen-sessions' && req.method === 'POST') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -1108,7 +1108,7 @@ const server = http.createServer(async (req, res) => {
     // and zero tool calls (session_start only). Handy after a failed run of
     // gen-sessions so the observatory doesn't fill up with placeholders.
     if (req.url.split('?')[0] === '/api/admin/dev/purge-empty-sessions' && req.method === 'POST') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -1150,7 +1150,7 @@ const server = http.createServer(async (req, res) => {
     // cleared turns referenced (PADROES 2.21 — apagar conversa apaga o que
     // ela carregava).
     if (req.url.split('?')[0] === '/api/admin/agent/history' && req.method === 'DELETE') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -1175,7 +1175,7 @@ const server = http.createServer(async (req, res) => {
     // { history: [...], message: '...' }, we run one agent turn and return
     // { text, history } to be echoed back on the next call.
     if (req.url === '/api/admin/studio-chat' && req.method === 'POST') {
-        const session = admin.requireAdminSession(req);
+        const session = await admin.requireAdminSession(req);
         if (!session) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -1215,7 +1215,7 @@ const server = http.createServer(async (req, res) => {
     // If replaySessionId+replayTurnIndex are provided, we prefill userMessage
     // and priorTurns from that session (if not redacted).
     if (req.url === '/api/admin/simulate' && req.method === 'POST') {
-        const session = admin.requireAdminSession(req);
+        const session = await admin.requireAdminSession(req);
         if (!session) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -1262,7 +1262,7 @@ const server = http.createServer(async (req, res) => {
     // operator picks "Supportive" / "Directive" / etc and the guardrails
     // textarea auto-fills with real production framework text.
     if (req.url === '/api/admin/simulator/presets' && req.method === 'GET') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -1282,7 +1282,7 @@ const server = http.createServer(async (req, res) => {
     // Simulator: seed candidates — recent real (non-tester, non-synthetic)
     // sessions with their first user turn text as a seed for simulations.
     if (req.url.startsWith('/api/admin/simulator/seeds') && req.method === 'GET') {
-        const sess = admin.requireAdminSession(req);
+        const sess = await admin.requireAdminSession(req);
         if (!sess) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
@@ -1321,7 +1321,7 @@ const server = http.createServer(async (req, res) => {
     // between a fake user persona and the coach persona, streaming each
     // turn as it lands via SSE.
     if (req.url === '/api/admin/simulate-conversation' && req.method === 'POST') {
-        const sessCheck = admin.requireAdminSession(req);
+        const sessCheck = await admin.requireAdminSession(req);
         if (!sessCheck) {
             res.writeHead(401, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'auth_required' }));
