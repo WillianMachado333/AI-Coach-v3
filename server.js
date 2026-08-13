@@ -559,7 +559,7 @@ const server = http.createServer(async (req, res) => {
     // Coach Studio admin routes: /admin/* (login, protected pages, JSON
     // endpoints). Handled by lib/admin.js — if it takes the request, we
     // return; otherwise fall through to the rest of the server.
-    if (typeof req.url === 'string' && req.url.startsWith('/admin')) {
+    if (typeof req.url === 'string' && (req.url.startsWith('/admin') || req.url.startsWith('/auth'))) {
         try {
             const handled = await admin.handle(req, res);
             if (handled) return;
