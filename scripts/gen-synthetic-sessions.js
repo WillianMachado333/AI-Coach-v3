@@ -13,7 +13,7 @@
  * clients use.
  *
  * Usage (locally):
- *   BASE=https://web-production-2c7ff.up.railway.app \
+ *   BASE=https://web-staging-2c7ff.up.railway.app \
  *   ADMIN_PASSWORD=<your admin password used only for /api/session-log> \
  *   OPENAI_API_KEY=<key> \
  *   node scripts/gen-synthetic-sessions.js [--count 30] [--dry-run]
@@ -27,7 +27,7 @@ const http = require('http');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const BASE = process.env.BASE || 'https://web-production-2c7ff.up.railway.app';
+const BASE = process.env.BASE || 'https://web-staging-2c7ff.up.railway.app';
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 const MODEL = process.env.SYNTHETIC_MODEL || 'gpt-4.1-mini';
 const COUNT = argInt('--count', 30);

@@ -4,7 +4,7 @@
  * How Willian consumes this:
  *   Paste ONCE into Wix Custom Code (scoped to the test/playground page):
  *
- *     <script src="https://web-production-2c7ff.up.railway.app/bridge.js" async></script>
+ *     <script src="https://web-staging-2c7ff.up.railway.app/bridge.js" async></script>
  *
  * After that, ALL changes to bridge behaviour happen here — just push, deploy,
  * next page load picks it up. Zero Wix editor round-trips.
@@ -63,16 +63,16 @@
     // pollute v2 dashboards.
     var _hostSearch = (window.location && window.location.search) || '';
     var _isSimHost = /[?&]simulator=1\b/i.test(_hostSearch);
-    var IFRAME_SRC = 'https://web-production-2c7ff.up.railway.app/index.html?caller='
+    var IFRAME_SRC = 'https://web-staging-2c7ff.up.railway.app/index.html?caller='
         + (_isSimHost ? 'admin-simulator&simulator=1' : 'web');
-    var ICON_STILL_SRC = 'https://web-production-2c7ff.up.railway.app/companions/Erica-thumb.png';
+    var ICON_STILL_SRC = 'https://web-staging-2c7ff.up.railway.app/companions/Erica-thumb.png';
     // 84p is actually the HIGHEST resolution we have for Erica webm clips
     // (base /companions/idle/Erica.webm is smaller than the 84p variant —
     // odd naming). PNG thumb is higher-res than any video and is used as
     // the resting background layer so the icon reads crisp when idle.
-    var ICON_IDLE_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/idle/84p/Erica.webm';
-    var ICON_SPEAKING_WEBM = 'https://web-production-2c7ff.up.railway.app/companions/speaking/84p/Erica.webm';
-    var ICON_WAVING_MP4 = 'https://web-production-2c7ff.up.railway.app/companions/waving/Erica.mp4';
+    var ICON_IDLE_WEBM = 'https://web-staging-2c7ff.up.railway.app/companions/idle/84p/Erica.webm';
+    var ICON_SPEAKING_WEBM = 'https://web-staging-2c7ff.up.railway.app/companions/speaking/84p/Erica.webm';
+    var ICON_WAVING_MP4 = 'https://web-staging-2c7ff.up.railway.app/companions/waving/Erica.mp4';
     var ICON_ID = 'ct-bridge-icon';
     var HOVER_PILLS_ID = 'ct-bridge-hover-pills';
     var IDLE_VIDEO_ID = 'ct-bridge-icon-video-idle';

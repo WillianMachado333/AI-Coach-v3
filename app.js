@@ -2533,7 +2533,7 @@ class VoiceChatBot {
                 'apps.talenttransformation.com',
                 'awav.com',
                 'www.awav.com',
-                'web-production-2c7ff.up.railway.app'
+                'web-staging-2c7ff.up.railway.app'
             ];
             if (allowed.includes(host)) return true;
             // Wix editor sub-hosts (a.wix.com, editor.wix.com, etc). Keep
