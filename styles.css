@@ -220,6 +220,24 @@
     font-size: 13px;
 }
 
+/* The newest streamed phrase gets a quiet reading cue. The marker is made
+   from text nodes in uiLayout.js, so streamed content cannot become markup. */
+.streaming-highlight {
+    background: linear-gradient(transparent 58%, rgba(255, 236, 120, .32) 58%);
+    border-radius: .2em;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    transition: background-color .18s ease, color .18s ease;
+}
+
+.streaming-highlight-voice {
+    background: linear-gradient(transparent 54%, rgba(110, 231, 183, .34) 54%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .streaming-highlight { transition: none; }
+}
+
 @media (max-width: 520px) {
     #inputWrapper.voice-mode-active > div:first-child {
         flex-basis: min(220px, calc(100vw - 84px));

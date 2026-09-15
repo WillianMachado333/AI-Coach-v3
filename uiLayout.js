@@ -1639,6 +1639,28 @@
         return result.join('');
     }
 
+    function renderStreamingText(textElement, rawText, isVoice) {
+        if (!textElement) return;
+        const text = String(rawText || '');
+        textElement.replaceChildren();
+        textElement.removeAttribute('data-streaming-final');
+        if (!text) {
+            textElement.removeAttribute('data-streaming');
+            return;
+        }
+
+        const parts = typeof window.coachUiRules?.streamingHighlightParts === 'function'
+            ? window.coachUiRules.streamingHighlightParts(text, 4)
+            : { before: '', highlight: text };
+        if (parts.before) textElement.appendChild(document.createTextNode(parts.before));
+        const marker = document.createElement('span');
+        marker.className = `streaming-highlight${isVoice ? ' streaming-highlight-voice' : ''}`;
+        marker.setAttribute('data-streaming-highlight', '1');
+        marker.textContent = parts.highlight;
+        textElement.appendChild(marker);
+        textElement.setAttribute('data-streaming', '1');
+    }
+
     function updateMessageElement(app, message) {
         if (!app.chatMessages) return;
 
@@ -1725,8 +1747,16 @@
         const textElement = messageDiv._textElement;
         if (textElement) {
             if (message.final) {
+                textElement.removeAttribute('data-streaming');
+                textElement.removeAttribute('data-streaming-final');
                 textElement.innerHTML = formatText(message.text || '');
+            } else if (message.role !== 'user') {
+                // The newest transcript phrase is the best available timing
+                // signal during streaming. It is visual-only and falls back
+                // to plain text if the helper is unavailable.
+                renderStreamingText(textElement, message.text || '', !!app.isRecording);
             } else {
+                textElement.removeAttribute('data-streaming');
                 textElement.textContent = message.text || ''; // plain during streaming
             }
         }

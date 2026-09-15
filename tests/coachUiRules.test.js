@@ -26,6 +26,22 @@ test('coach animation requires sound, an open output gate, and real level', () =
     assert.equal(rules.shouldAnimateCoach(0.2, true, true), false);
 });
 
+test('streaming highlight follows the newest phrase and preserves the preceding text', () => {
+    assert.deepEqual(
+        rules.streamingHighlightParts('One two three four five six', 3),
+        { before: 'One two three ', highlight: 'four five six' }
+    );
+    assert.deepEqual(
+        rules.streamingHighlightParts('A short reply'),
+        { before: '', highlight: 'A short reply' }
+    );
+});
+
+test('streaming highlight handles empty and whitespace-only text safely', () => {
+    assert.deepEqual(rules.streamingHighlightParts(''), { before: '', highlight: '' });
+    assert.deepEqual(rules.streamingHighlightParts('   '), { before: '', highlight: '   ' });
+});
+
 test('starter suggestions use a safe context signal and preserve fallback', () => {
     const fallback = ['one', 'two', 'three'];
     assert.deepEqual(
