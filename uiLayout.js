@@ -68,6 +68,11 @@
         app.sendTextButton = document.getElementById('sendMessageBtn'); // New ID
         app.dictationButton = document.getElementById('dictationBtn');
         app.inputWrapper = document.getElementById('inputWrapper');
+        app.attachmentButton = document.getElementById('attachmentButton');
+        app.attachmentInput = document.getElementById('attachmentInput');
+        app.attachmentPreview = document.getElementById('attachmentPreview');
+        app.attachmentStatus = document.getElementById('attachmentStatus');
+        app.pendingAttachments = Array.isArray(app.pendingAttachments) ? app.pendingAttachments : [];
 
         // Mic Controls
         app.micToggleButton = document.getElementById('micToggleBtn'); // New ID
@@ -258,6 +263,8 @@
         if (app.sendTextButton) {
             app.sendTextButton.addEventListener('click', () => app.sendTextMessage());
         }
+
+        setupAttachments(app);
 
         if (app.dictationButton) {
             setupDictation(app);
@@ -776,8 +783,10 @@
         const hasText = typeof window.coachUiRules?.hasSendableText === 'function'
             ? window.coachUiRules.hasSendableText(app.textInput.value)
             : app.textInput.value.trim().length > 0;
+        const hasAttachment = Array.isArray(app.pendingAttachments)
+            && app.pendingAttachments.some((attachment) => attachment.state === 'ready');
 
-        if (hasText) {
+        if (hasText || hasAttachment) {
             app.sendTextButton.disabled = false;
             app.sendTextButton.classList.remove('hidden', 'opacity-50');
             app.sendTextButton.classList.add('text-supportiveColor');
@@ -790,6 +799,146 @@
             app.sendTextButton.setAttribute('aria-hidden', 'true');
             app.sendTextButton.setAttribute('tabindex', '-1');
         }
+    }
+
+    function setupAttachments(app) {
+        if (!app.attachmentButton || !app.attachmentInput) return;
+
+        const rules = window.attachmentRules;
+        if (!rules) return;
+
+        const setStatus = (message, isError = false) => {
+            if (!app.attachmentStatus) return;
+            app.attachmentStatus.textContent = message || '';
+            app.attachmentStatus.classList.toggle('attachment-status-error', !!isError);
+        };
+
+        const getBytes = (excludeIndex = -1) => app.pendingAttachments.reduce((total, attachment, index) => {
+            return index === excludeIndex ? total : total + (Number(attachment.size) || 0);
+        }, 0);
+
+        const render = () => {
+            const preview = app.attachmentPreview;
+            if (!preview) return;
+            preview.textContent = '';
+            preview.classList.toggle('hidden', app.pendingAttachments.length === 0);
+
+            app.pendingAttachments.forEach((attachment, index) => {
+                const chip = document.createElement('div');
+                chip.className = 'attachment-chip' + (attachment.state === 'error' ? ' attachment-chip-error' : '');
+                chip.setAttribute('data-attachment-index', String(index));
+
+                const name = document.createElement('span');
+                name.className = 'attachment-chip-name';
+                name.textContent = attachment.name;
+                chip.appendChild(name);
+
+                const state = document.createElement('span');
+                state.className = 'text-xs text-slate-500';
+                state.textContent = attachment.state === 'ready' ? 'ready' : attachment.state === 'loading' ? 'preparing' : attachment.error;
+                chip.appendChild(state);
+
+                if (attachment.state === 'error') {
+                    const retry = document.createElement('button');
+                    retry.type = 'button';
+                    retry.className = 'attachment-chip-retry text-xs underline';
+                    retry.textContent = 'Retry';
+                    retry.setAttribute('aria-label', `Retry ${attachment.name}`);
+                    retry.addEventListener('click', () => processFile(attachment.file, index));
+                    chip.appendChild(retry);
+                }
+
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'attachment-chip-remove text-lg leading-none';
+                remove.textContent = '×';
+                remove.setAttribute('aria-label', `Remove ${attachment.name}`);
+                remove.addEventListener('click', () => {
+                    app.pendingAttachments.splice(index, 1);
+                    render();
+                    updateTextButtonVisibility(app);
+                });
+                chip.appendChild(remove);
+                preview.appendChild(chip);
+            });
+            updateTextButtonVisibility(app);
+        };
+
+        const readFile = (file, kind) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onprogress = (event) => {
+                if (event.lengthComputable) {
+                    setStatus(`Preparing ${file.name} (${Math.round((event.loaded / event.total) * 100)}%)`);
+                } else {
+                    setStatus(`Preparing ${file.name}…`);
+                }
+            };
+            reader.onerror = () => reject(new Error('The file could not be read.'));
+            reader.onload = () => {
+                if (kind === 'image') {
+                    resolve({ dataUrl: String(reader.result || '') });
+                    return;
+                }
+                const prepared = rules.truncateText(reader.result);
+                resolve({ text: prepared.text, truncated: prepared.truncated });
+            };
+            if (kind === 'image') reader.readAsDataURL(file);
+            else reader.readAsText(file);
+        });
+
+        async function processFile(file, replaceIndex = -1) {
+            const currentCount = app.pendingAttachments.length - (replaceIndex >= 0 ? 1 : 0);
+            const validation = rules.validateFile(file, currentCount, getBytes(replaceIndex));
+            const item = {
+                file,
+                name: String(file?.name || 'Unnamed file'),
+                size: Number(file?.size) || 0,
+                state: 'loading',
+                kind: validation.kind || rules.kindForFile(file),
+                error: validation.error || ''
+            };
+
+            if (replaceIndex >= 0) app.pendingAttachments[replaceIndex] = item;
+            else app.pendingAttachments.push(item);
+            render();
+
+            if (!validation.ok) {
+                item.state = 'error';
+                setStatus(validation.error, true);
+                render();
+                return;
+            }
+
+            setStatus(`Preparing ${item.name}…`);
+            try {
+                const payload = await readFile(file, validation.kind);
+                Object.assign(item, payload, { state: 'ready', error: '' });
+                setStatus(`${app.pendingAttachments.filter((entry) => entry.state === 'ready').length} attachment(s) ready.`);
+            } catch (error) {
+                item.state = 'error';
+                item.error = error.message || 'The file could not be read.';
+                setStatus(item.error, true);
+            }
+            render();
+        }
+
+        app.getReadyAttachments = () => app.pendingAttachments
+            .filter((attachment) => attachment.state === 'ready')
+            .map(({ file, ...attachment }) => attachment);
+        app.clearAttachments = () => {
+            app.pendingAttachments.splice(0);
+            setStatus('');
+            render();
+        };
+
+        app.attachmentButton.addEventListener('click', () => app.attachmentInput.click());
+        app.attachmentInput.addEventListener('change', async () => {
+            const files = Array.from(app.attachmentInput.files || []);
+            app.attachmentInput.value = '';
+            for (const file of files) await processFile(file);
+            render();
+        });
+        render();
     }
 
     function setupDictation(app) {

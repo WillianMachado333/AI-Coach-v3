@@ -47,7 +47,7 @@
     </script>
 
     <!-- Custom animations remaining in CSS -->
-    <link rel="stylesheet" href="styles.css?v=6">
+    <link rel="stylesheet" href="styles.css?v=7">
 
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -501,11 +501,21 @@
         <div class="w-full relative">
 
             <!-- Voice Mode / Text Mode Toggle Area -->
+            <div id="attachmentPreview" class="attachment-preview hidden" aria-label="Pending attachments"></div>
+            <div id="attachmentStatus" class="attachment-status" role="status" aria-live="polite"></div>
             <div class="flex items-end gap-3 transition-all duration-300" id="inputWrapper">
 
                 <!-- Text Input (Glass Pill) -->
                 <div
                     class="flex-1 bg-white/90 backdrop-blur-md border border-borderColor rounded-[24px] flex items-center transition-all focus-within:ring-2 focus-within:ring-teal-500/20 focus-within:border-teal-500/50">
+                    <button id="attachmentButton" type="button"
+                        class="attachment-button ml-1 p-2 text-iconColor hover:text-primary transition-colors"
+                        aria-label="Attach a photo or file" title="Attach a photo or file">
+                        <span aria-hidden="true" class="text-xl leading-none">+</span>
+                    </button>
+                    <input id="attachmentInput" type="file" class="sr-only"
+                        accept="image/png,image/jpeg,text/plain,text/markdown,text/csv,application/json,.txt,.md,.markdown,.csv,.json"
+                        multiple>
                     <textarea id="userTextInput" rows="1" placeholder="Ask me anything"
                         class="w-full bg-transparent border-none focus:ring-0 resize-none py-3 px-4 text-gray-800 placeholder-gray-400 max-h-32 text-[15px] leading-normal text-base"
                         style="min-height: 48px;"></textarea>
@@ -674,6 +684,7 @@
     <script src="iframeMessaging.js?v=20260428b"></script>
     <script src="navigator.js?v=20260428b"></script>
     <script src="lib/coachUiRules.js?v=1"></script>
+    <script src="lib/attachmentRules.js?v=1"></script>
     <script src="uiLayout.js?v=20260428b"></script>
     <script src="app.js?v=20260428b"></script>
 </body>

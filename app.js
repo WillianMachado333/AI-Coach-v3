@@ -95,6 +95,9 @@ class VoiceChatBot {
         this._urlQuestionSent = false;
         // Queue for messages sent before connection is ready
         this._pendingTextMessages = [];
+        // Attachments are prepared in the browser and sent as supported
+        // Realtime input content; file bytes/content are never logged.
+        this.pendingAttachments = [];
 
         // Debug logging toggle:
         // - URL param: ?ericaDebug=1
@@ -3201,9 +3204,18 @@ class VoiceChatBot {
         }
     }
 
-    sendTextMessage(textPayload = null) {
-        const text = textPayload || this.textInput?.value.trim();
-        if (!text) return;
+    sendTextMessage(textPayload = null, attachmentsPayload = null) {
+        const fromComposer = textPayload === null && attachmentsPayload === null;
+        const text = typeof textPayload === 'string'
+            ? textPayload.trim()
+            : (this.textInput?.value || '').trim();
+        const attachments = Array.isArray(attachmentsPayload)
+            ? attachmentsPayload
+            : (typeof this.getReadyAttachments === 'function' ? this.getReadyAttachments() : []);
+        if (!text && !attachments.length) return;
+        const attachmentNames = attachments.map((attachment) => attachment.name).filter(Boolean);
+        const displayText = [text, attachmentNames.length ? `[Attached: ${attachmentNames.join(', ')}]` : '']
+            .filter(Boolean).join('\n\n');
 
         // Dismiss the empty-state suggestion pills the moment the user commits
         // to sending anything. They only serve to reduce cold-start friction;
@@ -3220,10 +3232,11 @@ class VoiceChatBot {
             }
 
             // Queue the message — it will be sent when connection is ready
-            console.log('[Erica] Not connected — queuing message:', text);
-            this._pendingTextMessages.push(text);
-            if (!textPayload && this.textInput) {
+            console.log('[Erica] Not connected — queuing message with text/attachments');
+            this._pendingTextMessages.push({ text, attachments });
+            if (fromComposer && this.textInput) {
                 this.textInput.value = '';
+                if (typeof this.clearAttachments === 'function') this.clearAttachments();
                 this.updateTextButtonVisibility();
             }
             this.isOnHold = false;
@@ -3252,7 +3265,7 @@ class VoiceChatBot {
         // Analytics: Asked AI Coach text
         this.analyticsSession.textQuestionCount++;
         this.trackCoachEvent('Asked AI Coach text', {
-            Question: text,
+            Question: text || '[attachment]',
             TextQuestionCount: this.analyticsSession.textQuestionCount
         });
 
@@ -3260,8 +3273,9 @@ class VoiceChatBot {
         this.startSessionInactivityTimer();
 
         // Clear the input only if using DOM input (not payload)
-        if (!textPayload) {
+        if (fromComposer) {
             this.textInput.value = '';
+            if (typeof this.clearAttachments === 'function') this.clearAttachments();
             this.updateTextButtonVisibility();
         }
 
@@ -3269,7 +3283,7 @@ class VoiceChatBot {
         const userTimestamp = Date.now();
         const userMessageId = `user-text-${userTimestamp}`;
         /*this.upsertMessage(userMessageId, 'user', text, true, userTimestamp);*/
-        this.upsertMessage(userMessageId, 'user', text, true, userTimestamp, { inputType: 'text' });
+        this.upsertMessage(userMessageId, 'user', displayText, true, userTimestamp, { inputType: 'text' });
 
 
         // Fire analytics for asked question (text path)
@@ -3285,7 +3299,7 @@ class VoiceChatBot {
         // so Erica can cite the specific element without the user having to
         // describe it. Consume it (single-use) so a stale focus doesn't leak
         // into unrelated later turns.
-        let sendText = text;
+        let sendText = text || 'Please review the attached file(s).';
         try {
             const focus = this._lastElementFocus;
             if (focus && (Date.now() - focus.at) < 60000) {
@@ -3294,24 +3308,41 @@ class VoiceChatBot {
                 const desc = focus.hint || focus.text;
                 if (desc) {
                     sendText = '[Context — user just ' + kindLabel + ' on the page: '
-                        + desc.slice(0, 300) + ']\n\n' + text;
+                        + desc.slice(0, 300) + ']\n\n' + sendText;
                 }
                 this._lastElementFocus = null;
             }
         } catch (_) { /* non-fatal */ }
 
-        // Send text message to Realtime API
+        // Realtime accepts text/image content for a user message. Text-like
+        // files are included as bounded input_text; images use data URLs.
+        const textAttachments = attachments.filter((attachment) => attachment.kind === 'text');
+        if (textAttachments.length) {
+            sendText += textAttachments.map((attachment) => {
+                const suffix = attachment.truncated ? '\n[File content truncated for safety]' : '';
+                return `\n\n[Attached text file: ${attachment.name}]\n${attachment.text || ''}${suffix}`;
+            }).join('');
+        }
+        const realtimeContent = [{
+            type: 'input_text',
+            text: sendText
+        }];
+        attachments.filter((attachment) => attachment.kind === 'image' && attachment.dataUrl)
+            .forEach((attachment) => {
+                realtimeContent.push({
+                    type: 'input_image',
+                    image_url: attachment.dataUrl,
+                    detail: 'auto'
+                });
+            });
+
+        // Send the supported attachment/text content to Realtime API.
         this.sendMessage({
             type: 'conversation.item.create',
             item: {
                 type: 'message',
                 role: 'user',
-                content: [
-                    {
-                        type: 'input_text',
-                        text: sendText
-                    }
-                ]
+                content: realtimeContent
             }
         });
 
@@ -6893,9 +6924,10 @@ class VoiceChatBot {
         const messages = this._pendingTextMessages.splice(0);
         console.log('[Erica] Sending', messages.length, 'queued message(s)');
         // Send each with a small stagger so they arrive in order
-        messages.forEach((text, i) => {
+        messages.forEach((entry, i) => {
             setTimeout(() => {
-                this.sendTextMessage(text);
+                const pending = typeof entry === 'string' ? { text: entry, attachments: [] } : entry;
+                this.sendTextMessage(pending.text, pending.attachments);
             }, 500 + (i * 300));
         });
     }
