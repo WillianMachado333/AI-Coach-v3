@@ -1,6 +1,24 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const wixOauth = require('../lib/wixOauth');
+const { aiCoachEnvironmentLabel } = require('../lib/environmentLabel');
+
+test('admin UI labels the single Railway environment as the prototype environment', () => {
+    const previous = process.env.AI_COACH_ENVIRONMENT;
+    try {
+        delete process.env.AI_COACH_ENVIRONMENT;
+        assert.equal(aiCoachEnvironmentLabel(process.env.AI_COACH_ENVIRONMENT), 'Prototype');
+
+        process.env.AI_COACH_ENVIRONMENT = 'production';
+        assert.equal(aiCoachEnvironmentLabel(process.env.AI_COACH_ENVIRONMENT), 'Prototype');
+
+        process.env.AI_COACH_ENVIRONMENT = 'prototype';
+        assert.equal(aiCoachEnvironmentLabel(process.env.AI_COACH_ENVIRONMENT), 'Prototype');
+    } finally {
+        if (previous === undefined) delete process.env.AI_COACH_ENVIRONMENT;
+        else process.env.AI_COACH_ENVIRONMENT = previous;
+    }
+});
 
 test('auth callback is isolated to the configured AI Coach environment origin', () => {
     const previous = {
