@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const wixOauth = require('../lib/wixOauth');
+const { authenticateAdmin, configuredAdminIdentities } = require('../lib/adminAuth');
 const { aiCoachEnvironmentLabel } = require('../lib/environmentLabel');
 
 test('admin UI labels the single Railway environment as the prototype environment', () => {
@@ -20,26 +20,37 @@ test('admin UI labels the single Railway environment as the prototype environmen
     }
 });
 
-test('auth callback is isolated to the configured AI Coach environment origin', () => {
-    const previous = {
-        admin: process.env.AI_COACH_ADMIN_ORIGIN,
-        public: process.env.PUBLIC_ORIGIN,
-        railway: process.env.RAILWAY_PUBLIC_DOMAIN
-    };
-    try {
-        process.env.AI_COACH_ADMIN_ORIGIN = 'https://ai-coach-staging.example.test/admin/';
-        delete process.env.PUBLIC_ORIGIN;
-        delete process.env.RAILWAY_PUBLIC_DOMAIN;
-        assert.equal(wixOauth.callbackUri(), 'https://ai-coach-staging.example.test/auth/callback');
+test('custom Admin auth accepts a configured username and password', () => {
+    const result = authenticateAdmin(
+        { identity: 'Coach-Admin', password: 'correct-horse' },
+        { ADMIN_PASSWORD: 'correct-horse', ADMIN_USERNAME: 'coach-admin' }
+    );
+    assert.deepEqual(result, { ok: true, identity: 'coach-admin' });
+});
 
-        process.env.AI_COACH_ADMIN_ORIGIN = 'https://ai-coach-production.example.test';
-        assert.equal(wixOauth.callbackUri(), 'https://ai-coach-production.example.test/auth/callback');
-    } finally {
-        if (previous.admin === undefined) delete process.env.AI_COACH_ADMIN_ORIGIN;
-        else process.env.AI_COACH_ADMIN_ORIGIN = previous.admin;
-        if (previous.public === undefined) delete process.env.PUBLIC_ORIGIN;
-        else process.env.PUBLIC_ORIGIN = previous.public;
-        if (previous.railway === undefined) delete process.env.RAILWAY_PUBLIC_DOMAIN;
-        else process.env.RAILWAY_PUBLIC_DOMAIN = previous.railway;
-    }
+test('custom Admin auth keeps the existing password-only prototype usable', () => {
+    assert.deepEqual(configuredAdminIdentities({ ADMIN_PASSWORD: 'configured' }), ['admin']);
+    assert.equal(
+        authenticateAdmin({ identity: 'admin', password: 'configured' }, { ADMIN_PASSWORD: 'configured' }).ok,
+        true
+    );
+});
+
+test('custom Admin auth distinguishes invalid credentials from access denied', () => {
+    const env = { ADMIN_PASSWORD: 'correct-horse', ADMIN_ALLOWED_USERS: 'owner@example.test' };
+    assert.deepEqual(
+        authenticateAdmin({ identity: 'owner@example.test', password: 'wrong' }, env),
+        { ok: false, code: 'invalid_credentials' }
+    );
+    assert.deepEqual(
+        authenticateAdmin({ identity: 'other@example.test', password: 'correct-horse' }, env),
+        { ok: false, code: 'access_denied', identity: 'other@example.test' }
+    );
+});
+
+test('custom Admin auth reports missing password configuration', () => {
+    assert.deepEqual(
+        authenticateAdmin({ identity: 'admin', password: 'anything' }, {}),
+        { ok: false, code: 'config_error' }
+    );
 });

@@ -556,10 +556,10 @@ const server = http.createServer(async (req, res) => {
         logAt('info', `${req.method} ${req.url}`);
     }
 
-    // Coach Studio admin routes: /admin/* (login, protected pages, JSON
-    // endpoints). Handled by lib/admin.js — if it takes the request, we
-    // return; otherwise fall through to the rest of the server.
-    if (typeof req.url === 'string' && (req.url.startsWith('/admin') || req.url.startsWith('/auth'))) {
+    // AI Coach V3 Admin routes: /admin/* (custom login, protected pages,
+    // JSON endpoints). Handled by lib/admin.js — if it takes the request,
+    // we return; otherwise fall through to the rest of the server.
+    if (typeof req.url === 'string' && req.url.startsWith('/admin')) {
         try {
             const handled = await admin.handle(req, res);
             if (handled) return;
