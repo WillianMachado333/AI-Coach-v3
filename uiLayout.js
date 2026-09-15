@@ -66,6 +66,7 @@
         // Input & Controls
         app.textInput = document.getElementById('userTextInput'); // New ID
         app.sendTextButton = document.getElementById('sendMessageBtn'); // New ID
+        app.dictationButton = document.getElementById('dictationBtn');
         app.inputWrapper = document.getElementById('inputWrapper');
 
         // Mic Controls
@@ -108,9 +109,15 @@
             // history, don't yank them back down. Matches ChatGPT / Claude
             // scroll behaviour.
             app.isChatNearBottom = function () {
-                const distance = scrollContainer.scrollHeight
-                    - scrollContainer.scrollTop
-                    - scrollContainer.clientHeight;
+                if (typeof window.coachUiRules?.isNearBottom === 'function') {
+                    return window.coachUiRules.isNearBottom(
+                        scrollContainer.scrollHeight,
+                        scrollContainer.scrollTop,
+                        scrollContainer.clientHeight,
+                        NEAR_BOTTOM_THRESHOLD_PX
+                    );
+                }
+                const distance = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
                 return distance <= NEAR_BOTTOM_THRESHOLD_PX;
             };
 
@@ -121,7 +128,9 @@
             app.scrollMessageTopIntoView = function (el) {
                 if (!el || !scrollContainer) return;
                 const offset = 8; // tiny headroom
-                const elTop = el.offsetTop - scrollContainer.offsetTop;
+                const containerRect = scrollContainer.getBoundingClientRect();
+                const elementRect = el.getBoundingClientRect();
+                const elTop = elementRect.top - containerRect.top + scrollContainer.scrollTop;
                 scrollContainer.scrollTo({ top: Math.max(0, elTop - offset), behavior: 'smooth' });
             };
 
@@ -248,6 +257,10 @@
 
         if (app.sendTextButton) {
             app.sendTextButton.addEventListener('click', () => app.sendTextMessage());
+        }
+
+        if (app.dictationButton) {
+            setupDictation(app);
         }
 
         if (app.micToggleButton) {
@@ -751,30 +764,87 @@
         };
 
         app.setMicSpeakingAnimation = function (isSpeaking) {
-            // Triggers the "speaking-pulse" on the mic button if desired
-            if (!app.micToggleButton) return;
-
-            if (isSpeaking) {
-                app.micToggleButton.classList.add('speaking-pulse');
-            } else {
-                app.micToggleButton.classList.remove('speaking-pulse');
-            }
+            // The FAB is the call action, not Erica's speaking indicator.
+            // Output animation is driven by updateSpeakerLevel(), which is
+            // gated by actual remote playback.
+            if (app.micToggleButton) app.micToggleButton.classList.remove('speaking-pulse');
         };
     }
 
     function updateTextButtonVisibility(app) {
         if (!app.textInput || !app.sendTextButton) return;
-        const hasText = app.textInput.value.trim().length > 0;
+        const hasText = typeof window.coachUiRules?.hasSendableText === 'function'
+            ? window.coachUiRules.hasSendableText(app.textInput.value)
+            : app.textInput.value.trim().length > 0;
 
         if (hasText) {
             app.sendTextButton.disabled = false;
-            app.sendTextButton.classList.remove('opacity-50');
+            app.sendTextButton.classList.remove('hidden', 'opacity-50');
             app.sendTextButton.classList.add('text-supportiveColor');
+            app.sendTextButton.setAttribute('aria-hidden', 'false');
+            app.sendTextButton.removeAttribute('tabindex');
         } else {
             app.sendTextButton.disabled = true;
-            app.sendTextButton.classList.add('opacity-50');
+            app.sendTextButton.classList.add('hidden', 'opacity-50');
             app.sendTextButton.classList.remove('text-teal-600');
+            app.sendTextButton.setAttribute('aria-hidden', 'true');
+            app.sendTextButton.setAttribute('tabindex', '-1');
         }
+    }
+
+    function setupDictation(app) {
+        const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!Recognition) {
+            app.dictationButton.disabled = true;
+            app.dictationButton.setAttribute('aria-label', 'Dictation is not supported in this browser');
+            app.dictationButton.title = 'Dictation is not supported in this browser';
+            return;
+        }
+
+        let recognition = null;
+        const setListening = (listening) => {
+            app.dictationButton.classList.toggle('dictation-active', listening);
+            app.dictationButton.setAttribute('aria-pressed', listening ? 'true' : 'false');
+            app.dictationButton.setAttribute('aria-label', listening ? 'Stop dictation' : 'Dictate a text message');
+            app.dictationButton.title = listening ? 'Stop dictation' : 'Dictate a text message';
+        };
+
+        app.dictationButton.setAttribute('aria-pressed', 'false');
+        app.dictationButton.addEventListener('click', () => {
+            if (recognition) {
+                recognition.stop();
+                return;
+            }
+
+            recognition = new Recognition();
+            recognition.lang = document.documentElement.lang || navigator.language || 'en-US';
+            recognition.interimResults = true;
+            recognition.continuous = false;
+            const baseText = app.textInput.value.trim();
+            let finalText = '';
+            recognition.onstart = () => setListening(true);
+            recognition.onresult = (event) => {
+                let interimText = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0]?.transcript || '';
+                    if (event.results[i].isFinal) finalText += transcript;
+                    else interimText += transcript;
+                }
+                const spoken = `${finalText}${interimText}`.trim();
+                app.textInput.value = [baseText, spoken].filter(Boolean).join(baseText && spoken ? ' ' : '');
+                updateTextButtonVisibility(app);
+            };
+            recognition.onerror = (event) => {
+                console.warn('[Erica] Dictation failed:', event.error || 'unknown error');
+                recognition = null;
+                setListening(false);
+            };
+            recognition.onend = () => {
+                recognition = null;
+                setListening(false);
+            };
+            recognition.start();
+        });
     }
 
     function updateMicToggleVisibility(app) {
@@ -804,9 +874,8 @@
         panel.classList.toggle('translate-y-0', open);
 
         // When voice mode is on, the text input becomes secondary — collapse
-        // the textarea to a slim ~32px pill (placeholder still readable but
-        // doesn't dominate) so the audio controls near Erica read as the
-        // primary interaction. Restore when voice mode ends.
+        // the composer to a compact control group so audio remains primary.
+        if (app.inputWrapper) app.inputWrapper.classList.toggle('voice-mode-active', !!open);
         const ta = document.getElementById('userTextInput');
         const inputWrap = document.getElementById('inputWrapper');
         if (ta) {
@@ -816,7 +885,7 @@
             ta.style.fontSize = open ? '13px' : '';
         }
         if (inputWrap) {
-            inputWrap.style.opacity = open ? '0.7' : '';
+            inputWrap.style.opacity = '';
         }
 
         // Critical: actually show/hide the element and enable interaction
@@ -1087,8 +1156,13 @@
         //app.callSpeakerBtn.style.setProperty('--speaker-glow', `${glow}px`);
         //app.callSpeakerBtn.classList.toggle('speaker-active', clamped > 0.04 && !!app.isSoundEnabled);
 
-        if (app.centerCoachAvatar) {
-            app.centerCoachAvatar.classList.toggle('coach-speaking', clamped > 0.04 && !!app.isSoundEnabled);
+        const isSpeaking = typeof window.coachUiRules?.shouldAnimateCoach === 'function'
+            ? window.coachUiRules.shouldAnimateCoach(clamped, app.isSoundEnabled, app.audioOutputGate)
+            : clamped > 0.04 && !!app.isSoundEnabled && !app.audioOutputGate;
+        if (typeof app.setCoachSpeakingState === 'function') {
+            app.setCoachSpeakingState(isSpeaking);
+        } else if (app.centerCoachAvatar) {
+            app.centerCoachAvatar.classList.toggle('coach-speaking', isSpeaking);
         }
 
         // Voice bars replaced by a gentle colour shift on the speaker button
@@ -1098,7 +1172,6 @@
             app.voiceBars.style.display = 'none';
         }
         if (app.callSpeakerBtn) {
-            const isSpeaking = clamped > 0.04 && !!app.isSoundEnabled;
             app.callSpeakerBtn.style.color = isSpeaking ? 'rgb(20, 184, 166)' : '';
             app.callSpeakerBtn.style.background = isSpeaking ? 'rgba(20, 184, 166, 0.12)' : '';
         }
@@ -1331,6 +1404,10 @@
     function insertMessageInOrder(app, newElement, message) {
         if (!app.chatMessages) return;
 
+        const wasNearBottom = typeof app.isChatNearBottom === 'function'
+            ? app.isChatNearBottom()
+            : true;
+
         // Ensure timestamp attribute is up to date
         const newTs = message.timestamp || Date.now();
         newElement.setAttribute('data-timestamp', newTs);
@@ -1366,9 +1443,10 @@
             app.chatMessages.appendChild(newElement);
         }
 
-        // Scroll to bottom
+        // Follow the latest response only when the user was already following
+        // it. This keeps streaming stable without interrupting history reading.
         const container = document.getElementById('chatContainer');
-        if (container) {
+        if (container && wasNearBottom) {
             container.scrollTop = container.scrollHeight;
         }
     }
@@ -1564,6 +1642,11 @@
     function updateMessageElement(app, message) {
         if (!app.chatMessages) return;
 
+        const scrollContainer = document.getElementById('chatContainer');
+        const wasNearBottom = typeof app.isChatNearBottom === 'function'
+            ? app.isChatNearBottom()
+            : true;
+
         // If final message has empty text (e.g. QC hid garbage), hide existing element or skip
         if (!message.text && message.final) {
             const existingDiv = app.messageElements.get(message.id);
@@ -1591,20 +1674,20 @@
             // Text element
             const p = document.createElement('p');
 
-            // Chat is INVERTED from classic messenger layout:
-            //   - Erica (bot): RIGHT side, near the persistent corner icon
-            //   - User: LEFT side
+            // Keep the conventional chat layout: user-authored messages on
+            // the right, Coach responses on the left. The role is the source
+            // of truth, never message order.
             // Erica's bubble no longer carries an inline avatar — she IS the
             // corner icon on the parent page, so repeating a thumbnail per
             // bubble is redundant clutter.
             if (message.role === 'user') {
-                messageDiv.classList.add('justify-start');
-                contentWrapper.className = 'max-w-[80%] bg-lightGray backdrop-blur-sm border border-gray-100 rounded-2xl rounded-bl-md px-4 py-3 text-[14px] leading-relaxed text-gray-700 select-text';
+                messageDiv.classList.add(window.coachUiRules?.messageAlignment?.('user') || 'justify-end');
+                contentWrapper.className = 'max-w-[80%] bg-lightGray backdrop-blur-sm border border-gray-100 rounded-2xl rounded-br-md px-4 py-3 text-[14px] leading-relaxed text-gray-700 select-text';
                 contentWrapper.appendChild(p);
                 messageDiv.appendChild(contentWrapper);
             } else {
-                messageDiv.classList.add('justify-end');
-                contentWrapper.className = 'max-w-[80%] bg-primary text-white rounded-2xl rounded-br-md px-4 py-3 text-[14px] leading-relaxed select-text';
+                messageDiv.classList.add(window.coachUiRules?.messageAlignment?.(message.role) || 'justify-start');
+                contentWrapper.className = 'max-w-[80%] bg-primary text-white rounded-2xl rounded-bl-md px-4 py-3 text-[14px] leading-relaxed select-text';
                 contentWrapper.appendChild(p);
                 messageDiv.appendChild(contentWrapper);
             }
@@ -1732,6 +1815,14 @@
                 // Latest OR shrank below threshold → show in full.
                 removeCollapse(messageDiv, textElement);
             }
+        }
+
+        if (scrollContainer && wasNearBottom && !message.final) {
+            requestAnimationFrame(() => {
+                if (typeof app.isChatNearBottom !== 'function' || app.isChatNearBottom()) {
+                    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'auto' });
+                }
+            });
         }
 
         // Typing Indicator logic (append to contentWrapper if needed)

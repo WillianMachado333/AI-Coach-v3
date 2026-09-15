@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "test": "node --test",
     "init:frameworks": "node scripts/init-frameworks-store.js",
     "init:courses": "node scripts/init-courses-store.js",
     "build:course-tsb": "node scripts/build-course-tsb.js",

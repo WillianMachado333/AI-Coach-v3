@@ -2315,6 +2315,10 @@ class VoiceChatBot {
             return;
         }
 
+        const wasChatNearBottom = typeof this.isChatNearBottom === 'function'
+            ? this.isChatNearBottom()
+            : true;
+
         // Suggestion pills lifecycle:
         //   - User message arriving -> hide (they've committed, don't distract)
         //   - Bot FINAL message arriving -> re-render as "continuation" set
@@ -2341,7 +2345,7 @@ class VoiceChatBot {
                 // messages (same convention as ChatGPT/Claude).
                 setTimeout(() => {
                     try {
-                        if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                        if (!wasChatNearBottom) return;
                         const el = this.messageElements?.get?.(id);
                         if (el && typeof this.scrollMessageTopIntoView === 'function') {
                             this.scrollMessageTopIntoView(el);
@@ -3439,10 +3443,13 @@ class VoiceChatBot {
             "What's a good next step?"
         ];
 
-        if (mode === 'continuation') {
-            return continuation[companionId] || universalContinuation;
+        const fallback = mode === 'continuation'
+            ? (continuation[companionId] || universalContinuation)
+            : (starter[companionId] || universalStarter);
+        if (mode === 'starter' && typeof window.coachUiRules?.contextualStarterSuggestions === 'function') {
+            return window.coachUiRules.contextualStarterSuggestions(this.userActivityMarkdown, fallback);
         }
-        return starter[companionId] || universalStarter;
+        return fallback;
     }
 
     _paintQuickActionButtons(suggestions) {
@@ -3749,7 +3756,10 @@ class VoiceChatBot {
             if (!resp.ok) return null;
             const data = await resp.json();
             if (Array.isArray(data.suggestions) && data.suggestions.length > 0) {
-                return data.suggestions.slice(0, 3);
+                const fallback = this._getQuickActionsForPersona(this.selectedCompanionId, 'continuation');
+                return typeof window.coachUiRules?.filterSuggestions === 'function'
+                    ? window.coachUiRules.filterSuggestions(data.suggestions, fallback)
+                    : data.suggestions.slice(0, 3);
             }
         } catch (e) {
             console.warn('[Erica] suggest-followups fetch failed:', e?.message || e);
@@ -4053,6 +4063,13 @@ class VoiceChatBot {
     }
 
     // Video playback methods - supports both idle and speaking animations
+    setCoachSpeakingState(isSpeaking) {
+        const nextState = !!isSpeaking;
+        if (this.isBotSpeaking === nextState) return;
+        this.isBotSpeaking = nextState;
+        this.updateCurrentVoiceVideo(nextState ? 'speaking' : 'idle');
+    }
+
     updateCurrentVoiceVideo(state) {
         // Broadcast avatar animation state to the parent-page bridge so
         // the persistent corner-icon can animate in sync with the coach's
@@ -4065,12 +4082,12 @@ class VoiceChatBot {
 
         if (!this.currentVoiceProfile || !this.currentVoiceVideo || !this.currentVoiceThumb) return;
 
-        // Force idle-only mode for now
-        state = 'idle';
-
-        // Prefer high-res idle for the top icon (84p subfolder under /idle/), fallback to base idle
-        let videoPath = this.currentVoiceProfile.idleVideo;
-        if (videoPath && videoPath.includes('/idle/')) {
+        // Speaking uses the dedicated loop; idle uses the high-resolution
+        // resting clip. Both fall back safely to the profile thumbnail/path.
+        let videoPath = state === 'speaking'
+            ? (this.currentVoiceProfile.speakingVideo || this.currentVoiceProfile.idleVideo)
+            : this.currentVoiceProfile.idleVideo;
+        if (state !== 'speaking' && videoPath && videoPath.includes('/idle/')) {
             const largeCandidate = videoPath.replace('/idle/', '/idle/84p/');
             videoPath = largeCandidate || videoPath;
         }
@@ -6124,7 +6141,7 @@ class VoiceChatBot {
                         this.isConnected = true;
                         this.updateStatus(true);
                         if (this.textInput) this.textInput.disabled = false;
-                        if (this.sendTextButton) this.sendTextButton.disabled = false;
+                        this.updateTextButtonVisibility();
                     }
                     this.startSessionInactivityTimer();
                     // Send any message queued while connecting
@@ -6153,7 +6170,7 @@ class VoiceChatBot {
                     this.isConnected = true;
                     this.updateStatus(true);
                     if (this.textInput) this.textInput.disabled = false;
-                    if (this.sendTextButton) this.sendTextButton.disabled = false;
+                    this.updateTextButtonVisibility();
                 }
                 this.startSessionInactivityTimer();
                 // Send any message queued while connecting
@@ -6241,7 +6258,7 @@ class VoiceChatBot {
                     this.updateStatus(true);
                     if (this.callButton) this.callButton.disabled = false;
                     if (this.textInput) this.textInput.disabled = false;
-                    if (this.sendTextButton) this.sendTextButton.disabled = false;
+                    this.updateTextButtonVisibility();
                     if (this.connectButton) this.connectButton.textContent = 'Connected';
                     // Voice controls are enabled - user can change voice when not recording
                     // Connection established - no message needed
@@ -7902,6 +7919,7 @@ class VoiceChatBot {
                 break;
 
             case 'response.created':
+                this._remoteAudioResponseActive = true;
                 // Ungate audio when bot starts a NEW response
                 if (this.audioOutputGate) {
                     // Only ungate if we haven't reached the limit and call mode is active
@@ -7987,6 +8005,25 @@ class VoiceChatBot {
                     if (message.response.id) {
                         this.pendingResponses.delete(message.response.id);
                     }
+                }
+                break;
+
+            // Realtime audio lifecycle hints are used only to clear the
+            // visual state. The start state still requires measured playback
+            // from the remote audio analyser, so a queued response cannot
+            // make Erica look as if she is speaking.
+            case 'response.audio.started':
+            case 'response.output_audio_buffer.started':
+                this._remoteAudioResponseActive = true;
+                break;
+
+            case 'response.audio.done':
+            case 'response.output_audio.done':
+            case 'response.output_audio_buffer.stopped':
+                this._remoteAudioResponseActive = false;
+                this.setCoachSpeakingState(false);
+                if (window.uiLayout && typeof window.uiLayout.updateSpeakerLevel === 'function') {
+                    window.uiLayout.updateSpeakerLevel(this, 0);
                 }
                 break;
 
@@ -8616,33 +8653,16 @@ class VoiceChatBot {
                     // console.log(`[Erica Audio Debug] Level: ${level.toFixed(4)}`);
                 }
 
-                if (level > 0.04) {
+                const playbackActive = !!this.remoteAudio && this.isCallAudioEnabled
+                    && !this.remoteAudio.muted && !this.remoteAudio.paused
+                    && !this.remoteAudio.ended && this.remoteAudio.readyState >= 2
+                    && this._remoteAudioResponseActive !== false;
+
+                if (playbackActive && level > 0.04) {
                     this.lastRemoteLevelAt = Date.now();
-                    // Broadcast 'speaking' to the parent-page corner icon,
-                    // debounced by the _iconAnimBroadcastState so we don't
-                    // spam postMessages every 80ms. See below for the
-                    // matching 'idle' broadcast when audio goes quiet.
-                    if (this._iconAnimBroadcastState !== 'speaking') {
-                        this._iconAnimBroadcastState = 'speaking';
-                        try {
-                            if (window.parent && window.parent !== window) {
-                                window.parent.postMessage({ type: 'CT_ICON_ANIMATION', name: 'speaking' }, '*');
-                            }
-                        } catch (_) { /* non-fatal */ }
-                    }
-                } else if (this._iconAnimBroadcastState === 'speaking'
-                    && this.lastRemoteLevelAt
-                    && (Date.now() - this.lastRemoteLevelAt) > 800) {
-                    // 800ms of quiet after speaking → back to idle.
-                    this._iconAnimBroadcastState = 'idle';
-                    try {
-                        if (window.parent && window.parent !== window) {
-                            window.parent.postMessage({ type: 'CT_ICON_ANIMATION', name: 'idle' }, '*');
-                        }
-                    } catch (_) { /* non-fatal */ }
                 }
                 if (window.uiLayout && typeof window.uiLayout.updateSpeakerLevel === 'function') {
-                    window.uiLayout.updateSpeakerLevel(this, level);
+                    window.uiLayout.updateSpeakerLevel(this, playbackActive ? level : 0);
                 }
             }, 80);
         } catch (e) {

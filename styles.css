@@ -187,6 +187,46 @@
     background: rgb(121, 203, 212, 0.1);
 }
 
+.dictation-button {
+    flex: 0 0 auto;
+    border-radius: 999px;
+}
+
+.dictation-button:disabled {
+    cursor: not-allowed;
+    opacity: .35;
+}
+
+.dictation-button.dictation-active {
+    color: #dc2626;
+    background: rgba(220, 38, 38, .10);
+}
+
+/* Voice mode keeps text available without allowing an inactive composer to
+   consume the full lower chat area. The call FAB remains a separate action. */
+#inputWrapper.voice-mode-active {
+    justify-content: flex-end;
+}
+
+#inputWrapper.voice-mode-active > div:first-child {
+    flex: 0 1 clamp(150px, 34vw, 240px);
+    width: clamp(150px, 34vw, 240px);
+}
+
+#inputWrapper.voice-mode-active #userTextInput {
+    min-height: 32px !important;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+    font-size: 13px;
+}
+
+@media (max-width: 520px) {
+    #inputWrapper.voice-mode-active > div:first-child {
+        flex-basis: min(220px, calc(100vw - 84px));
+        width: min(220px, calc(100vw - 84px));
+    }
+}
+
 #chatContainer::-webkit-scrollbar-thumb {
     background-color: rgba(0, 0, 0, 0.1);
     border-radius: 20px;
@@ -207,6 +247,11 @@ textarea:focus {
 /* When the in-call control panel is open, give the chat extra bottom space so the last message isn't hidden */
 #chatContainer.call-panel-open {
     padding-bottom: 13rem !important;
+    scroll-padding-bottom: 13rem;
+}
+
+#chatContainer {
+    scroll-padding-bottom: 8rem;
 }
 
 /* Coach picker scrollbar: keep it visually inside rounded corners */
