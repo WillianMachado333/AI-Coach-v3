@@ -27,6 +27,7 @@ const simulator = require('./lib/simulator');
 const agentHistory = require('./lib/agentHistory');
 const runtimeConfig = require('./lib/runtimeConfig');
 const injectedDataStore = require('./lib/injectedDataStore');
+const { createHealthPayload } = require('./lib/health');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -1960,6 +1961,30 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // Lightweight liveness endpoint for Railway. Keep it independent from
+    // OpenAI and upstream services so it reflects whether this process can
+    // accept requests without exposing configuration or credentials.
+    if (req.url.split('?')[0] === '/api/health') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+            res.writeHead(405, {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*',
+                'Allow': 'GET, HEAD'
+            });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+
+        const payload = JSON.stringify(createHealthPayload());
+        res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+            'Access-Control-Allow-Origin': '*'
+        });
+        res.end(req.method === 'HEAD' ? undefined : payload);
+        return;
+    }
+
     // Handle Erica preparation API requests
     if (req.url.startsWith('/api/erica-preparation')) {
         logAt('info', '[SERVER] /api/erica-preparation - Request received:', req.method, req.url);
@@ -2004,7 +2029,7 @@ const server = http.createServer(async (req, res) => {
                 const objectId = requestData.objectId;
 
                 if (!userId && !email) {
-                    console.warn('[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
+                    logAt('info', '[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
                 }
 
                 // Simulator mode: coach embedded in admin simulator (?simulator=1
