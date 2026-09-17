@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { authenticatePassword } = require('../lib/adminAuth');
+const { callbackUri, newPkce } = require('../lib/wixAuth');
 const { aiCoachEnvironmentLabel } = require('../lib/environmentLabel');
 
 test('admin UI labels the single Railway environment as the prototype environment', () => {
@@ -20,32 +20,23 @@ test('admin UI labels the single Railway environment as the prototype environmen
     }
 });
 
-test('custom Admin auth accepts a valid local identity and password', () => {
-    const result = authenticatePassword(
-        { identity: 'Coach-Admin', password: 'correct-horse' },
-        { ADMIN_PASSWORD: 'correct-horse' }
+test('Wix callback uses the public AI Coach origin', () => {
+    assert.equal(
+        callbackUri({ AI_COACH_ORIGIN: 'https://coach.example.test/' }),
+        'https://coach.example.test/admin/auth/callback'
     );
-    assert.deepEqual(result, { ok: true, identity: 'coach-admin' });
-});
-
-test('password validation does not use an environment allow-list as a role source', () => {
-    assert.equal(authenticatePassword(
-        { identity: 'other@example.test', password: 'configured' },
-        { ADMIN_PASSWORD: 'configured', ADMIN_ALLOWED_USERS: 'owner@example.test' }
-    ).ok, true);
-});
-
-test('custom Admin auth rejects an invalid password', () => {
-    const env = { ADMIN_PASSWORD: 'correct-horse', ADMIN_ALLOWED_USERS: 'owner@example.test' };
-    assert.deepEqual(
-        authenticatePassword({ identity: 'owner@example.test', password: 'wrong' }, env),
-        { ok: false, code: 'invalid_credentials' }
+    assert.equal(
+        callbackUri({ RAILWAY_PUBLIC_DOMAIN: 'web-staging.example.test' }),
+        'https://web-staging.example.test/admin/auth/callback'
     );
 });
 
-test('custom Admin auth reports missing password configuration', () => {
-    assert.deepEqual(
-        authenticatePassword({ identity: 'admin', password: 'anything' }, {}),
-        { ok: false, code: 'config_error' }
-    );
+test('Wix PKCE creates distinct verifier, state, and SHA-256 challenge values', () => {
+    const first = newPkce();
+    const second = newPkce();
+    assert.match(first.verifier, /^[A-Za-z0-9_-]+$/);
+    assert.match(first.state, /^[A-Za-z0-9_-]+$/);
+    assert.match(first.challenge, /^[A-Za-z0-9_-]+$/);
+    assert.notEqual(first.verifier, second.verifier);
+    assert.notEqual(first.state, second.state);
 });
