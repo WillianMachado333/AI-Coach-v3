@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { authenticateAdmin, configuredAdminIdentities } = require('../lib/adminAuth');
+const { authenticatePassword } = require('../lib/adminAuth');
 const { aiCoachEnvironmentLabel } = require('../lib/environmentLabel');
 
 test('admin UI labels the single Railway environment as the prototype environment', () => {
@@ -20,37 +20,32 @@ test('admin UI labels the single Railway environment as the prototype environmen
     }
 });
 
-test('custom Admin auth accepts a configured username and password', () => {
-    const result = authenticateAdmin(
+test('custom Admin auth accepts a valid local identity and password', () => {
+    const result = authenticatePassword(
         { identity: 'Coach-Admin', password: 'correct-horse' },
-        { ADMIN_PASSWORD: 'correct-horse', ADMIN_USERNAME: 'coach-admin' }
+        { ADMIN_PASSWORD: 'correct-horse' }
     );
     assert.deepEqual(result, { ok: true, identity: 'coach-admin' });
 });
 
-test('custom Admin auth keeps the existing password-only prototype usable', () => {
-    assert.deepEqual(configuredAdminIdentities({ ADMIN_PASSWORD: 'configured' }), ['admin']);
-    assert.equal(
-        authenticateAdmin({ identity: 'admin', password: 'configured' }, { ADMIN_PASSWORD: 'configured' }).ok,
-        true
-    );
+test('password validation does not use an environment allow-list as a role source', () => {
+    assert.equal(authenticatePassword(
+        { identity: 'other@example.test', password: 'configured' },
+        { ADMIN_PASSWORD: 'configured', ADMIN_ALLOWED_USERS: 'owner@example.test' }
+    ).ok, true);
 });
 
-test('custom Admin auth distinguishes invalid credentials from access denied', () => {
+test('custom Admin auth rejects an invalid password', () => {
     const env = { ADMIN_PASSWORD: 'correct-horse', ADMIN_ALLOWED_USERS: 'owner@example.test' };
     assert.deepEqual(
-        authenticateAdmin({ identity: 'owner@example.test', password: 'wrong' }, env),
+        authenticatePassword({ identity: 'owner@example.test', password: 'wrong' }, env),
         { ok: false, code: 'invalid_credentials' }
-    );
-    assert.deepEqual(
-        authenticateAdmin({ identity: 'other@example.test', password: 'correct-horse' }, env),
-        { ok: false, code: 'access_denied', identity: 'other@example.test' }
     );
 });
 
 test('custom Admin auth reports missing password configuration', () => {
     assert.deepEqual(
-        authenticateAdmin({ identity: 'admin', password: 'anything' }, {}),
+        authenticatePassword({ identity: 'admin', password: 'anything' }, {}),
         { ok: false, code: 'config_error' }
     );
 });
