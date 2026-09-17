@@ -47,6 +47,39 @@
     padding: 0 0.25rem 0.2rem;
 }
 
+/* Do not reserve a phantom line above the composer when no attachment has a
+   status message. This was the visible gap between the top border and input. */
+.attachment-status:empty {
+    display: none;
+}
+
+/* The composer is intentionally one 48px rhythm: its internal controls are
+   centred and have consistent touch targets, while the voice-call action sits
+   on the same visual baseline. */
+.composer-field {
+    min-height: 48px;
+}
+
+.composer-icon-button {
+    align-items: center;
+    border-radius: 9999px;
+    display: inline-flex;
+    flex: 0 0 auto;
+    height: 40px;
+    justify-content: center;
+    margin: 0 0 0 2px;
+    padding: 0;
+    width: 40px;
+}
+
+#dictationBtn.composer-icon-button {
+    margin: 0 2px 0 0;
+}
+
+#micToggleBtn {
+    flex: 0 0 auto;
+}
+
 .attachment-status-error {
     color: #b91c1c;
 }
