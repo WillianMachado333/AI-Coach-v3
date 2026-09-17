@@ -1,56 +1,63 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { authenticateAdmin, configuredAdminIdentities } = require('../lib/adminAuth');
-const { aiCoachEnvironmentLabel } = require('../lib/environmentLabel');
+const { signSession, verifySession } = require('../lib/admin');
+const { grants, ADMIN_BADGE } = require('../lib/wixBadges');
 
-test('admin UI labels the single Railway environment as the prototype environment', () => {
-    const previous = process.env.AI_COACH_ENVIRONMENT;
+// These pin the invariants that make Wix badge auth actually enforce
+// anything: a session minted before this identity model existed must not
+// be treated as valid, and the badge match must be exact-enough to be a
+// real gate while forgiving whitespace/case slips in the Wix dashboard.
+// Both were silently dropped once already (Sep-2026 password-form detour),
+// so they get a permanent test rather than relying on code review to
+// notice a second time.
+
+test('verifySession rejects a session with no Wix member id', () => {
+    const previous = process.env.SESSION_SECRET;
+    process.env.SESSION_SECRET = 'test-secret-at-least-16-chars';
     try {
-        delete process.env.AI_COACH_ENVIRONMENT;
-        assert.equal(aiCoachEnvironmentLabel(process.env.AI_COACH_ENVIRONMENT), 'Prototype');
-
-        process.env.AI_COACH_ENVIRONMENT = 'production';
-        assert.equal(aiCoachEnvironmentLabel(process.env.AI_COACH_ENVIRONMENT), 'Prototype');
-
-        process.env.AI_COACH_ENVIRONMENT = 'prototype';
-        assert.equal(aiCoachEnvironmentLabel(process.env.AI_COACH_ENVIRONMENT), 'Prototype');
+        const now = Math.floor(Date.now() / 1000);
+        // Shape from the pre-Wix (and the Sep-2026 password-form regression)
+        // session payloads: no `m`.
+        const legacy = signSession({ sub: 'admin', u: 'someone', iat: now, exp: now + 3600 });
+        assert.equal(verifySession(legacy), null);
     } finally {
-        if (previous === undefined) delete process.env.AI_COACH_ENVIRONMENT;
-        else process.env.AI_COACH_ENVIRONMENT = previous;
+        if (previous === undefined) delete process.env.SESSION_SECRET;
+        else process.env.SESSION_SECRET = previous;
     }
 });
 
-test('custom Admin auth accepts a configured username and password', () => {
-    const result = authenticateAdmin(
-        { identity: 'Coach-Admin', password: 'correct-horse' },
-        { ADMIN_PASSWORD: 'correct-horse', ADMIN_USERNAME: 'coach-admin' }
-    );
-    assert.deepEqual(result, { ok: true, identity: 'coach-admin' });
+test('verifySession accepts a session shaped with a Wix member id', () => {
+    const previous = process.env.SESSION_SECRET;
+    process.env.SESSION_SECRET = 'test-secret-at-least-16-chars';
+    try {
+        const now = Math.floor(Date.now() / 1000);
+        const value = signSession({ sub: 'admin', m: 'wix-member-1', e: 'a@b.com', n: 'A', iat: now, exp: now + 3600 });
+        const session = verifySession(value);
+        assert.ok(session);
+        assert.equal(session.m, 'wix-member-1');
+    } finally {
+        if (previous === undefined) delete process.env.SESSION_SECRET;
+        else process.env.SESSION_SECRET = previous;
+    }
 });
 
-test('custom Admin auth keeps the existing password-only prototype usable', () => {
-    assert.deepEqual(configuredAdminIdentities({ ADMIN_PASSWORD: 'configured' }), ['admin']);
-    assert.equal(
-        authenticateAdmin({ identity: 'admin', password: 'configured' }, { ADMIN_PASSWORD: 'configured' }).ok,
-        true
-    );
+test('verifySession rejects an expired session', () => {
+    const previous = process.env.SESSION_SECRET;
+    process.env.SESSION_SECRET = 'test-secret-at-least-16-chars';
+    try {
+        const now = Math.floor(Date.now() / 1000);
+        const value = signSession({ sub: 'admin', m: 'wix-member-1', iat: now - 100, exp: now - 1 });
+        assert.equal(verifySession(value), null);
+    } finally {
+        if (previous === undefined) delete process.env.SESSION_SECRET;
+        else process.env.SESSION_SECRET = previous;
+    }
 });
 
-test('custom Admin auth distinguishes invalid credentials from access denied', () => {
-    const env = { ADMIN_PASSWORD: 'correct-horse', ADMIN_ALLOWED_USERS: 'owner@example.test' };
-    assert.deepEqual(
-        authenticateAdmin({ identity: 'owner@example.test', password: 'wrong' }, env),
-        { ok: false, code: 'invalid_credentials' }
-    );
-    assert.deepEqual(
-        authenticateAdmin({ identity: 'other@example.test', password: 'correct-horse' }, env),
-        { ok: false, code: 'access_denied', identity: 'other@example.test' }
-    );
-});
-
-test('custom Admin auth reports missing password configuration', () => {
-    assert.deepEqual(
-        authenticateAdmin({ identity: 'admin', password: 'anything' }, {}),
-        { ok: false, code: 'config_error' }
-    );
+test('wixBadges.grants matches the admin badge case- and whitespace-insensitively', () => {
+    assert.equal(grants([ADMIN_BADGE]).ok, true);
+    assert.equal(grants([`  ${ADMIN_BADGE.toUpperCase()}  `]).ok, true);
+    assert.equal(grants(['Some Other Badge']).ok, false);
+    assert.equal(grants([]).ok, false);
+    assert.equal(grants(undefined).ok, false);
 });
