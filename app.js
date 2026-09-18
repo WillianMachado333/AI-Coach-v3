@@ -2330,7 +2330,7 @@ class VoiceChatBot {
                 if (typeof this.renderQuickActions === 'function') {
                     // Small delay lets the message bubble render first so
                     // the pills don't briefly overlap the finalisation.
-                    setTimeout(() => this.renderQuickActions('continuation'), 150);
+                    setTimeout(() => this.renderQuickActions('continuation', wasChatNearBottom), 150);
                 }
                 // Scroll so the START of Erica's response is at the top of
                 // the viewport — user starts reading immediately without
@@ -3791,7 +3791,21 @@ class VoiceChatBot {
         return null;
     }
 
-    renderQuickActions(mode) {
+    renderQuickActions(mode, wasChatNearBottom) {
+        // wasChatNearBottom: an optional snapshot of isChatNearBottom() taken
+        // BEFORE this reply started rendering. When provided, it — not a
+        // fresh isChatNearBottom() call — decides whether to follow-scroll to
+        // reveal the pills. Re-checking fresh here is wrong: by the time this
+        // runs, upsertMessage has already jumped the scroll position to put
+        // the message's TOP in view (scrollMessageTopIntoView), which is
+        // rarely "near bottom" for any non-trivial reply. Checking against a
+        // position we ourselves just created (instead of one the user chose)
+        // produced false negatives that silently skipped the pill reveal,
+        // leaving the view stuck with the message's tail hidden behind the
+        // fixed composer bar.
+        const followScroll = typeof wasChatNearBottom === 'boolean'
+            ? () => wasChatNearBottom
+            : () => (typeof this.isChatNearBottom !== 'function' || this.isChatNearBottom());
         const container = document.getElementById('quickActions');
         if (!container) return;
 
@@ -3858,7 +3872,7 @@ class VoiceChatBot {
         const scrollContainer = document.getElementById('chatContainer');
         if (scrollContainer && !container.classList.contains('hidden')) {
             requestAnimationFrame(() => {
-                if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                if (!followScroll()) return;
                 scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
             });
         }
@@ -3876,7 +3890,7 @@ class VoiceChatBot {
             container.classList.remove('hidden');
             if (scrollContainer) {
                 requestAnimationFrame(() => {
-                    if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                    if (!followScroll()) return;
                     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
                 });
             }
@@ -3901,7 +3915,7 @@ class VoiceChatBot {
                 container.classList.remove('hidden');
                 if (scrollContainer) {
                     requestAnimationFrame(() => {
-                    if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                    if (!followScroll()) return;
                     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
                 });
                 }
