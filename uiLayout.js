@@ -1072,10 +1072,35 @@
         if (!composerBar) return;
         const reposition = () => {
             const h = Math.round(composerBar.getBoundingClientRect().height);
-            if (chatContainer) chatContainer.style.paddingBottom = `${h + 24}px`;
+            // Write only when the target actually differs from what's
+            // already applied. The observer's subtree covers composerBar's
+            // mic FAB, which during an active call gets its --mic-scale/
+            // --mic-glow custom properties and .mic-speaking class rewritten
+            // on every audio frame (updateMicLevel) — each of those is a
+            // 'style'/'class' mutation this observer is watching for.
+            // Without this guard, every one of those frames re-applies the
+            // same bottom/padding value via inline style: wasted layout
+            // work at best, and on engines where composerBar's own measured
+            // height jitters by a pixel from viewport chrome changes (iOS
+            // Safari's dynamic toolbar), it keeps retriggering callModePanel's
+            // bottom transition before it settles — the panel never reaches
+            // its docked position, floating instead. Comparing against each
+            // element's own current inline value (not a shared "last height"
+            // flag) keeps this correct across the panel's hidden/visible
+            // transitions, where the panel's target can change even when the
+            // composer's height hasn't.
+            if (chatContainer) {
+                const paddingTarget = `${h + 24}px`;
+                if (chatContainer.style.paddingBottom !== paddingTarget) {
+                    chatContainer.style.paddingBottom = paddingTarget;
+                }
+            }
             const panel = app.callModePanel;
             if (panel && !panel.classList.contains('hidden')) {
-                panel.style.bottom = `${h + 14}px`;
+                const bottomTarget = `${h + 14}px`;
+                if (panel.style.bottom !== bottomTarget) {
+                    panel.style.bottom = bottomTarget;
+                }
             }
         };
         reposition();
