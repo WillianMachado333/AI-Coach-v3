@@ -3367,44 +3367,36 @@ class VoiceChatBot {
         // recognisable coaching frame that plays to that persona's strengths.
         const starter = {
             Supportive: [
-                "Help me find a small first step I can take",
-                "What's really going on beneath this?",
-                "How would I explain this to myself clearly?"
+                "Find one small first step",
+                "What's beneath this feeling?"
             ],
             Directive: [
-                "What's the next best step I should take?",
-                "Help me make a decision today",
-                "I need to move fast — cut through the noise"
+                "What's my next best step?",
+                "Help me decide, fast"
             ],
             Discovery: [
-                "What am I not seeing in my situation?",
-                "Help me examine my assumptions",
-                "Ask me the question I need to sit with"
+                "What am I not seeing?",
+                "Ask me a hard question"
             ],
             Empowering: [
-                "What are my real options right now?",
-                "Help me remember what I'm capable of",
-                "I want to make a decision I own"
+                "What are my real options?",
+                "Remind me what I can do"
             ],
             Exploratory: [
-                "What patterns do you see in what I've shared?",
-                "Help me explore what's underneath this",
-                "I want to think creatively about this"
+                "What patterns do you see?",
+                "Explore this with me"
             ],
             Guidance: [
-                "What have others in my situation tried?",
-                "Give me the lay of the land, then I'll choose",
-                "I want to learn by doing — where do I start?"
+                "What have others tried?",
+                "Give me the lay of the land"
             ],
             Nurturing: [
-                "Just listen for a moment — I need to process",
-                "Help me name what I'm actually feeling",
-                "I want to talk about connection and boundaries"
+                "Just let me process",
+                "Help me name this feeling"
             ],
             Strengths: [
                 "Remind me what I do well",
-                "How can I use my strengths for what's in front of me?",
-                "I'm focused on what's broken — help me see what's working"
+                "What's actually working here?"
             ]
         };
 
@@ -3412,55 +3404,45 @@ class VoiceChatBot {
         // the conversation moving forward with beats natural to that persona.
         const continuation = {
             Supportive: [
-                "What's a small next step from here?",
-                "What's underneath what I just said?",
-                "How does this connect to what matters most to me?"
+                "What's a small next step?",
+                "What's underneath what I said?"
             ],
             Directive: [
                 "What do I do next?",
-                "Give me the specific action",
                 "Am I overthinking this?"
             ],
             Discovery: [
                 "Ask me a harder question",
-                "What am I still missing?",
-                "What's really underneath this?"
+                "What am I still missing?"
             ],
             Empowering: [
                 "Show me my options again",
-                "Reflect that back to me",
                 "Help me commit to a choice"
             ],
             Exploratory: [
                 "Go deeper on that",
-                "What pattern is this part of?",
-                "How does this connect to what I said before?"
+                "What pattern is this part of?"
             ],
             Guidance: [
                 "Show me an example",
-                "What would you try first?",
-                "I want to test this — how?"
+                "What would you try first?"
             ],
             Nurturing: [
                 "Say more about that",
-                "Help me name this feeling",
-                "How can I move gently on this?"
+                "Help me name this feeling"
             ],
             Strengths: [
                 "What strength can I use here?",
-                "Point out what's working",
-                "How do I build on this?"
+                "Point out what's working"
             ]
         };
 
         const universalStarter = [
-            "Help me clarify what I'm working on",
-            "I have a decision to make — help me think through it",
-            "I want to reflect on something that's been on my mind"
+            "Help me clarify my focus",
+            "I have a decision to make"
         ];
         const universalContinuation = [
             "Tell me more",
-            "Give me a concrete example",
             "What's a good next step?"
         ];
 
@@ -3783,7 +3765,7 @@ class VoiceChatBot {
                 const fallback = this._getQuickActionsForPersona(this.selectedCompanionId, 'continuation');
                 return typeof window.coachUiRules?.filterSuggestions === 'function'
                     ? window.coachUiRules.filterSuggestions(data.suggestions, fallback)
-                    : data.suggestions.slice(0, 3);
+                    : data.suggestions.slice(0, 2);
             }
         } catch (e) {
             console.warn('[Erica] suggest-followups fetch failed:', e?.message || e);
