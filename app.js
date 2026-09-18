@@ -4631,6 +4631,14 @@ class VoiceChatBot {
             this.stopRecording();
         }
 
+        // GPT-Live: ask for a graceful close so the server finalizes usage
+        // cleanly. Best-effort only — not waiting for session.closed here,
+        // this is the comparison spike's disconnect path, not a billing-
+        // accurate one. See Managing sessions ("Close the session").
+        if (this.voiceApiMode === 'live' && this.dataChannel && this.dataChannel.readyState === 'open') {
+            try { this.dataChannel.send(JSON.stringify({ type: 'session.close' })); } catch (_) {}
+        }
+
         // Close data channel
         if (this.dataChannel) {
             this.dataChannel.close();
@@ -5929,6 +5937,21 @@ class VoiceChatBot {
             if (typeof this.showLoader === 'function') this.showLoader();
             if (typeof this.setMicButtonState === 'function') this.setMicButtonState('disabled');
 
+            // Which voice API to speak — resolved once per page load (the
+            // server env var doesn't change mid-session; reconnects reuse
+            // the cached value instead of re-fetching). GPT-Live comparison
+            // spike — see configureLiveSession() for the architecture notes.
+            if (!this.voiceApiMode) {
+                try {
+                    const modeRes = await fetch(this.apiUrl('/api/voice-mode'));
+                    const modeJson = modeRes.ok ? await modeRes.json() : {};
+                    this.voiceApiMode = modeJson.mode === 'live' ? 'live' : 'realtime';
+                } catch (_) {
+                    this.voiceApiMode = 'realtime';
+                }
+                console.log('[Erica] Voice API mode:', this.voiceApiMode);
+            }
+
             // Create WebRTC peer connection for audio streaming
             this.pc = new RTCPeerConnection({
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -6152,53 +6175,27 @@ class VoiceChatBot {
 
             // Microphone is requested lazily on user click (startRecording)
 
-            // Set up data channel for text messages (OpenAI may create this, so we listen for it)
-            this.pc.ondatachannel = (event) => {
-                this.dataChannel = event.channel;
-                this.dataChannel.onmessage = (event) => {
-                    try {
-                        const message = JSON.parse(event.data);
-                        this.handleMessage(message);
-                    } catch (error) {
-                        console.error('Error parsing message:', error);
-                    }
-                };
-                this.dataChannel.onopen = () => {
-                    this.configureSession();
-                    // Connection ready - hide loader and enable mic
-                    if (typeof this.hideLoader === 'function') this.hideLoader();
-                    if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
-                    // Safety net for guest users: onconnectionstatechange may fire before
-                    // the handler is registered, so ensure connected state and timer start here too
-                    if (!this.isConnected) {
-                        this.isConnected = true;
-                        this.updateStatus(true);
-                        if (this.textInput) this.textInput.disabled = false;
-                        this.updateTextButtonVisibility();
-                    }
-                    this.startSessionInactivityTimer();
-                    // Send any message queued while connecting
-                    this._sendPendingTextMessage();
-                };
-            };
-
-            // Also create our own data channel as fallback
-            this.dataChannel = this.pc.createDataChannel('oai-events');
-            this.dataChannel.onmessage = (event) => {
+            // Data-channel message dispatch differs by voice API from here on
+            // (different event vocabulary — see handleLiveMessage()).
+            const onDataChannelMessage = (event) => {
                 try {
                     const message = JSON.parse(event.data);
-                    this.handleMessage(message);
+                    if (this.voiceApiMode === 'live') this.handleLiveMessage(message);
+                    else this.handleMessage(message);
                 } catch (error) {
                     console.error('Error parsing message:', error);
                 }
             };
-
-            this.dataChannel.onopen = () => {
+            // Realtime configures itself as soon as the channel opens. GPT-Live
+            // must wait for session.started (sent ON the data channel) before
+            // any application command — handleLiveMessage() does the
+            // equivalent of this onopen block once that arrives.
+            const onDataChannelOpen = () => {
+                if (this.voiceApiMode === 'live') return;
                 this.configureSession();
                 // Connection ready - hide loader and enable mic
                 if (typeof this.hideLoader === 'function') this.hideLoader();
                 if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
-                // Safety net for guest users: ensure connected state and timer start here too
                 if (!this.isConnected) {
                     this.isConnected = true;
                     this.updateStatus(true);
@@ -6209,6 +6206,18 @@ class VoiceChatBot {
                 // Send any message queued while connecting
                 this._sendPendingTextMessage();
             };
+
+            // Set up data channel for text messages (OpenAI may create this, so we listen for it)
+            this.pc.ondatachannel = (event) => {
+                this.dataChannel = event.channel;
+                this.dataChannel.onmessage = onDataChannelMessage;
+                this.dataChannel.onopen = onDataChannelOpen;
+            };
+
+            // Also create our own data channel as fallback
+            this.dataChannel = this.pc.createDataChannel('oai-events');
+            this.dataChannel.onmessage = onDataChannelMessage;
+            this.dataChannel.onopen = onDataChannelOpen;
 
             // Create WebRTC offer
             const offer = await this.pc.createOffer({
@@ -6236,14 +6245,38 @@ class VoiceChatBot {
                 });
             }
 
-            // Send SDP offer to OpenAI Realtime GA API via server-side proxy
-            // Pass selected voice so the server includes it in the initial session config
-            const response = await fetch(this.apiUrl('/api/proxy/realtime'), {
+            // Send SDP offer to OpenAI via server-side proxy. Pass selected
+            // voice so the server includes it in the initial session config.
+            // GPT-Live also gets a short, persona-aware tone prompt here —
+            // session.instructions is fixed at creation for Live (only
+            // .append works afterward), unlike Realtime's session.instructions
+            // which the client fully replaces post-connect in configureSession().
+            const isLive = this.voiceApiMode === 'live';
+            const proxyPath = isLive ? '/api/proxy/live' : '/api/proxy/realtime';
+            const headers = {
+                'Content-Type': 'application/sdp',
+                'X-Erica-Voice': this.selectedVoice || 'marin'
+            };
+            if (isLive) {
+                const persona = this.getEffectiveVoiceProfile() || this.currentVoiceProfile;
+                const name = persona?.character || 'Erica';
+                const roleLabel = persona?.label || persona?.role || 'coach';
+                const shortLiveInstructions =
+                    `You are ${name}, a ${roleLabel} at Talent Transformation, in a live voice conversation. ` +
+                    'Speak naturally and warmly; keep replies concise (2-4 sentences) unless asked for more. ' +
+                    'Never say the word "score" — say "result" or "pattern" instead. ' +
+                    'Always reply in the language the user is currently speaking; do not default to English. ' +
+                    'Delegate substantive reasoning, knowledge lookups, and tool use to your backend — it has ' +
+                    'your full coaching instructions and the tools you need. ' +
+                    'Begin the conversation with a brief, warm greeting introducing yourself.';
+                try {
+                    headers['X-Erica-Live-Instructions'] = btoa(unescape(encodeURIComponent(shortLiveInstructions)));
+                } catch (_) { /* header omitted, server default kicks in */ }
+            }
+
+            const response = await fetch(this.apiUrl(proxyPath), {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/sdp',
-                    'X-Erica-Voice': this.selectedVoice || 'marin'
-                },
+                headers,
                 body: this.pc.localDescription.sdp
             });
 
@@ -6270,11 +6303,13 @@ class VoiceChatBot {
                 throw new Error(`API Error (${response.status}): ${errorText || response.statusText}`);
             }
 
-            // Response should be SDP answer
-            const answerSdp = await response.text();
-
-            if (!response.ok) {
-                throw new Error(`API Error (${response.status}): ${answerSdp || response.statusText}`);
+            // Realtime returns the SDP answer as the raw response body.
+            // GPT-Live's /v1/live/sessions returns JSON: { session, transport: { sdp } }.
+            const answerSdp = isLive
+                ? (await response.json()).transport?.sdp
+                : await response.text();
+            if (!answerSdp) {
+                throw new Error('No SDP answer in the session response.');
             }
 
             // Set remote description from OpenAI's SDP answer
@@ -6441,7 +6476,198 @@ class VoiceChatBot {
         });
     }
 
-    configureSession() {
+    // Function-tool schemas. Shared by both voice APIs: Realtime sends this
+    // array as session.tools; GPT-Live sends the identical array as
+    // session.delegation.responses.tools. One source of truth so the two
+    // paths can't drift apart on what Erica is allowed to call.
+    _toolDefinitions() {
+        return [
+            {
+                type: 'function',
+                name: 'get_helpful_resources',
+                description: 'Retrieve helpful resources from the local site list. Optionally filter by query or type and limit the number of results.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'Optional search query to match resource name or description'
+                        },
+                        type: {
+                            type: 'string',
+                            description: 'Optional resource type filter (e.g., Article, Video, Podcast)'
+                        },
+                        limit: {
+                            type: 'number',
+                            description: 'Optional max number of results to return'
+                        }
+                    },
+                    required: []
+                }
+            },
+            {
+                type: 'function',
+                name: 'change_coach_name',
+                description: 'Change the coach\'s display name when the user requests it. Use this when the user asks to call you by a different name or nickname (e.g., "Can I call you Sarah?", "I\'d like to call you Alex").',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        new_name: {
+                            type: 'string',
+                            description: 'The new name the user wants to call the coach'
+                        }
+                    },
+                    required: ['new_name']
+                }
+            },
+            {
+                type: 'function',
+                name: 'play_wave_animation',
+                description: 'Play the coach\'s wave animation. Use this when saying goodbye, when the user asks you to wave, or in other friendly moments where waving is appropriate.',
+                parameters: {
+                    type: 'object',
+                    properties: {},
+                    required: []
+                }
+            },
+            {
+                type: 'function',
+                name: 'refresh_context',
+                description: 'Refresh your knowledge about the user, including quiz results, reports, and preparation context. Use this when the user asks about their performance, results, or if you need to update your understanding of the user.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        category: {
+                            type: 'string',
+                            enum: ['general', 'quiz', 'report'],
+                            description: 'The specific area of information to refresh. Use "quiz" for assessment results, "report" for analysis documents, or "general" for overall context.'
+                        }
+                    },
+                    required: ['category']
+                }
+            },
+            {
+                type: 'function',
+                name: 'search_knowledge',
+                description: 'Search the coaching knowledge base for relevant information to ground your response. Use this whenever the user asks about their assessments, personal results, coaching frameworks, course content, quiz feedback, past sessions, or wants specific insights tied to their data. Choose scope: "user_data" for anything about THIS user, "frameworks" for coaching approaches, "courses" for pedagogical course content and quiz questions (Understanding Traits, Skills, and Behaviors), "all" when unsure.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'A specific, self-contained natural-language question capturing what to search for. Include enough context so it is meaningful on its own.'
+                        },
+                        scope: {
+                            type: 'string',
+                            enum: ['user_data', 'frameworks', 'courses', 'all'],
+                            description: 'user_data = this user\'s report/history. frameworks = general coaching frameworks. courses = pedagogical course content + competency framework + quiz questions (e.g. Understanding Traits, Skills, and Behaviors). all = every store (default).'
+                        }
+                    },
+                    required: ['query']
+                }
+            },
+            {
+                type: 'function',
+                name: 'deep_think',
+                description: 'Delegate careful step-by-step reasoning to a dedicated reasoning model (o4-mini). Use this ONLY when the question genuinely needs it: complex ethical trade-offs, weighing multiple options against the user\'s values, tracing a chain of consequences, deciding between coaching approaches for a nuanced situation, or when the user explicitly asks you to think this through. Do NOT use for simple factual, empathic, or acknowledgment turns. Include any grounding chunks you already retrieved via search_knowledge in the context field so the reasoner has real material. The tool returns reasoning + a suggested answer; use them to shape your reply but do not read the reasoning aloud.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        query: {
+                            type: 'string',
+                            description: 'The user\'s question restated fully, with any relevant conversational context you have gathered.'
+                        },
+                        context: {
+                            type: 'string',
+                            description: 'Optional. Grounding material to inform reasoning (e.g. concatenated excerpts from a previous search_knowledge call, salient facts about the user).'
+                        }
+                    },
+                    required: ['query']
+                }
+            },
+            {
+                type: 'function',
+                name: 'get_page_context',
+                description: 'Fetch the visible content of the page the user is currently on (title, URL, headings, main text). Use this whenever the user asks about what they are looking at, references "this page", "here", "this report", or when the answer depends on knowing what content is in front of them right now. Also call it opportunistically at the start of a conversation on a new page so you can ground your first response in what they are actually seeing.',
+                parameters: {
+                    type: 'object',
+                    properties: {},
+                    required: []
+                }
+            },
+            {
+                type: 'function',
+                name: 'render_chart',
+                description: 'Render a chart inline in the chat when a visual would make a concept dramatically clearer than words alone. Prefer radar for profile-shape data (traits, EI facets, values, personality, communication styles) — radar shows proportion without implying ranking. Use bar only when the categories are inherently rankable (time, count, money). Use line for change over time. Do NOT use for single numbers, one-column lists, or decoration. After calling, briefly narrate the shape (not the numbers) in your coaching voice.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        type: {
+                            type: 'string',
+                            enum: ['radar', 'bar', 'line'],
+                            description: 'radar for profile shapes (traits/EI/values/personality — never ranked), bar for inherently rankable comparisons, line for time series.'
+                        },
+                        title: {
+                            type: 'string',
+                            description: 'Short chart title (2-6 words). Prefer neutral phrasing — "Your profile", "EI facets", "Your values" — never "score" or "ranking".'
+                        },
+                        labels: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Axis labels — one per data point. Keep them short.'
+                        },
+                        values: {
+                            type: 'array',
+                            items: { type: 'number' },
+                            description: 'Numeric values, same length as labels.'
+                        },
+                        value_label: {
+                            type: 'string',
+                            description: 'Optional value axis label (e.g. "%", "days", "level"). Never use "Score" — use "Result" or "Level" if a label is needed at all.'
+                        }
+                    },
+                    required: ['type', 'title', 'labels', 'values']
+                }
+            },
+            {
+                type: 'function',
+                name: 'render_table',
+                description: 'Render a compact HTML table inline in the chat. Use when structured comparison across a small set of items is clearer than prose — for example: listing coaching frameworks side by side, comparing options against criteria, or presenting a short set of ranked items with attributes. Do NOT use for single-column lists (just narrate them). Keep to at most 5 rows and 4 columns.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        title: {
+                            type: 'string',
+                            description: 'Optional short heading above the table.'
+                        },
+                        headers: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Column headers.'
+                        },
+                        rows: {
+                            type: 'array',
+                            items: {
+                                type: 'array',
+                                items: { type: 'string' }
+                            },
+                            description: 'Rows, each an array of cell strings matching the headers length.'
+                        }
+                    },
+                    required: ['headers', 'rows']
+                }
+            }
+        ];
+    }
+
+    // Builds the composed instructions blob (persona + global preamble +
+    // language detection + persona reinforcement, with overflow-splitting
+    // for the 16,384-token limit). Shared by both voice APIs: Realtime sends
+    // the whole thing as session.instructions; GPT-Live sends the same
+    // string as session.delegation.responses.instructions (the backend/
+    // substance layer) while session.instructions itself stays short — see
+    // configureLiveSession().
+    _buildComposedInstructions() {
         // Build instructions using SANDWICH approach:
         //   [1] Persona identity block (primacy — "who am I")
         //   [2] Global preamble from preparation API (rules, scope, resources)
@@ -6640,6 +6866,12 @@ class VoiceChatBot {
             }
         } catch (_) { /* non-fatal — instrumentation only */ }
 
+        return instructions;
+    }
+
+    configureSession() {
+        const instructions = this._buildComposedInstructions();
+
         // Configure the OpenAI Realtime GA session
         // GA uses nested audio.input / audio.output structure (not flat fields)
         // No `model` field here: the Realtime client-events reference states
@@ -6677,183 +6909,7 @@ class VoiceChatBot {
                         voice: this.selectedVoice
                     }
                 },
-                tools: [
-                    {
-                        type: 'function',
-                        name: 'get_helpful_resources',
-                        description: 'Retrieve helpful resources from the local site list. Optionally filter by query or type and limit the number of results.',
-                        parameters: {
-                            type: 'object',
-                            properties: {
-                                query: {
-                                    type: 'string',
-                                    description: 'Optional search query to match resource name or description'
-                                },
-                                type: {
-                                    type: 'string',
-                                    description: 'Optional resource type filter (e.g., Article, Video, Podcast)'
-                                },
-                                limit: {
-                                    type: 'number',
-                                    description: 'Optional max number of results to return'
-                                }
-                            },
-                            required: []
-                        }
-                    },
-                    {
-                        type: 'function',
-                        name: 'change_coach_name',
-                        description: 'Change the coach\'s display name when the user requests it. Use this when the user asks to call you by a different name or nickname (e.g., "Can I call you Sarah?", "I\'d like to call you Alex").',
-                        parameters: {
-                            type: 'object',
-                            properties: {
-                                new_name: {
-                                    type: 'string',
-                                    description: 'The new name the user wants to call the coach'
-                                }
-                            },
-                            required: ['new_name']
-                        }
-                    },
-                    {
-                        type: 'function',
-                        name: 'play_wave_animation',
-                        description: 'Play the coach\'s wave animation. Use this when saying goodbye, when the user asks you to wave, or in other friendly moments where waving is appropriate.',
-                        parameters: {
-                            type: 'object',
-                            properties: {},
-                            required: []
-                        }
-                    },
-                    {
-                        type: 'function',
-                        name: 'refresh_context',
-                        description: 'Refresh your knowledge about the user, including quiz results, reports, and preparation context. Use this when the user asks about their performance, results, or if you need to update your understanding of the user.',
-                        parameters: {
-                            type: 'object',
-                            properties: {
-                                category: {
-                                    type: 'string',
-                                    enum: ['general', 'quiz', 'report'],
-                                    description: 'The specific area of information to refresh. Use "quiz" for assessment results, "report" for analysis documents, or "general" for overall context.'
-                                }
-                            },
-                            required: ['category']
-                        }
-                    },
-                    {
-                        type: 'function',
-                        name: 'search_knowledge',
-                        description: 'Search the coaching knowledge base for relevant information to ground your response. Use this whenever the user asks about their assessments, personal results, coaching frameworks, course content, quiz feedback, past sessions, or wants specific insights tied to their data. Choose scope: "user_data" for anything about THIS user, "frameworks" for coaching approaches, "courses" for pedagogical course content and quiz questions (Understanding Traits, Skills, and Behaviors), "all" when unsure.',
-                        parameters: {
-                            type: 'object',
-                            properties: {
-                                query: {
-                                    type: 'string',
-                                    description: 'A specific, self-contained natural-language question capturing what to search for. Include enough context so it is meaningful on its own.'
-                                },
-                                scope: {
-                                    type: 'string',
-                                    enum: ['user_data', 'frameworks', 'courses', 'all'],
-                                    description: 'user_data = this user\'s report/history. frameworks = general coaching frameworks. courses = pedagogical course content + competency framework + quiz questions (e.g. Understanding Traits, Skills, and Behaviors). all = every store (default).'
-                                }
-                            },
-                            required: ['query']
-                        }
-                    },
-                    {
-                        type: 'function',
-                        name: 'deep_think',
-                        description: 'Delegate careful step-by-step reasoning to a dedicated reasoning model (o4-mini). Use this ONLY when the question genuinely needs it: complex ethical trade-offs, weighing multiple options against the user\'s values, tracing a chain of consequences, deciding between coaching approaches for a nuanced situation, or when the user explicitly asks you to think this through. Do NOT use for simple factual, empathic, or acknowledgment turns. Include any grounding chunks you already retrieved via search_knowledge in the context field so the reasoner has real material. The tool returns reasoning + a suggested answer; use them to shape your reply but do not read the reasoning aloud.',
-                        parameters: {
-                            type: 'object',
-                            properties: {
-                                query: {
-                                    type: 'string',
-                                    description: 'The user\'s question restated fully, with any relevant conversational context you have gathered.'
-                                },
-                                context: {
-                                    type: 'string',
-                                    description: 'Optional. Grounding material to inform reasoning (e.g. concatenated excerpts from a previous search_knowledge call, salient facts about the user).'
-                                }
-                            },
-                            required: ['query']
-                        }
-                    },
-                    {
-                        type: 'function',
-                        name: 'get_page_context',
-                        description: 'Fetch the visible content of the page the user is currently on (title, URL, headings, main text). Use this whenever the user asks about what they are looking at, references "this page", "here", "this report", or when the answer depends on knowing what content is in front of them right now. Also call it opportunistically at the start of a conversation on a new page so you can ground your first response in what they are actually seeing.',
-                        parameters: {
-                            type: 'object',
-                            properties: {},
-                            required: []
-                        }
-                    },
-                    {
-                        type: 'function',
-                        name: 'render_chart',
-                        description: 'Render a chart inline in the chat when a visual would make a concept dramatically clearer than words alone. Prefer radar for profile-shape data (traits, EI facets, values, personality, communication styles) — radar shows proportion without implying ranking. Use bar only when the categories are inherently rankable (time, count, money). Use line for change over time. Do NOT use for single numbers, one-column lists, or decoration. After calling, briefly narrate the shape (not the numbers) in your coaching voice.',
-                        parameters: {
-                            type: 'object',
-                            properties: {
-                                type: {
-                                    type: 'string',
-                                    enum: ['radar', 'bar', 'line'],
-                                    description: 'radar for profile shapes (traits/EI/values/personality — never ranked), bar for inherently rankable comparisons, line for time series.'
-                                },
-                                title: {
-                                    type: 'string',
-                                    description: 'Short chart title (2-6 words). Prefer neutral phrasing — "Your profile", "EI facets", "Your values" — never "score" or "ranking".'
-                                },
-                                labels: {
-                                    type: 'array',
-                                    items: { type: 'string' },
-                                    description: 'Axis labels — one per data point. Keep them short.'
-                                },
-                                values: {
-                                    type: 'array',
-                                    items: { type: 'number' },
-                                    description: 'Numeric values, same length as labels.'
-                                },
-                                value_label: {
-                                    type: 'string',
-                                    description: 'Optional value axis label (e.g. "%", "days", "level"). Never use "Score" — use "Result" or "Level" if a label is needed at all.'
-                                }
-                            },
-                            required: ['type', 'title', 'labels', 'values']
-                        }
-                    },
-                    {
-                        type: 'function',
-                        name: 'render_table',
-                        description: 'Render a compact HTML table inline in the chat. Use when structured comparison across a small set of items is clearer than prose — for example: listing coaching frameworks side by side, comparing options against criteria, or presenting a short set of ranked items with attributes. Do NOT use for single-column lists (just narrate them). Keep to at most 5 rows and 4 columns.',
-                        parameters: {
-                            type: 'object',
-                            properties: {
-                                title: {
-                                    type: 'string',
-                                    description: 'Optional short heading above the table.'
-                                },
-                                headers: {
-                                    type: 'array',
-                                    items: { type: 'string' },
-                                    description: 'Column headers.'
-                                },
-                                rows: {
-                                    type: 'array',
-                                    items: {
-                                        type: 'array',
-                                        items: { type: 'string' }
-                                    },
-                                    description: 'Rows, each an array of cell strings matching the headers length.'
-                                }
-                            },
-                            required: ['headers', 'rows']
-                        }
-                    }
-                ],
+                tools: this._toolDefinitions(),
                 tool_choice: 'auto'
             }
         };
@@ -6922,6 +6978,58 @@ class VoiceChatBot {
         }
 
         // Note: opening line is triggered explicitly after connect/reconnect.
+    }
+
+    // GPT-Live comparison spike — see PO plan (2026-09) for the architecture
+    // mapping. Split, per that plan: session.instructions (top layer, capped
+    // at 16,384 tokens, NOT replaceable post-creation — only .append works)
+    // carries just tone/delegation-trigger rules and was already set at
+    // session creation in establishConnection() before we knew the full
+    // preparation data. session.delegation.responses.instructions (backend
+    // layer, no comparably tight cap — it's a normal Responses-model prompt)
+    // gets the SAME big composed blob Realtime sends as session.instructions.
+    // Reuses _buildComposedInstructions()/_toolDefinitions() — no duplicated
+    // persona-assembly or tool-schema logic between the two voice APIs.
+    configureLiveSession() {
+        const instructions = this._buildComposedInstructions();
+        // Live's backend is a normal Responses-model call with a large
+        // context window, not the Realtime session's 16,384-token cap — the
+        // overflow-splitting _buildComposedInstructions() does for Realtime
+        // doesn't apply here, so fold any overflow back in instead of
+        // dropping it or sending it as a separate message.
+        const fullInstructions = this._instructionOverflow
+            ? instructions + '\n\n' + this._instructionOverflow
+            : instructions;
+        this._instructionOverflow = null;
+
+        const config = {
+            type: 'session.update',
+            session: {
+                delegation: {
+                    type: 'responses',
+                    responses: {
+                        instructions: fullInstructions,
+                        tools: this._toolDefinitions(),
+                        tool_choice: 'auto',
+                        parallel_tool_calls: true
+                    }
+                }
+            }
+        };
+
+        this.lastSessionConfig = {
+            instructions: fullInstructions,
+            selectedVoice: this.selectedVoice,
+            customInstructions: this.customInstructions,
+            currentVoiceProfile: this.currentVoiceProfile,
+            openingLinePrompt: this.openingLinePrompt,
+            sessionConfig: config
+        };
+
+        const sentOk = this.sendMessage(config);
+        this.lastSessionConfig.sentOk = sentOk;
+        this.lastSessionConfig.sentAt = Date.now();
+        console.log('[Erica][Live] session.update (delegation.responses) sent:', sentOk, 'instructions length:', fullInstructions.length);
     }
 
     /**
@@ -7538,45 +7646,130 @@ class VoiceChatBot {
                 result = JSON.stringify({ error: `Unknown function: ${functionName}` });
             }
 
-            // Send the function result back to the model as a conversation item
+            // Send the function result back to the model
             console.log('[Erica] 📦 Function output payload:', {
                 functionName,
                 outputLength: typeof result === 'string' ? result.length : null,
                 outputPreview: typeof result === 'string' ? result.substring(0, 300) : result
             });
-            this.sendMessage({
-                type: 'conversation.item.create',
-                item: {
-                    type: 'function_call_output',
-                    call_id: callId,
-                    output: result
-                }
-            });
-
-            // Create a new response so the model can continue with the function result
-            // Wait a bit to ensure the function output is processed
-            setTimeout(() => {
-                if (this.isConnected) {
-                    this.sendMessage({
-                        type: 'response.create'
-                    });
-                }
-            }, 200);
+            this._sendFunctionResult(callId, result);
 
         } catch (error) {
             console.error('[Erica] Function execution error:', error);
+            this._sendFunctionResult(callId, JSON.stringify({ error: error.message || 'Function execution failed' }));
+        }
+    }
 
-            // Send error back to the model
-            const errorOutput = JSON.stringify({ error: error.message || 'Function execution failed' });
+    // Reply-transport for a finished tool call — the one place the wire
+    // protocol actually differs between voice APIs (the tool logic above is
+    // identical either way). Realtime: conversation.item.create +
+    // response.create. GPT-Live: response.item.create + response.create —
+    // same two-step shape, OpenAI just renamed the first event's type. See
+    // "Complete a client-actionable function call" in the delegation-and-
+    // tools guide for the Live side.
+    _sendFunctionResult(callId, result) {
+        const itemType = this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create';
+        this.sendMessage({
+            type: itemType,
+            item: {
+                type: 'function_call_output',
+                call_id: callId,
+                output: result
+            }
+        });
+        // Wait a bit to ensure the function output is processed before
+        // asking the model to continue.
+        setTimeout(() => {
+            if (this.isConnected) {
+                this.sendMessage({ type: 'response.create' });
+            }
+        }, 200);
+    }
 
-            this.sendMessage({
-                type: 'conversation.item.create',
-                item: {
-                    type: 'function_call_output',
-                    call_id: callId,
-                    output: errorOutput
+    // GPT-Live comparison spike — parallel to handleMessage() but for Live's
+    // event vocabulary, which is different enough (session.* instead of
+    // response.*/conversation.*, tool calls wrapped in response.event
+    // envelopes) that interleaving it into the existing 700-line Realtime
+    // switch would be riskier than keeping it separate. Deliberately not
+    // as complete as handleMessage() — this exists so Willian can compare
+    // context retention and voice naturalness by ear, not as a production
+    // path. Transcript captions use a simple debounce instead of Realtime's
+    // item-id/timestamp bookkeeping: GPT-Live can have both speakers'
+    // deltas in flight at once (true full duplex), so there's no single
+    // "turn boundary" event to key off — a caption is finalized after
+    // ~1.5s with no new deltas for that speaker, whichever ends first.
+    handleLiveMessage(message) {
+        switch (message.type) {
+            case 'session.started':
+                console.log('[Erica][Live] session.started', message.session?.id);
+                this.configureLiveSession();
+                if (typeof this.hideLoader === 'function') this.hideLoader();
+                if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
+                if (!this.isConnected) {
+                    this.isConnected = true;
+                    this.updateStatus(true);
+                    if (this.textInput) this.textInput.disabled = false;
+                    this.updateTextButtonVisibility();
                 }
-            });
+                this.startSessionInactivityTimer();
+                this._sendPendingTextMessage();
+                break;
+
+            case 'session.closed':
+                console.log('[Erica][Live] session.closed — final usage:', message.usage);
+                break;
+
+            case 'session.input_transcript.delta':
+                if (typeof message.delta !== 'string') break;
+                if (!this._liveUserItemId) this._liveUserItemId = `live-user-${Date.now()}`;
+                this._liveUserTranscript = (this._liveUserTranscript || '') + message.delta;
+                this.updateUserMessage(this._liveUserItemId, this._liveUserTranscript, false, Date.now());
+                clearTimeout(this._liveUserFinalizeTimer);
+                this._liveUserFinalizeTimer = setTimeout(() => {
+                    this.updateUserMessage(this._liveUserItemId, this._liveUserTranscript, true, Date.now());
+                    this._liveUserItemId = null;
+                    this._liveUserTranscript = '';
+                }, 1500);
+                break;
+
+            case 'session.output_transcript.delta':
+                if (typeof message.delta !== 'string') break;
+                if (typeof this.hideLoader === 'function') this.hideLoader();
+                if (!this._liveBotItemId) this._liveBotItemId = `live-bot-${Date.now()}`;
+                this._liveBotTranscript = (this._liveBotTranscript || '') + message.delta;
+                this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, false, Date.now());
+                clearTimeout(this._liveBotFinalizeTimer);
+                this._liveBotFinalizeTimer = setTimeout(() => {
+                    this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, true, Date.now());
+                    this._liveBotItemId = null;
+                    this._liveBotTranscript = '';
+                }, 1500);
+                break;
+
+            // Delegated backend (Responses) work arrives wrapped in an outer
+            // envelope. Dispatch on the NESTED event's type, not this outer
+            // one — per "Handle Responses delegation" in the delegation-and-
+            // tools guide, response.* here is never an unwrapped Responses
+            // event.
+            case 'response.event': {
+                const inner = message.event;
+                if (!inner) break;
+                if (inner.type === 'response.output_item.done') {
+                    const item = inner.item;
+                    if (item && item.type === 'function_call' && item.name && typeof item.arguments === 'string') {
+                        let args = {};
+                        try { args = JSON.parse(item.arguments); } catch (_) { /* leave {} */ }
+                        console.log('[Erica][Live] 🔍 Function call detected:', item.name);
+                        this.executeFunction(item.name, args, item.call_id, message.delegation_id || null);
+                    }
+                }
+                break;
+            }
+
+            default:
+                // Not polished — everything else just logs for now so nothing
+                // is silently dropped while comparing behavior against Realtime.
+                console.log('[Erica][Live]', message.type, message);
         }
     }
 
