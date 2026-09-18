@@ -6642,11 +6642,17 @@ class VoiceChatBot {
 
         // Configure the OpenAI Realtime GA session
         // GA uses nested audio.input / audio.output structure (not flat fields)
+        // No `model` field here: the Realtime client-events reference states
+        // session.update "may update any field except for voice and model"
+        // — model is fixed at connection time (server.js REALTIME_MODEL, sent
+        // in the SDP-exchange proxy). A hardcoded model here was misleading
+        // (it doesn't override the real one) and would have silently pinned
+        // every session back to 'gpt-realtime' in logs/telemetry even when
+        // ERICA_REALTIME_MODEL pointed at something else.
         const config = {
             type: 'session.update',
             session: {
                 type: 'realtime',
-                model: 'gpt-realtime',
                 instructions: instructions,
                 output_modalities: ['audio'],
                 audio: {
@@ -9188,11 +9194,13 @@ class PreviewSession {
             this._sessionReadyResolver = resolve;
         });
 
+        // No `model` field: session.update cannot change it (see the other
+        // configureSession() above for why), and this preview connection
+        // also goes through the server's REALTIME_MODEL-driven proxy.
         const payload = {
             type: 'session.update',
             session: {
                 type: 'realtime',
-                model: 'gpt-realtime',
                 instructions,
                 output_modalities: ['audio'],
                 audio: {

@@ -290,10 +290,23 @@ function safePreview(str, maxLen = 220) {
 }
 
 // ---- OpenAI Realtime model selection ----
-// GA API model names (beta names like 'gpt-realtime-mini' no longer work).
+// Verified against platform.openai.com/docs/models on 2026-09 — the
+// 'gpt-4o-realtime' / 'gpt-4o-mini-realtime' names in an earlier version of
+// this comment were beta-era names that do not appear in the current GA
+// catalog at all; don't reuse them. Current v1/realtime-compatible options,
+// cheapest to priciest by audio token cost (same $/1M for input+output in
+// each pair): gpt-realtime-mini and gpt-realtime-2.1-mini ($10/$20, mini
+// tier is being superseded by the 2.1 mini but both still work);
+// gpt-realtime, gpt-realtime-1.5, and gpt-realtime-2.1 ($32/$64 — 2.1 adds
+// reasoning effort + better tool-use/instruction-following/interruption
+// handling at the same audio price, small text-token premium).
+// gpt-live-1 is NOT a drop-in option here: it's a different product (full
+// duplex, delegated backend agent) on a different endpoint (v1/live/sessions
+// instead of v1/realtime) — swapping to it needs an integration rewrite, not
+// just this env var.
 // Examples:
-//   ERICA_REALTIME_MODEL=gpt-4o-realtime
-//   REALTIME_MODEL=gpt-4o-mini-realtime
+//   ERICA_REALTIME_MODEL=gpt-realtime-2.1
+//   REALTIME_MODEL=gpt-realtime-2.1-mini
 const REALTIME_MODEL =
     process.env.ERICA_REALTIME_MODEL ||
     process.env.REALTIME_MODEL ||
@@ -2923,6 +2936,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}/`);
     console.log('Press Ctrl+C to stop the server');
+    console.log(`[SERVER] Realtime voice model: ${REALTIME_MODEL}`);
 
     // Fetch OpenAI key on server start
     fetchOpenAIKey().catch((error) => {

@@ -12,9 +12,12 @@ const path = require('path');
 // These can be overridden via environment variables on the server.
 //
 // Voice realtime model (used for WebRTC / Realtime GA API)
-// GA model names (beta names no longer work after May 12, 2026):
-// - 'gpt-realtime'          (balanced)
-// - 'gpt-realtime-mini'     (cheaper, lower latency)
+// Verified against platform.openai.com/docs/models on 2026-09 — see the
+// longer note in server.js's REALTIME_MODEL for the full current catalog
+// and why gpt-live-1 isn't a same-endpoint swap.
+// - 'gpt-realtime' / 'gpt-realtime-1.5'   ($32/$64 per 1M audio tokens)
+// - 'gpt-realtime-2.1'                    (same audio price, +reasoning/tools)
+// - 'gpt-realtime-mini' / 'gpt-realtime-2.1-mini' ($10/$20 per 1M audio tokens)
 const REALTIME_MODEL =
     process.env.ERICA_REALTIME_MODEL ||
     process.env.REALTIME_MODEL ||
