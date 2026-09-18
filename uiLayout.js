@@ -270,6 +270,13 @@
             setupDictation(app);
         }
 
+        // Must run from page load, not only when a call opens: quick-action
+        // chips can make the composer taller in plain text mode too (no call
+        // involved at all), and #chatContainer's padding needs to track that
+        // from the start or the very first pill reveal bleeds a message
+        // behind the composer.
+        trackComposerHeight(app);
+
         if (app.micToggleButton) {
             app.micToggleButton.addEventListener('click', () => {
                 app.toggleMicTrack();
@@ -1022,24 +1029,40 @@
         }
     }
 
-    // The floating audio-control panel (speaker/mic/stop) sits `bottom-[86px]`
-    // in the HTML, a value calibrated for the composer's height with no
-    // pills showing. Once quick-action chips dock above the composer
-    // (18-Sep fix — they used to live in the chat scrollback), the composer
-    // got taller whenever chips are visible and the fixed offset put the
-    // panel's bottom edge UNDER the chip row instead of above the whole
-    // composer — the overlap Willian's screenshots showed. A ResizeObserver
-    // on the composer bar keeps this correct for ANY future reason the
-    // composer's height changes (attachment previews, textarea growth,
-    // etc.), not just today's chip row.
+    // Two things sit above/behind the composer and both need to know its
+    // ACTUAL height, not a value hardcoded for whatever the composer looked
+    // like the day it was written:
+    //   - #chatContainer's bottom padding, so the last message doesn't
+    //     scroll UNDER the composer. Reported (18-Sep, mobile): after quick
+    //     -action chips moved to live inside the composer bar, the last
+    //     assistant bubble's tail rendered behind the (translucent) composer
+    //     — teal bleeding through next to the pills read as "the first pill
+    //     is teal and overlaps the text" from a screenshot, but the pill
+    //     itself was never miscolored; the message behind it was cut off.
+    //     pb-28 (112px) was calibrated for a composer with no pill row; with
+    //     pills visible the composer measured 272px on a phone — a 160px
+    //     shortfall.
+    //   - #callModePanel (speaker/mic/stop), which sits `bottom-[86px]` in
+    //     the HTML — also calibrated for a chip-less composer, so it sat
+    //     UNDER the chip row instead of above the whole composer once chips
+    //     started living there.
+    // A single ResizeObserver on the composer bar keeps both correct for ANY
+    // future reason the composer's height changes (attachment previews,
+    // textarea growth, voice-mode shrinking it, etc.), not just today's chip
+    // row — and it runs always, not only while a call is open, since the
+    // chat-padding half of this matters in plain text mode too.
     let _composerResizeObserver = null;
-    function trackComposerHeightForCallPanel(app) {
-        const panel = app.callModePanel;
+    function trackComposerHeight(app) {
         const composerBar = document.getElementById('composerBar');
-        if (!panel || !composerBar) return;
+        const chatContainer = document.getElementById('chatContainer');
+        if (!composerBar) return;
         const reposition = () => {
-            const h = composerBar.getBoundingClientRect().height;
-            panel.style.bottom = `${Math.round(h) + 14}px`;
+            const h = Math.round(composerBar.getBoundingClientRect().height);
+            if (chatContainer) chatContainer.style.paddingBottom = `${h + 24}px`;
+            const panel = app.callModePanel;
+            if (panel && !panel.classList.contains('hidden')) {
+                panel.style.bottom = `${h + 14}px`;
+            }
         };
         reposition();
         if (!_composerResizeObserver && typeof ResizeObserver === 'function') {
@@ -1082,8 +1105,8 @@
             // above have applied, and again next frame once the browser has
             // actually reflowed — the composer's height right now may still
             // reflect its pre-toggle size.
-            trackComposerHeightForCallPanel(app);
-            requestAnimationFrame(() => trackComposerHeightForCallPanel(app));
+            trackComposerHeight(app);
+            requestAnimationFrame(() => trackComposerHeight(app));
             if (typeof messageToApp === 'function') {
                 const thumb = app.currentVoiceThumbUrl || null;
                 const thumbAbsolute = thumb && !thumb.startsWith('http')
