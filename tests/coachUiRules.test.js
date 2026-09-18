@@ -46,7 +46,7 @@ test('starter suggestions use a safe context signal and preserve fallback', () =
     const fallback = ['one', 'two', 'three'];
     assert.deepEqual(
         rules.contextualStarterSuggestions('User completed a lesson about decision making', fallback),
-        ['Help me compare my options', 'What matters most in this decision?', 'What am I not considering yet?']
+        ['Help me compare my options', 'What matters most here?']
     );
     assert.deepEqual(rules.contextualStarterSuggestions('', fallback), fallback);
 });
@@ -55,8 +55,14 @@ test('suggestion filtering rejects URLs, emails, and identifiers', () => {
     assert.equal(rules.isSafeSuggestion('Help me decide?'), true);
     assert.equal(rules.isSafeSuggestion('Contact me@example.com'), false);
     assert.equal(rules.isSafeSuggestion('Open https://example.com'), false);
+    // Only one of the three survives filtering — short of the required 2 —
+    // so this must fall back rather than return a partial list.
     assert.deepEqual(
-        rules.filterSuggestions(['safe one', 'safe two', 'user 123456789'], ['a', 'b', 'c']),
-        ['a', 'b', 'c']
+        rules.filterSuggestions(['safe one', 'user 123456789', 'me@example.com'], ['a', 'b']),
+        ['a', 'b']
+    );
+    assert.deepEqual(
+        rules.filterSuggestions(['safe one', 'safe two'], ['a', 'b']),
+        ['safe one', 'safe two']
     );
 });

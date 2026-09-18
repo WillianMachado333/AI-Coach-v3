@@ -2071,18 +2071,8 @@ class VoiceChatBot {
         this.messages = [];
         this.messageElements.clear();
         if (this.chatMessages) {
-            // The pill container (#quickActions) may have been re-parented
-            // into #chatMessages by renderQuickActions on a prior turn. A raw
-            // innerHTML wipe would delete it — after which
-            // document.getElementById('quickActions') silently returns null
-            // and renderQuickActions becomes a no-op for the rest of the
-            // session. Detach the pill container before clearing, re-attach
-            // afterwards (hidden — the caller re-shows it when appropriate).
-            const pills = document.getElementById('quickActions');
-            if (pills && this.chatMessages.contains(pills)) {
-                pills.classList.add('hidden');
-                this.chatMessages.parentElement?.appendChild(pills);
-            }
+            // #quickActions lives in the composer now (index.html), not
+            // inside #chatMessages, so wiping the transcript can't delete it.
             this.chatMessages.innerHTML = '';
         }
 
@@ -2340,7 +2330,7 @@ class VoiceChatBot {
                 if (typeof this.renderQuickActions === 'function') {
                     // Small delay lets the message bubble render first so
                     // the pills don't briefly overlap the finalisation.
-                    setTimeout(() => this.renderQuickActions('continuation'), 150);
+                    setTimeout(() => this.renderQuickActions('continuation', wasChatNearBottom), 150);
                 }
                 // Scroll so the START of Erica's response is at the top of
                 // the viewport — user starts reading immediately without
@@ -3377,44 +3367,36 @@ class VoiceChatBot {
         // recognisable coaching frame that plays to that persona's strengths.
         const starter = {
             Supportive: [
-                "Help me find a small first step I can take",
-                "What's really going on beneath this?",
-                "How would I explain this to myself clearly?"
+                "Find one small first step",
+                "What's beneath this feeling?"
             ],
             Directive: [
-                "What's the next best step I should take?",
-                "Help me make a decision today",
-                "I need to move fast — cut through the noise"
+                "What's my next best step?",
+                "Help me decide, fast"
             ],
             Discovery: [
-                "What am I not seeing in my situation?",
-                "Help me examine my assumptions",
-                "Ask me the question I need to sit with"
+                "What am I not seeing?",
+                "Ask me a hard question"
             ],
             Empowering: [
-                "What are my real options right now?",
-                "Help me remember what I'm capable of",
-                "I want to make a decision I own"
+                "What are my real options?",
+                "Remind me what I can do"
             ],
             Exploratory: [
-                "What patterns do you see in what I've shared?",
-                "Help me explore what's underneath this",
-                "I want to think creatively about this"
+                "What patterns do you see?",
+                "Explore this with me"
             ],
             Guidance: [
-                "What have others in my situation tried?",
-                "Give me the lay of the land, then I'll choose",
-                "I want to learn by doing — where do I start?"
+                "What have others tried?",
+                "Give me the lay of the land"
             ],
             Nurturing: [
-                "Just listen for a moment — I need to process",
-                "Help me name what I'm actually feeling",
-                "I want to talk about connection and boundaries"
+                "Just let me process",
+                "Help me name this feeling"
             ],
             Strengths: [
                 "Remind me what I do well",
-                "How can I use my strengths for what's in front of me?",
-                "I'm focused on what's broken — help me see what's working"
+                "What's actually working here?"
             ]
         };
 
@@ -3422,55 +3404,45 @@ class VoiceChatBot {
         // the conversation moving forward with beats natural to that persona.
         const continuation = {
             Supportive: [
-                "What's a small next step from here?",
-                "What's underneath what I just said?",
-                "How does this connect to what matters most to me?"
+                "What's a small next step?",
+                "What's underneath what I said?"
             ],
             Directive: [
                 "What do I do next?",
-                "Give me the specific action",
                 "Am I overthinking this?"
             ],
             Discovery: [
                 "Ask me a harder question",
-                "What am I still missing?",
-                "What's really underneath this?"
+                "What am I still missing?"
             ],
             Empowering: [
                 "Show me my options again",
-                "Reflect that back to me",
                 "Help me commit to a choice"
             ],
             Exploratory: [
                 "Go deeper on that",
-                "What pattern is this part of?",
-                "How does this connect to what I said before?"
+                "What pattern is this part of?"
             ],
             Guidance: [
                 "Show me an example",
-                "What would you try first?",
-                "I want to test this — how?"
+                "What would you try first?"
             ],
             Nurturing: [
                 "Say more about that",
-                "Help me name this feeling",
-                "How can I move gently on this?"
+                "Help me name this feeling"
             ],
             Strengths: [
                 "What strength can I use here?",
-                "Point out what's working",
-                "How do I build on this?"
+                "Point out what's working"
             ]
         };
 
         const universalStarter = [
-            "Help me clarify what I'm working on",
-            "I have a decision to make — help me think through it",
-            "I want to reflect on something that's been on my mind"
+            "Help me clarify my focus",
+            "I have a decision to make"
         ];
         const universalContinuation = [
             "Tell me more",
-            "Give me a concrete example",
             "What's a good next step?"
         ];
 
@@ -3491,10 +3463,11 @@ class VoiceChatBot {
             const suggestion = suggestions[i] || '';
             btn.textContent = suggestion;
             // Remove any loading-state classes when painting real content.
-            // bg-lightGray matches the user's own message bubble (uiLayout.js)
-            // — these pills are previews of what the user could say.
+            // bg-gray-50 is the chip's own resting color (index.html) —
+            // deliberately NOT the user bubble's color; these are chips
+            // docked above the composer, not previews of a sent message.
             btn.classList.remove('animate-pulse', 'text-transparent', 'select-none', 'pointer-events-none', 'bg-gray-100');
-            btn.classList.add('bg-lightGray');
+            btn.classList.add('bg-gray-50');
             if (!suggestion) {
                 btn.classList.add('hidden');
                 btn.onclick = null;
@@ -3523,7 +3496,7 @@ class VoiceChatBot {
         const buttons = container.querySelectorAll('.quickActionBtn');
         buttons.forEach((btn, i) => {
             btn.textContent = placeholders[i] || '         ';
-            btn.classList.remove('hidden', 'bg-lightGray');
+            btn.classList.remove('hidden', 'bg-gray-50');
             btn.classList.add('animate-pulse', 'bg-gray-100', 'text-transparent', 'select-none', 'pointer-events-none');
             btn.onclick = null;
         });
@@ -3792,7 +3765,7 @@ class VoiceChatBot {
                 const fallback = this._getQuickActionsForPersona(this.selectedCompanionId, 'continuation');
                 return typeof window.coachUiRules?.filterSuggestions === 'function'
                     ? window.coachUiRules.filterSuggestions(data.suggestions, fallback)
-                    : data.suggestions.slice(0, 3);
+                    : data.suggestions.slice(0, 2);
             }
         } catch (e) {
             console.warn('[Erica] suggest-followups fetch failed:', e?.message || e);
@@ -3800,7 +3773,21 @@ class VoiceChatBot {
         return null;
     }
 
-    renderQuickActions(mode) {
+    renderQuickActions(mode, wasChatNearBottom) {
+        // wasChatNearBottom: an optional snapshot of isChatNearBottom() taken
+        // BEFORE this reply started rendering. When provided, it — not a
+        // fresh isChatNearBottom() call — decides whether to follow-scroll to
+        // reveal the pills. Re-checking fresh here is wrong: by the time this
+        // runs, upsertMessage has already jumped the scroll position to put
+        // the message's TOP in view (scrollMessageTopIntoView), which is
+        // rarely "near bottom" for any non-trivial reply. Checking against a
+        // position we ourselves just created (instead of one the user chose)
+        // produced false negatives that silently skipped the pill reveal,
+        // leaving the view stuck with the message's tail hidden behind the
+        // fixed composer bar.
+        const followScroll = typeof wasChatNearBottom === 'boolean'
+            ? () => wasChatNearBottom
+            : () => (typeof this.isChatNearBottom !== 'function' || this.isChatNearBottom());
         const container = document.getElementById('quickActions');
         if (!container) return;
 
@@ -3818,12 +3805,11 @@ class VoiceChatBot {
         // too aggressive. Pills work fine alongside call mode (user can still
         // tap one to inject a text turn), so we render regardless of isRecording.
 
-        // Re-parent into #chatMessages so it flows with the conversation.
-        if (container.parentElement !== chatMsgs) {
-            chatMsgs.appendChild(container);
-        } else if (chatMsgs.lastElementChild !== container) {
-            chatMsgs.appendChild(container);
-        }
+        // #quickActions lives permanently docked above the composer (see
+        // index.html) — no re-parenting into #chatMessages. It used to be
+        // moved into the chat flow after the latest bubble, which was
+        // exactly why it could be mistaken for a sent message: it WAS,
+        // structurally, the newest thing in the transcript.
         container.classList.remove('hidden');
 
         // Paint decision. Guiding principle: ONE visible pill transition per
@@ -3868,7 +3854,7 @@ class VoiceChatBot {
         const scrollContainer = document.getElementById('chatContainer');
         if (scrollContainer && !container.classList.contains('hidden')) {
             requestAnimationFrame(() => {
-                if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                if (!followScroll()) return;
                 scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
             });
         }
@@ -3886,7 +3872,7 @@ class VoiceChatBot {
             container.classList.remove('hidden');
             if (scrollContainer) {
                 requestAnimationFrame(() => {
-                    if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                    if (!followScroll()) return;
                     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
                 });
             }
@@ -3911,7 +3897,7 @@ class VoiceChatBot {
                 container.classList.remove('hidden');
                 if (scrollContainer) {
                     requestAnimationFrame(() => {
-                    if (typeof this.isChatNearBottom === 'function' && !this.isChatNearBottom()) return;
+                    if (!followScroll()) return;
                     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
                 });
                 }

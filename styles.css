@@ -254,11 +254,15 @@
 }
 
 /* Voice mode keeps text available without allowing an inactive composer to
-   consume the full lower chat area. The call FAB remains a separate action. */
-#inputWrapper.voice-mode-active {
-    justify-content: flex-end;
-}
-
+   consume the full lower chat area. The call FAB remains a separate action.
+   `justify-content: flex-end` used to sit here — it pushed the whole row
+   (attach button, shrunk text pill, mic, call button) to the right edge,
+   leaving a dead gap on the left instead of the ordinary left-anchored
+   layout. That's the reported "composer alignment fights itself in voice
+   mode" bug: reproduced by toggling this class with no override, the row
+   sat flush right instead of flush left like every other state of this
+   composer. The row's default (flex-start) layout is correct here — only
+   the input pill needs to shrink, not the whole row's anchor. */
 #inputWrapper.voice-mode-active > div:first-child {
     flex: 0 1 clamp(150px, 34vw, 240px);
     width: clamp(150px, 34vw, 240px);

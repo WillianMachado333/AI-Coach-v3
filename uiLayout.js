@@ -139,15 +139,22 @@
                 scrollContainer.scrollTo({ top: Math.max(0, elTop - offset), behavior: 'smooth' });
             };
 
-            function updateVisibility() {
-                if (app.isChatNearBottom()) {
+            // Shared with trackComposerHeight()/setCallModePanelOpen() below,
+            // which is why it lives on `app`: the button also has to stay
+            // hidden while the call panel is open (its own z-index jumps to
+            // 55 to sit above everything, and there's no useful "scroll the
+            // text history" action mid-call anyway), not just when the user
+            // is already near the bottom.
+            app.updateScrollToBottomVisibility = function () {
+                const callPanelOpen = !!app._callPanelOpen;
+                if (callPanelOpen || app.isChatNearBottom()) {
                     btn.classList.add('hidden');
                 } else {
                     btn.classList.remove('hidden');
                 }
-            }
+            };
 
-            scrollContainer.addEventListener('scroll', updateVisibility, { passive: true });
+            scrollContainer.addEventListener('scroll', app.updateScrollToBottomVisibility, { passive: true });
             btn.addEventListener('click', () => {
                 scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
             });
@@ -157,12 +164,12 @@
             // MutationObserver is cheaper than polling.
             const chatMsgs = document.getElementById('chatMessages');
             if (chatMsgs && typeof MutationObserver !== 'undefined') {
-                const mo = new MutationObserver(() => updateVisibility());
+                const mo = new MutationObserver(() => app.updateScrollToBottomVisibility());
                 mo.observe(chatMsgs, { childList: true, subtree: false });
             }
 
             // Initial state
-            updateVisibility();
+            app.updateScrollToBottomVisibility();
         })();
 
         // State
@@ -269,6 +276,13 @@
         if (app.dictationButton) {
             setupDictation(app);
         }
+
+        // Must run from page load, not only when a call opens: quick-action
+        // chips can make the composer taller in plain text mode too (no call
+        // involved at all), and #chatContainer's padding needs to track that
+        // from the start or the very first pill reveal bleeds a message
+        // behind the composer.
+        trackComposerHeight(app);
 
         if (app.micToggleButton) {
             app.micToggleButton.addEventListener('click', () => {
@@ -966,7 +980,16 @@
             }
 
             recognition = new Recognition();
-            recognition.lang = document.documentElement.lang || navigator.language || 'en-US';
+            // navigator.language (the browser/OS locale — what language the
+            // person actually speaks) must come first. document.documentElement.lang
+            // is a static markup attribute ("en", set once in index.html for
+            // the page's own text) that has nothing to do with the speaker's
+            // language — with it first, `|| navigator.language` never ran,
+            // so dictation always transcribed as English regardless of the
+            // browser's locale. That's the reported bug: Portuguese speech
+            // decoded as English produces exactly the kind of phonetic
+            // nonsense ("Hello song hello Google") that was reported.
+            recognition.lang = navigator.language || document.documentElement.lang || 'en-US';
             recognition.interimResults = true;
             recognition.continuous = false;
             const baseText = app.textInput.value.trim();
@@ -1013,9 +1036,118 @@
         }
     }
 
+    // Two things sit above/behind the composer and both need to know its
+    // ACTUAL height, not a value hardcoded for whatever the composer looked
+    // like the day it was written:
+    //   - #chatContainer's bottom padding, so the last message doesn't
+    //     scroll UNDER the composer. Reported (18-Sep, mobile): after quick
+    //     -action chips moved to live inside the composer bar, the last
+    //     assistant bubble's tail rendered behind the (translucent) composer
+    //     — teal bleeding through next to the pills read as "the first pill
+    //     is teal and overlaps the text" from a screenshot, but the pill
+    //     itself was never miscolored; the message behind it was cut off.
+    //     pb-28 (112px) was calibrated for a composer with no pill row; with
+    //     pills visible the composer measured 272px on a phone — a 160px
+    //     shortfall.
+    //   - #callModePanel (speaker/mic/stop), which sits `bottom-[86px]` in
+    //     the HTML — also calibrated for a chip-less composer, so it sat
+    //     UNDER the chip row instead of above the whole composer once chips
+    //     started living there.
+    // A single ResizeObserver on the composer bar keeps both correct for ANY
+    // future reason the composer's height changes (attachment previews,
+    // textarea growth, voice-mode shrinking it, etc.), not just today's chip
+    // row — and it runs always, not only while a call is open, since the
+    // chat-padding half of this matters in plain text mode too.
+    // ResizeObserver looked like the obvious tool here, and shipped first —
+    // but verified directly (staging, mobile) that it never fires for this
+    // element: attached a throwaway observer on #composerBar and toggled
+    // #quickActions' hidden class (a real, confirmed height change) with it
+    // live, and the fire count stayed at zero. #composerBar is
+    // `position: fixed`, and ResizeObserver not reacting to fixed-position
+    // elements is a known engine quirk, not something to design around
+    // hoping it works on whichever browser a person happens to open Coach
+    // Studio in. MutationObserver watches attribute/child changes instead of
+    // layout boxes, which sidesteps the whole class of bug: it observes
+    // #composerBar's subtree for the specific things that change its height
+    // (quickActions' hidden class, the textarea's inline style in voice
+    // mode, attachment previews being added/removed) directly, confirmed
+    // firing in the same manual test that showed ResizeObserver silent.
+    let _composerMutationObserver = null;
+    function trackComposerHeight(app) {
+        const composerBar = document.getElementById('composerBar');
+        const chatContainer = document.getElementById('chatContainer');
+        if (!composerBar) return;
+        const reposition = () => {
+            const h = Math.round(composerBar.getBoundingClientRect().height);
+            // Write only when the target actually differs from what's
+            // already applied. The observer's subtree covers composerBar's
+            // mic FAB, which during an active call gets its --mic-scale/
+            // --mic-glow custom properties and .mic-speaking class rewritten
+            // on every audio frame (updateMicLevel) — each of those is a
+            // 'style'/'class' mutation this observer is watching for.
+            // Without this guard, every one of those frames re-applies the
+            // same bottom/padding value via inline style: wasted layout
+            // work at best, and on engines where composerBar's own measured
+            // height jitters by a pixel from viewport chrome changes (iOS
+            // Safari's dynamic toolbar), it keeps retriggering callModePanel's
+            // bottom transition before it settles — the panel never reaches
+            // its docked position, floating instead. Comparing against each
+            // element's own current inline value (not a shared "last height"
+            // flag) keeps this correct across the panel's hidden/visible
+            // transitions, where the panel's target can change even when the
+            // composer's height hasn't.
+            if (chatContainer) {
+                const paddingTarget = `${h + 24}px`;
+                if (chatContainer.style.paddingBottom !== paddingTarget) {
+                    chatContainer.style.paddingBottom = paddingTarget;
+                }
+            }
+            const panel = app.callModePanel;
+            if (panel && !panel.classList.contains('hidden')) {
+                const bottomTarget = `${h + 14}px`;
+                if (panel.style.bottom !== bottomTarget) {
+                    panel.style.bottom = bottomTarget;
+                }
+            }
+            // scrollToBottomBtn had a hardcoded bottom-24 (96px) — fine for a
+            // bare composer, but the composer's real height with the pill
+            // row visible runs well past that, so the button sat physically
+            // behind it (and lost the paint order tie too: same z-40,
+            // composerBar comes later in the DOM). Same fix as the panel
+            // above: float it just above the composer's actual height.
+            const scrollBtn = document.getElementById('scrollToBottomBtn');
+            if (scrollBtn) {
+                const scrollBtnTarget = `${h + 14}px`;
+                if (scrollBtn.style.bottom !== scrollBtnTarget) {
+                    scrollBtn.style.bottom = scrollBtnTarget;
+                }
+                if (typeof app.updateScrollToBottomVisibility === 'function') {
+                    app.updateScrollToBottomVisibility();
+                }
+            }
+        };
+        reposition();
+        if (!_composerMutationObserver && typeof MutationObserver === 'function') {
+            _composerMutationObserver = new MutationObserver(() => reposition());
+            _composerMutationObserver.observe(composerBar, {
+                attributes: true,
+                attributeFilter: ['class', 'style'],
+                childList: true,
+                subtree: true,
+            });
+        }
+    }
+
     function setCallModePanelOpen(app, open) {
         const panel = app.callModePanel;
         if (!panel) return;
+
+        // Read by reposition() (trackComposerHeight) and by
+        // updateScrollToBottomVisibility() — set immediately, not derived
+        // from the panel's 'hidden' class, because that class is added on a
+        // 300ms delay on close (to let the fade-out finish) and reading it
+        // early would keep the scroll button wrongly hidden for that window.
+        app._callPanelOpen = !!open;
 
         panel.classList.toggle('opacity-0', !open);
         panel.classList.toggle('translate-y-10', !open);
@@ -1028,10 +1160,22 @@
         const ta = document.getElementById('userTextInput');
         const inputWrap = document.getElementById('inputWrapper');
         if (ta) {
-            ta.style.minHeight = open ? '32px' : '48px';
+            // 32px was a near-exact fit for one line at 13px/1.5 (19.5px)
+            // plus 6+6px padding — 31.5px needed inside a 32px box, under a
+            // pixel of slack. Chromium renders it fine, but WebKit's slightly
+            // different font metrics can round that over the edge, and this
+            // textarea's overflow-y is auto: even a 1px overflow makes it
+            // internally scrollable, which is what was showing as a spinner-
+            // like affordance next to the mic icon in voice mode. 36px gives
+            // real margin instead of an exact-fit calculation, and
+            // overflow-hidden means a future miscalculation clips silently
+            // instead of becoming scrollable — this is a one-line composer,
+            // it was never meant to scroll internally.
+            ta.style.minHeight = open ? '36px' : '48px';
             ta.style.paddingTop = open ? '6px' : '';
             ta.style.paddingBottom = open ? '6px' : '';
             ta.style.fontSize = open ? '13px' : '';
+            ta.style.overflow = open ? 'hidden' : '';
         }
         if (inputWrap) {
             inputWrap.style.opacity = '';
@@ -1043,6 +1187,12 @@
             panel.classList.add('flex', 'pointer-events-auto');
             panel.classList.remove('pointer-events-none');
             panel.style.zIndex = '55'; // Boost above inputWrapper (z-40)
+            // Recompute AFTER the voice-mode-active class + shrunk textarea
+            // above have applied, and again next frame once the browser has
+            // actually reflowed — the composer's height right now may still
+            // reflect its pre-toggle size.
+            trackComposerHeight(app);
+            requestAnimationFrame(() => trackComposerHeight(app));
             if (typeof messageToApp === 'function') {
                 const thumb = app.currentVoiceThumbUrl || null;
                 const thumbAbsolute = thumb && !thumb.startsWith('http')
@@ -1063,6 +1213,11 @@
                     panel.classList.add('pointer-events-none');
                 }
             }, 300);
+            // scrollToBottomBtn can reappear the moment the call panel
+            // starts closing (app._callPanelOpen is already false above) —
+            // it doesn't need to wait for the panel's own fade-out.
+            trackComposerHeight(app);
+            requestAnimationFrame(() => trackComposerHeight(app));
         }
 
         // Ensure the chat has enough bottom padding so messages don't sit behind the panel
@@ -1883,7 +2038,13 @@
                             const olderRaw = (olderText.textContent || '').trim();
                             const olderLong = olderRaw.length > 480 || (olderRaw.match(/\n/g) || []).length >= 6;
                             // Only collapse assistant bubbles (user bubbles are user-authored).
-                            const isAssistant = sib.classList.contains('justify-end');
+                            // justify-end is the USER's alignment class (see the
+                            // role==='user' branch above) — this check was
+                            // inverted, so it collapsed long USER messages
+                            // (explicitly the one thing the comment says never
+                            // to do) and left long assistant replies
+                            // uncollapsed, the opposite of this feature's point.
+                            const isAssistant = !sib.classList.contains('justify-end');
                             if (olderLong && isAssistant) applyCollapse(sib, olderText);
                         }
                     }
