@@ -139,15 +139,22 @@
                 scrollContainer.scrollTo({ top: Math.max(0, elTop - offset), behavior: 'smooth' });
             };
 
-            function updateVisibility() {
-                if (app.isChatNearBottom()) {
+            // Shared with trackComposerHeight()/setCallModePanelOpen() below,
+            // which is why it lives on `app`: the button also has to stay
+            // hidden while the call panel is open (its own z-index jumps to
+            // 55 to sit above everything, and there's no useful "scroll the
+            // text history" action mid-call anyway), not just when the user
+            // is already near the bottom.
+            app.updateScrollToBottomVisibility = function () {
+                const callPanelOpen = !!app._callPanelOpen;
+                if (callPanelOpen || app.isChatNearBottom()) {
                     btn.classList.add('hidden');
                 } else {
                     btn.classList.remove('hidden');
                 }
-            }
+            };
 
-            scrollContainer.addEventListener('scroll', updateVisibility, { passive: true });
+            scrollContainer.addEventListener('scroll', app.updateScrollToBottomVisibility, { passive: true });
             btn.addEventListener('click', () => {
                 scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: 'smooth' });
             });
@@ -157,12 +164,12 @@
             // MutationObserver is cheaper than polling.
             const chatMsgs = document.getElementById('chatMessages');
             if (chatMsgs && typeof MutationObserver !== 'undefined') {
-                const mo = new MutationObserver(() => updateVisibility());
+                const mo = new MutationObserver(() => app.updateScrollToBottomVisibility());
                 mo.observe(chatMsgs, { childList: true, subtree: false });
             }
 
             // Initial state
-            updateVisibility();
+            app.updateScrollToBottomVisibility();
         })();
 
         // State
@@ -1102,6 +1109,22 @@
                     panel.style.bottom = bottomTarget;
                 }
             }
+            // scrollToBottomBtn had a hardcoded bottom-24 (96px) — fine for a
+            // bare composer, but the composer's real height with the pill
+            // row visible runs well past that, so the button sat physically
+            // behind it (and lost the paint order tie too: same z-40,
+            // composerBar comes later in the DOM). Same fix as the panel
+            // above: float it just above the composer's actual height.
+            const scrollBtn = document.getElementById('scrollToBottomBtn');
+            if (scrollBtn) {
+                const scrollBtnTarget = `${h + 14}px`;
+                if (scrollBtn.style.bottom !== scrollBtnTarget) {
+                    scrollBtn.style.bottom = scrollBtnTarget;
+                }
+                if (typeof app.updateScrollToBottomVisibility === 'function') {
+                    app.updateScrollToBottomVisibility();
+                }
+            }
         };
         reposition();
         if (!_composerMutationObserver && typeof MutationObserver === 'function') {
@@ -1118,6 +1141,13 @@
     function setCallModePanelOpen(app, open) {
         const panel = app.callModePanel;
         if (!panel) return;
+
+        // Read by reposition() (trackComposerHeight) and by
+        // updateScrollToBottomVisibility() — set immediately, not derived
+        // from the panel's 'hidden' class, because that class is added on a
+        // 300ms delay on close (to let the fade-out finish) and reading it
+        // early would keep the scroll button wrongly hidden for that window.
+        app._callPanelOpen = !!open;
 
         panel.classList.toggle('opacity-0', !open);
         panel.classList.toggle('translate-y-10', !open);
@@ -1183,6 +1213,11 @@
                     panel.classList.add('pointer-events-none');
                 }
             }, 300);
+            // scrollToBottomBtn can reappear the moment the call panel
+            // starts closing (app._callPanelOpen is already false above) —
+            // it doesn't need to wait for the panel's own fade-out.
+            trackComposerHeight(app);
+            requestAnimationFrame(() => trackComposerHeight(app));
         }
 
         // Ensure the chat has enough bottom padding so messages don't sit behind the panel
