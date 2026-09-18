@@ -1130,10 +1130,22 @@
         const ta = document.getElementById('userTextInput');
         const inputWrap = document.getElementById('inputWrapper');
         if (ta) {
-            ta.style.minHeight = open ? '32px' : '48px';
+            // 32px was a near-exact fit for one line at 13px/1.5 (19.5px)
+            // plus 6+6px padding — 31.5px needed inside a 32px box, under a
+            // pixel of slack. Chromium renders it fine, but WebKit's slightly
+            // different font metrics can round that over the edge, and this
+            // textarea's overflow-y is auto: even a 1px overflow makes it
+            // internally scrollable, which is what was showing as a spinner-
+            // like affordance next to the mic icon in voice mode. 36px gives
+            // real margin instead of an exact-fit calculation, and
+            // overflow-hidden means a future miscalculation clips silently
+            // instead of becoming scrollable — this is a one-line composer,
+            // it was never meant to scroll internally.
+            ta.style.minHeight = open ? '36px' : '48px';
             ta.style.paddingTop = open ? '6px' : '';
             ta.style.paddingBottom = open ? '6px' : '';
             ta.style.fontSize = open ? '13px' : '';
+            ta.style.overflow = open ? 'hidden' : '';
         }
         if (inputWrap) {
             inputWrap.style.opacity = '';
