@@ -2071,18 +2071,8 @@ class VoiceChatBot {
         this.messages = [];
         this.messageElements.clear();
         if (this.chatMessages) {
-            // The pill container (#quickActions) may have been re-parented
-            // into #chatMessages by renderQuickActions on a prior turn. A raw
-            // innerHTML wipe would delete it — after which
-            // document.getElementById('quickActions') silently returns null
-            // and renderQuickActions becomes a no-op for the rest of the
-            // session. Detach the pill container before clearing, re-attach
-            // afterwards (hidden — the caller re-shows it when appropriate).
-            const pills = document.getElementById('quickActions');
-            if (pills && this.chatMessages.contains(pills)) {
-                pills.classList.add('hidden');
-                this.chatMessages.parentElement?.appendChild(pills);
-            }
+            // #quickActions lives in the composer now (index.html), not
+            // inside #chatMessages, so wiping the transcript can't delete it.
             this.chatMessages.innerHTML = '';
         }
 
@@ -3491,10 +3481,11 @@ class VoiceChatBot {
             const suggestion = suggestions[i] || '';
             btn.textContent = suggestion;
             // Remove any loading-state classes when painting real content.
-            // bg-lightGray matches the user's own message bubble (uiLayout.js)
-            // — these pills are previews of what the user could say.
+            // bg-gray-50 is the chip's own resting color (index.html) —
+            // deliberately NOT the user bubble's color; these are chips
+            // docked above the composer, not previews of a sent message.
             btn.classList.remove('animate-pulse', 'text-transparent', 'select-none', 'pointer-events-none', 'bg-gray-100');
-            btn.classList.add('bg-lightGray');
+            btn.classList.add('bg-gray-50');
             if (!suggestion) {
                 btn.classList.add('hidden');
                 btn.onclick = null;
@@ -3523,7 +3514,7 @@ class VoiceChatBot {
         const buttons = container.querySelectorAll('.quickActionBtn');
         buttons.forEach((btn, i) => {
             btn.textContent = placeholders[i] || '         ';
-            btn.classList.remove('hidden', 'bg-lightGray');
+            btn.classList.remove('hidden', 'bg-gray-50');
             btn.classList.add('animate-pulse', 'bg-gray-100', 'text-transparent', 'select-none', 'pointer-events-none');
             btn.onclick = null;
         });
@@ -3818,12 +3809,11 @@ class VoiceChatBot {
         // too aggressive. Pills work fine alongside call mode (user can still
         // tap one to inject a text turn), so we render regardless of isRecording.
 
-        // Re-parent into #chatMessages so it flows with the conversation.
-        if (container.parentElement !== chatMsgs) {
-            chatMsgs.appendChild(container);
-        } else if (chatMsgs.lastElementChild !== container) {
-            chatMsgs.appendChild(container);
-        }
+        // #quickActions lives permanently docked above the composer (see
+        // index.html) — no re-parenting into #chatMessages. It used to be
+        // moved into the chat flow after the latest bubble, which was
+        // exactly why it could be mistaken for a sent message: it WAS,
+        // structurally, the newest thing in the transcript.
         container.classList.remove('hidden');
 
         // Paint decision. Guiding principle: ONE visible pill transition per

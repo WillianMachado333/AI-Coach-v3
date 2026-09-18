@@ -966,7 +966,16 @@
             }
 
             recognition = new Recognition();
-            recognition.lang = document.documentElement.lang || navigator.language || 'en-US';
+            // navigator.language (the browser/OS locale — what language the
+            // person actually speaks) must come first. document.documentElement.lang
+            // is a static markup attribute ("en", set once in index.html for
+            // the page's own text) that has nothing to do with the speaker's
+            // language — with it first, `|| navigator.language` never ran,
+            // so dictation always transcribed as English regardless of the
+            // browser's locale. That's the reported bug: Portuguese speech
+            // decoded as English produces exactly the kind of phonetic
+            // nonsense ("Hello song hello Google") that was reported.
+            recognition.lang = navigator.language || document.documentElement.lang || 'en-US';
             recognition.interimResults = true;
             recognition.continuous = false;
             const baseText = app.textInput.value.trim();
@@ -1013,6 +1022,32 @@
         }
     }
 
+    // The floating audio-control panel (speaker/mic/stop) sits `bottom-[86px]`
+    // in the HTML, a value calibrated for the composer's height with no
+    // pills showing. Once quick-action chips dock above the composer
+    // (18-Sep fix — they used to live in the chat scrollback), the composer
+    // got taller whenever chips are visible and the fixed offset put the
+    // panel's bottom edge UNDER the chip row instead of above the whole
+    // composer — the overlap Willian's screenshots showed. A ResizeObserver
+    // on the composer bar keeps this correct for ANY future reason the
+    // composer's height changes (attachment previews, textarea growth,
+    // etc.), not just today's chip row.
+    let _composerResizeObserver = null;
+    function trackComposerHeightForCallPanel(app) {
+        const panel = app.callModePanel;
+        const composerBar = document.getElementById('composerBar');
+        if (!panel || !composerBar) return;
+        const reposition = () => {
+            const h = composerBar.getBoundingClientRect().height;
+            panel.style.bottom = `${Math.round(h) + 14}px`;
+        };
+        reposition();
+        if (!_composerResizeObserver && typeof ResizeObserver === 'function') {
+            _composerResizeObserver = new ResizeObserver(reposition);
+            _composerResizeObserver.observe(composerBar);
+        }
+    }
+
     function setCallModePanelOpen(app, open) {
         const panel = app.callModePanel;
         if (!panel) return;
@@ -1043,6 +1078,12 @@
             panel.classList.add('flex', 'pointer-events-auto');
             panel.classList.remove('pointer-events-none');
             panel.style.zIndex = '55'; // Boost above inputWrapper (z-40)
+            // Recompute AFTER the voice-mode-active class + shrunk textarea
+            // above have applied, and again next frame once the browser has
+            // actually reflowed — the composer's height right now may still
+            // reflect its pre-toggle size.
+            trackComposerHeightForCallPanel(app);
+            requestAnimationFrame(() => trackComposerHeightForCallPanel(app));
             if (typeof messageToApp === 'function') {
                 const thumb = app.currentVoiceThumbUrl || null;
                 const thumbAbsolute = thumb && !thumb.startsWith('http')
@@ -1883,7 +1924,13 @@
                             const olderRaw = (olderText.textContent || '').trim();
                             const olderLong = olderRaw.length > 480 || (olderRaw.match(/\n/g) || []).length >= 6;
                             // Only collapse assistant bubbles (user bubbles are user-authored).
-                            const isAssistant = sib.classList.contains('justify-end');
+                            // justify-end is the USER's alignment class (see the
+                            // role==='user' branch above) — this check was
+                            // inverted, so it collapsed long USER messages
+                            // (explicitly the one thing the comment says never
+                            // to do) and left long assistant replies
+                            // uncollapsed, the opposite of this feature's point.
+                            const isAssistant = !sib.classList.contains('justify-end');
                             if (olderLong && isAssistant) applyCollapse(sib, olderText);
                         }
                     }

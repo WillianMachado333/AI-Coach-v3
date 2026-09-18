@@ -191,28 +191,6 @@
 
     </main>
 
-    <!-- Quick-action suggestion pills — kept INSIDE the chat flow (not
-         fixed) so they scroll with the conversation and don't cover
-         previous messages when the user scrolls up. Detached from the
-         top of the DOM and re-parented into #chatMessages by
-         app.js:renderQuickActions() so it always renders after the
-         last bubble.
-         Right-aligned (self-end) with the same rounded-br-md corner + light
-         bg as the user's own message bubble (uiLayout.js ~line 1856) — they
-         are things the USER could say next, so they should read as
-         previews of the user's own bubble, not as more AI output. The
-         resting border is neutral gray rather than primary/teal so they
-         don't borrow the assistant's brand color at rest; the hover state
-         still uses primary to signal they're clickable. -->
-    <div id="quickActions" class="hidden w-full flex flex-col gap-2 mt-2">
-        <button type="button" data-idx="0"
-            class="quickActionBtn self-end max-w-[85%] bg-lightGray border border-gray-200 text-gray-700 rounded-2xl rounded-br-md px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-        <button type="button" data-idx="1"
-            class="quickActionBtn self-end max-w-[85%] bg-lightGray border border-gray-200 text-gray-700 rounded-2xl rounded-br-md px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-        <button type="button" data-idx="2"
-            class="quickActionBtn self-end max-w-[85%] bg-lightGray border border-gray-200 text-gray-700 rounded-2xl rounded-br-md px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
-    </div>
-
     <!-- Scroll-to-bottom floating button. Visible when the user has
          scrolled up from the latest message; hidden when already at
          bottom. Handled by app.js:setupScrollToBottom(). -->
@@ -504,8 +482,28 @@
     </div>
 
     <!-- Bottom Interface: Input & Controls -->
-    <div class="fixed bottom-0 left-0 right-0 z-40 bg-white/60 p-3 border-t border-border/60">
+    <div id="composerBar" class="fixed bottom-0 left-0 right-0 z-40 bg-white/60 p-3 border-t border-border/60">
         <div class="w-full relative">
+
+            <!-- Quick-action suggestion chips — docked to the composer, not
+                 part of the scrolling chat history. Willian's report
+                 (18-Sep): the previous in-flow, bubble-styled version was
+                 "visually indistinguishable from an already-sent message."
+                 Two changes fix that: (1) lives here, permanently, instead
+                 of being re-parented into #chatMessages after the latest
+                 bubble — it can never look like the newest turn in the
+                 transcript because it isn't IN the transcript; (2) fully
+                 rounded chip shape + neutral flat background, no bubble
+                 corner-language (no rounded-br-md, no message shadow) —
+                 nothing here reads as "sent." -->
+            <div id="quickActions" class="hidden w-full flex flex-wrap gap-2 mb-2">
+                <button type="button" data-idx="0"
+                    class="quickActionBtn bg-gray-50 border border-gray-200 text-gray-600 rounded-full px-3.5 py-2 text-[12.5px] leading-snug text-left hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+                <button type="button" data-idx="1"
+                    class="quickActionBtn bg-gray-50 border border-gray-200 text-gray-600 rounded-full px-3.5 py-2 text-[12.5px] leading-snug text-left hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+                <button type="button" data-idx="2"
+                    class="quickActionBtn bg-gray-50 border border-gray-200 text-gray-600 rounded-full px-3.5 py-2 text-[12.5px] leading-snug text-left hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+            </div>
 
             <!-- Voice Mode / Text Mode Toggle Area -->
             <div id="attachmentPreview" class="attachment-preview hidden" aria-label="Pending attachments"></div>
