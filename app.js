@@ -3491,8 +3491,10 @@ class VoiceChatBot {
             const suggestion = suggestions[i] || '';
             btn.textContent = suggestion;
             // Remove any loading-state classes when painting real content.
+            // bg-lightGray matches the user's own message bubble (uiLayout.js)
+            // — these pills are previews of what the user could say.
             btn.classList.remove('animate-pulse', 'text-transparent', 'select-none', 'pointer-events-none', 'bg-gray-100');
-            btn.classList.add('bg-white');
+            btn.classList.add('bg-lightGray');
             if (!suggestion) {
                 btn.classList.add('hidden');
                 btn.onclick = null;
@@ -3521,7 +3523,7 @@ class VoiceChatBot {
         const buttons = container.querySelectorAll('.quickActionBtn');
         buttons.forEach((btn, i) => {
             btn.textContent = placeholders[i] || '         ';
-            btn.classList.remove('hidden', 'bg-white');
+            btn.classList.remove('hidden', 'bg-lightGray');
             btn.classList.add('animate-pulse', 'bg-gray-100', 'text-transparent', 'select-none', 'pointer-events-none');
             btn.onclick = null;
         });

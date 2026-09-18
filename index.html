@@ -196,14 +196,21 @@
          previous messages when the user scrolls up. Detached from the
          top of the DOM and re-parented into #chatMessages by
          app.js:renderQuickActions() so it always renders after the
-         last bubble. -->
+         last bubble.
+         Right-aligned (self-end) with the same rounded-br-md corner + light
+         bg as the user's own message bubble (uiLayout.js ~line 1856) — they
+         are things the USER could say next, so they should read as
+         previews of the user's own bubble, not as more AI output. The
+         resting border is neutral gray rather than primary/teal so they
+         don't borrow the assistant's brand color at rest; the hover state
+         still uses primary to signal they're clickable. -->
     <div id="quickActions" class="hidden w-full flex flex-col gap-2 mt-2">
         <button type="button" data-idx="0"
-            class="quickActionBtn self-start max-w-[85%] bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+            class="quickActionBtn self-end max-w-[85%] bg-lightGray border border-gray-200 text-gray-700 rounded-2xl rounded-br-md px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
         <button type="button" data-idx="1"
-            class="quickActionBtn self-start max-w-[85%] bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+            class="quickActionBtn self-end max-w-[85%] bg-lightGray border border-gray-200 text-gray-700 rounded-2xl rounded-br-md px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
         <button type="button" data-idx="2"
-            class="quickActionBtn self-start max-w-[85%] bg-white border border-primary/40 text-gray-800 rounded-2xl px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
+            class="quickActionBtn self-end max-w-[85%] bg-lightGray border border-gray-200 text-gray-700 rounded-2xl rounded-br-md px-4 py-3 text-sm text-left shadow-sm hover:bg-primary hover:text-white hover:border-primary transition-colors"></button>
     </div>
 
     <!-- Scroll-to-bottom floating button. Visible when the user has
@@ -511,7 +518,16 @@
                     <button id="attachmentButton" type="button"
                         class="attachment-button ml-1 p-2 text-iconColor hover:text-primary transition-colors"
                         aria-label="Attach a photo or file" title="Attach a photo or file">
-                        <span aria-hidden="true" class="text-xl leading-none">+</span>
+                        <!-- Line-icon plus (was a bare "+" text glyph, whose thin
+                             font-weight read as a different visual language than
+                             the stroke-based mic/send icons beside it). Matches
+                             the dictation mic icon's 19x19 / stroke-width 2. -->
+                        <svg xmlns="http://www.w3.org/2000/svg" width="19" height="19" viewBox="0 0 24 24"
+                            fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 5v14"></path>
+                            <path d="M5 12h14"></path>
+                        </svg>
                     </button>
                     <input id="attachmentInput" type="file" class="sr-only"
                         accept="image/png,image/jpeg,text/plain,text/markdown,text/csv,application/json,.txt,.md,.markdown,.csv,.json"
