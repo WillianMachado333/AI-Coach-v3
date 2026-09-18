@@ -290,14 +290,44 @@ function safePreview(str, maxLen = 220) {
 }
 
 // ---- OpenAI Realtime model selection ----
-// GA API model names (beta names like 'gpt-realtime-mini' no longer work).
+// Verified against platform.openai.com/docs/models on 2026-09 — the
+// 'gpt-4o-realtime' / 'gpt-4o-mini-realtime' names in an earlier version of
+// this comment were beta-era names that do not appear in the current GA
+// catalog at all; don't reuse them. Current v1/realtime-compatible options,
+// cheapest to priciest by audio token cost (same $/1M for input+output in
+// each pair): gpt-realtime-mini and gpt-realtime-2.1-mini ($10/$20, mini
+// tier is being superseded by the 2.1 mini but both still work);
+// gpt-realtime, gpt-realtime-1.5, and gpt-realtime-2.1 ($32/$64 — 2.1 adds
+// reasoning effort + better tool-use/instruction-following/interruption
+// handling at the same audio price, small text-token premium).
+// gpt-live-1 is NOT a drop-in option here: it's a different product (full
+// duplex, delegated backend agent) on a different endpoint (v1/live/sessions
+// instead of v1/realtime) — swapping to it needs an integration rewrite, not
+// just this env var.
 // Examples:
-//   ERICA_REALTIME_MODEL=gpt-4o-realtime
-//   REALTIME_MODEL=gpt-4o-mini-realtime
+//   ERICA_REALTIME_MODEL=gpt-realtime-2.1
+//   REALTIME_MODEL=gpt-realtime-2.1-mini
 const REALTIME_MODEL =
     process.env.ERICA_REALTIME_MODEL ||
     process.env.REALTIME_MODEL ||
     'gpt-realtime';
+
+// ---- Voice API selection: Realtime (today's default) vs GPT-Live (spike) ----
+// Comparison build for Willian to A/B by ear — context retention and voice
+// naturalness, not a production default. Config-only switch, no redeploy of
+// code needed: ERICA_VOICE_API=live flips every new connection to GPT-Live.
+// 'realtime' (default) is untouched by this — same proxy, same model
+// selection above.
+const VOICE_API = (process.env.ERICA_VOICE_API || 'realtime').toLowerCase() === 'live'
+    ? 'live'
+    : 'realtime';
+
+// Backend model GPT-Live delegates reasoning/tool-use to (Responses
+// delegation). Verified against platform.openai.com/docs/models on 2026-09:
+// gpt-5.6-terra balances quality/cost; gpt-5.6-luna is the cost-sensitive
+// option. Defaulting to terra since this build is about quality/naturalness,
+// not cost.
+const LIVE_BACKEND_MODEL = process.env.ERICA_LIVE_BACKEND_MODEL || 'gpt-5.6-terra';
 
 // ---- Preview TTS cache (filesystem) ----
 const PREVIEW_TTS_CACHE_DIR =
@@ -2882,6 +2912,112 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // GPT-Live comparison spike: same SDP-exchange shape as the Realtime
+    // proxy above, but POSTs to /v1/live/sessions with a Responses-delegation
+    // config instead of /v1/realtime/calls. See VOICE_API at top of this
+    // file. The short session.instructions text is computed client-side
+    // (it needs the selected persona, known before connecting) and passed
+    // base64-encoded in a header — the SDP body stays raw text, matching
+    // the Realtime proxy's convention above rather than mixing JSON in.
+    if (req.url.startsWith('/api/proxy/live')) {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+
+        req.on('end', async () => {
+            let apiKey = openAIKey;
+            if (!apiKey) {
+                try {
+                    await fetchOpenAIKey();
+                    apiKey = openAIKey;
+                } catch (err) {
+                    console.error('[SERVER] /api/proxy/live - OpenAI key not available:', err?.message || err);
+                }
+            }
+            if (!apiKey) {
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: 'OpenAI key not available on server' }));
+                return;
+            }
+
+            const voice = req.headers['x-erica-voice'] || 'marin';
+            let shortInstructions = 'You are a voice coaching assistant. Delegate substantive reasoning, ' +
+                'knowledge lookups, and tool use to your backend. Keep spoken replies natural, warm, and ' +
+                'concise. Always reply in the language the user is currently speaking.';
+            try {
+                const encoded = req.headers['x-erica-live-instructions'];
+                if (encoded) shortInstructions = Buffer.from(String(encoded), 'base64').toString('utf8');
+            } catch (_) { /* keep default */ }
+
+            try {
+                const openaiRes = await fetch('https://api.openai.com/v1/live/sessions', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        session: {
+                            model: 'gpt-live-1',
+                            instructions: shortInstructions,
+                            audio: { output: { voice } },
+                            delegation: {
+                                type: 'responses',
+                                responses: {
+                                    model: LIVE_BACKEND_MODEL,
+                                    // Real persona/canonical-list substance arrives moments later
+                                    // via session.update once the client's preparation fetch
+                                    // resolves — same "connect first, configure fully after"
+                                    // shape as the Realtime path. This start-up value is a safe
+                                    // generic fallback, not the real prompt.
+                                    instructions: 'Help the user with their coaching conversation. ' +
+                                        'Use the available tools to ground answers in real data. ' +
+                                        'Return concise, spoken-friendly results.',
+                                    // Tool schemas arrive via the client's session.update right
+                                    // after connecting — same "minimal at creation, real config
+                                    // pushed by the client once connected" shape as the Realtime
+                                    // proxy above (which also creates with no tools at all).
+                                    // Keeps one source of truth for tool schemas (app.js) instead
+                                    // of duplicating ~150 lines of JSON schema here.
+                                    tool_choice: 'auto',
+                                    parallel_tool_calls: true
+                                }
+                            }
+                        },
+                        transport: { type: 'webrtc', sdp: body }
+                    })
+                });
+
+                const responseText = await openaiRes.text();
+                if (openaiRes.status !== 200 && openaiRes.status !== 201) {
+                    console.error('[SERVER] /api/proxy/live - OpenAI API error:', {
+                        status: openaiRes.status,
+                        body: responseText.substring(0, 500)
+                    });
+                }
+                res.writeHead(openaiRes.status, {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+                    'Access-Control-Allow-Headers': 'Content-Type, X-Erica-Voice, X-Erica-Live-Instructions'
+                });
+                res.end(responseText);
+            } catch (error) {
+                console.error('[SERVER] /api/proxy/live - Proxy error:', error);
+                res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: error.message }));
+            }
+        });
+        return;
+    }
+
+    // Tells the client which voice API to speak (Realtime vs GPT-Live).
+    // Config-only toggle — no code redeploy needed, just ERICA_VOICE_API.
+    if (req.url.startsWith('/api/voice-mode')) {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+        res.end(JSON.stringify({ mode: VOICE_API }));
+        return;
+    }
+
     // Handle OPTIONS preflight requests
     if (req.method === 'OPTIONS') {
         res.writeHead(200, {
@@ -2924,6 +3060,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}/`);
     console.log('Press Ctrl+C to stop the server');
+    console.log(`[SERVER] Voice API: ${VOICE_API}` + (VOICE_API === 'live'
+        ? ` (model gpt-live-1, backend ${LIVE_BACKEND_MODEL})`
+        : ` (model ${REALTIME_MODEL})`));
 
     // Fetch OpenAI key on server start
     fetchOpenAIKey().catch((error) => {
