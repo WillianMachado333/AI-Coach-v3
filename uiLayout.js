@@ -1051,7 +1051,21 @@
     // textarea growth, voice-mode shrinking it, etc.), not just today's chip
     // row — and it runs always, not only while a call is open, since the
     // chat-padding half of this matters in plain text mode too.
-    let _composerResizeObserver = null;
+    // ResizeObserver looked like the obvious tool here, and shipped first —
+    // but verified directly (staging, mobile) that it never fires for this
+    // element: attached a throwaway observer on #composerBar and toggled
+    // #quickActions' hidden class (a real, confirmed height change) with it
+    // live, and the fire count stayed at zero. #composerBar is
+    // `position: fixed`, and ResizeObserver not reacting to fixed-position
+    // elements is a known engine quirk, not something to design around
+    // hoping it works on whichever browser a person happens to open Coach
+    // Studio in. MutationObserver watches attribute/child changes instead of
+    // layout boxes, which sidesteps the whole class of bug: it observes
+    // #composerBar's subtree for the specific things that change its height
+    // (quickActions' hidden class, the textarea's inline style in voice
+    // mode, attachment previews being added/removed) directly, confirmed
+    // firing in the same manual test that showed ResizeObserver silent.
+    let _composerMutationObserver = null;
     function trackComposerHeight(app) {
         const composerBar = document.getElementById('composerBar');
         const chatContainer = document.getElementById('chatContainer');
@@ -1065,9 +1079,14 @@
             }
         };
         reposition();
-        if (!_composerResizeObserver && typeof ResizeObserver === 'function') {
-            _composerResizeObserver = new ResizeObserver(reposition);
-            _composerResizeObserver.observe(composerBar);
+        if (!_composerMutationObserver && typeof MutationObserver === 'function') {
+            _composerMutationObserver = new MutationObserver(() => reposition());
+            _composerMutationObserver.observe(composerBar, {
+                attributes: true,
+                attributeFilter: ['class', 'style'],
+                childList: true,
+                subtree: true,
+            });
         }
     }
 
