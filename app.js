@@ -7746,9 +7746,43 @@ class VoiceChatBot {
                         let args = {};
                         try { args = JSON.parse(item.arguments); } catch (_) { /* leave {} */ }
                         console.log('[Erica][Live] 🔍 Function call detected:', item.name);
+                        // Remembered for the 'error' case below — the field-repro
+                        // bug (conversation dies right after a tool call submits
+                        // its result) needs to know what was in flight when the
+                        // error arrived, not just the error's own text.
+                        this._lastLiveFunctionCall = {
+                            name: item.name,
+                            call_id: item.call_id,
+                            delegation_id: message.delegation_id || null,
+                            ts: Date.now()
+                        };
                         this.executeFunction(item.name, args, item.call_id, message.delegation_id || null);
                     }
                 }
+                break;
+            }
+
+            // Temporary field-debug instrumentation (GPT-Live comparison
+            // spike only) — surfaces the FULL error payload instead of
+            // letting it fall into the default case, where devtools prints
+            // a collapsed "Object" that's not copy-pasteable from a report.
+            // Also keeps a small in-memory log (window.__ericaLiveErrors)
+            // so whoever hits this can run
+            // copy(JSON.stringify(window.__ericaLiveErrors, null, 2))
+            // and paste the result back, no devtools tree-expanding needed.
+            case 'error': {
+                const ctx = this._lastLiveFunctionCall || null;
+                const entry = {
+                    time: new Date().toISOString(),
+                    error: message.error,
+                    event_id: message.event_id,
+                    lastFunctionCall: ctx,
+                    msSinceLastFunctionCall: ctx ? Date.now() - ctx.ts : null
+                };
+                console.error('[Erica][Live] ⚠️ ERROR EVENT (full):', JSON.stringify(entry, null, 2));
+                if (!window.__ericaLiveErrors) window.__ericaLiveErrors = [];
+                window.__ericaLiveErrors.push(entry);
+                if (window.__ericaLiveErrors.length > 50) window.__ericaLiveErrors.shift();
                 break;
             }
 
