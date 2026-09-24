@@ -439,7 +439,7 @@ class VoiceChatBot {
         };
 
         this.sendMessage({
-            type: 'conversation.item.create',
+            type: this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create',
             item: {
                 type: 'message',
                 role: 'user',
@@ -2132,12 +2132,13 @@ class VoiceChatBot {
         // console.log('[Erica] Sending conversation history to OpenAI:', history.length, 'messages');
 
         // Send each message to OpenAI in the correct format
+        const itemType = this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create';
         for (const msg of history) {
             try {
                 if (msg.role === 'user') {
                     // User messages use input_text
                     this.sendMessage({
-                        type: 'conversation.item.create',
+                        type: itemType,
                         item: {
                             type: 'message',
                             role: 'user',
@@ -2153,7 +2154,7 @@ class VoiceChatBot {
                     // Assistant messages use 'text' type (not input_text or output_text)
                     // This is the format OpenAI Realtime API expects for assistant message history
                     this.sendMessage({
-                        type: 'conversation.item.create',
+                        type: itemType,
                         item: {
                             type: 'message',
                             role: 'assistant',
@@ -2168,7 +2169,7 @@ class VoiceChatBot {
                 } else if (msg.role === 'system') {
                     // System messages (e.g., summaries)
                     this.sendMessage({
-                        type: 'conversation.item.create',
+                        type: itemType,
                         item: {
                             type: 'message',
                             role: 'system',
@@ -3326,9 +3327,9 @@ class VoiceChatBot {
                 });
             });
 
-        // Send the supported attachment/text content to Realtime API.
+        // Send the supported attachment/text content to Realtime/Live API.
         this.sendMessage({
-            type: 'conversation.item.create',
+            type: this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create',
             item: {
                 type: 'message',
                 role: 'user',
@@ -6943,7 +6944,7 @@ class VoiceChatBot {
         // (only when instructions exceeded the token limit — see truncation above)
         if (this._instructionOverflow && sentOk) {
             this.sendMessage({
-                type: 'conversation.item.create',
+                type: this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create',
                 item: {
                     type: 'message',
                     role: 'system',
@@ -7067,7 +7068,7 @@ class VoiceChatBot {
         }
         console.log('[Erica] Sending opening line prompt as user message:', this.openingLinePrompt);
         this.sendMessage({
-            type: 'conversation.item.create',
+            type: this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create',
             item: {
                 type: 'message',
                 role: 'user',
