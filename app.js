@@ -7741,7 +7741,28 @@ class VoiceChatBot {
             case 'response.event': {
                 const inner = message.event;
                 if (!inner) break;
-                if (inner.type === 'response.output_item.done') {
+
+                // Delegated text reply streaming in. Reuses the same
+                // _liveBotItemId/_liveBotTranscript accumulator as
+                // session.output_transcript.delta (native voice turns) —
+                // the two never fire for the same turn, so sharing state
+                // is safe. Previously this whole branch was missing: the
+                // delegation completed correctly (response.completed and
+                // all) but nothing ever called updateBotMessage, so the
+                // reply arrived over the wire and was silently dropped —
+                // no error, no log, no chat bubble.
+                if (inner.type === 'response.output_text.delta' && typeof inner.delta === 'string') {
+                    if (typeof this.hideLoader === 'function') this.hideLoader();
+                    if (!this._liveBotItemId) this._liveBotItemId = `live-bot-${Date.now()}`;
+                    this._liveBotTranscript = (this._liveBotTranscript || '') + inner.delta;
+                    this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, false, Date.now());
+                } else if (inner.type === 'response.output_text.done' || inner.type === 'response.completed') {
+                    if (this._liveBotItemId) {
+                        this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, true, Date.now());
+                        this._liveBotItemId = null;
+                        this._liveBotTranscript = '';
+                    }
+                } else if (inner.type === 'response.output_item.done') {
                     const item = inner.item;
                     if (item && item.type === 'function_call' && item.name && typeof item.arguments === 'string') {
                         let args = {};
