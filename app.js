@@ -7685,6 +7685,24 @@ class VoiceChatBot {
     // deltas in flight at once (true full duplex), so there's no single
     // "turn boundary" event to key off — a caption is finalized after
     // ~1.5s with no new deltas for that speaker, whichever ends first.
+    // Live counterpart of the two Realtime ungate points in handleMessage()
+    // (conversation.item.input_audio_transcription.delta and response.created).
+    // startRecording() closes audioOutputGate, and those Realtime-only events
+    // were the only things that ever reopened it — Live never sends them, so
+    // in call mode remoteAudio stayed muted+paused while RTP audio arrived
+    // fine (field sample: bytes rising, track unmuted, element muted+paused).
+    // Same conditions as Realtime: only in call mode, only under the limit.
+    _ungateLiveAudio(reason) {
+        if (!this.audioOutputGate || !this.isRecording) return;
+        if (!this.checkVoiceLimit()) {
+            console.log('[Erica][Live] Keeping audio gated — voice limit reached');
+            return;
+        }
+        console.log('[Erica][Live] 🔊 UNGATE audio:', reason);
+        this.audioOutputGate = false;
+        this.setCallAudioEnabled(true);
+    }
+
     handleLiveMessage(message) {
         switch (message.type) {
             case 'session.started':
@@ -7708,6 +7726,7 @@ class VoiceChatBot {
 
             case 'session.input_transcript.delta':
                 if (typeof message.delta !== 'string') break;
+                this._ungateLiveAudio('input_transcript');
                 if (!this._liveUserItemId) this._liveUserItemId = `live-user-${Date.now()}`;
                 this._liveUserTranscript = (this._liveUserTranscript || '') + message.delta;
                 this.updateUserMessage(this._liveUserItemId, this._liveUserTranscript, false, Date.now());
@@ -7721,6 +7740,7 @@ class VoiceChatBot {
 
             case 'session.output_transcript.delta':
                 if (typeof message.delta !== 'string') break;
+                this._ungateLiveAudio('output_transcript');
                 if (typeof this.hideLoader === 'function') this.hideLoader();
                 if (!this._liveBotItemId) this._liveBotItemId = `live-bot-${Date.now()}`;
                 this._liveBotTranscript = (this._liveBotTranscript || '') + message.delta;
@@ -7742,52 +7762,32 @@ class VoiceChatBot {
                 const inner = message.event;
                 if (!inner) break;
 
-                // Delegated text reply streaming in. Reuses the same
-                // _liveBotItemId/_liveBotTranscript accumulator as
-                // session.output_transcript.delta (native voice turns) —
-                // the two never fire for the same turn, so sharing state
-                // is safe. Previously this whole branch was missing: the
-                // delegation completed correctly (response.completed and
-                // all) but nothing ever called updateBotMessage, so the
-                // reply arrived over the wire and was silently dropped —
-                // no error, no log, no chat bubble.
+                // Delegated (backend) text. Kept in its own accumulator, not
+                // the voice transcript's: in a real call GPT-Live speaks a
+                // filler ("Sure, I can do that.") while the backend works,
+                // so the two streams interleave in the same turn — sharing
+                // state split the filler into two bubbles and duplicated
+                // the answer. In call mode the spoken transcript IS the
+                // reply (Responses delegation hands the result to the voice
+                // layer, which says it), so the backend text is only logged.
+                // Outside call mode Live emits no audio at all, so the
+                // backend text is the only reply and must render.
                 if (inner.type === 'response.output_text.delta' && typeof inner.delta === 'string') {
-                    if (typeof this.hideLoader === 'function') this.hideLoader();
-                    if (!this._liveBotItemId) this._liveBotItemId = `live-bot-${Date.now()}`;
-                    this._liveBotTranscript = (this._liveBotTranscript || '') + inner.delta;
-                    this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, false, Date.now());
-                } else if (inner.type === 'response.output_text.done' || inner.type === 'response.completed') {
-                    if (this._liveBotItemId) {
-                        const finalText = this._liveBotTranscript;
-                        this.updateBotMessage(this._liveBotItemId, finalText, true, Date.now());
-                        this._liveBotItemId = null;
-                        this._liveBotTranscript = '';
-
-                        // A completed delegation is NOT itself heard by the
-                        // user — per OpenAI's docs, "Live speech and
-                        // delegated work continue independently." Rendering
-                        // the text (above) only fixed the chat bubble; the
-                        // voice layer needs an explicit session.commentary.append
-                        // to actually speak it. This was the real cause of
-                        // "no audio in call mode" — the delegation was
-                        // completing fine, GPT-Live was just never told to
-                        // say anything about it. Cap ~500 tokens (~2000 chars)
-                        // per the docs' append limit.
-                        //
-                        // delegation_id here must be null: per the docs, that
-                        // field identifies a CLIENT delegation task, and we
-                        // run Responses delegation — passing the response's
-                        // own delegation_id gets "Unknown client delegation"
-                        // (confirmed live). null == general session context,
-                        // which is what we want: just speak this answer.
-                        if (finalText && finalText.trim()) {
-                            this.sendMessage({
-                                type: 'session.commentary.append',
-                                delegation_id: null,
-                                content: finalText.length > 1800 ? finalText.slice(0, 1800) : finalText
-                            });
-                        }
+                    this._liveDelegatedText = (this._liveDelegatedText || '') + inner.delta;
+                    if (!this.isRecording) {
+                        if (typeof this.hideLoader === 'function') this.hideLoader();
+                        if (!this._liveDelegatedItemId) this._liveDelegatedItemId = `live-deleg-${Date.now()}`;
+                        this.updateBotMessage(this._liveDelegatedItemId, this._liveDelegatedText, false, Date.now());
                     }
+                } else if (inner.type === 'response.output_text.done' || inner.type === 'response.completed') {
+                    const text = this._liveDelegatedText || '';
+                    if (this._liveDelegatedItemId) {
+                        this.updateBotMessage(this._liveDelegatedItemId, text, true, Date.now());
+                    } else if (text.trim()) {
+                        console.log('[Erica][Live] delegated text not rendered (call mode — spoken transcript is the reply):', text.slice(0, 160));
+                    }
+                    this._liveDelegatedItemId = null;
+                    this._liveDelegatedText = '';
                 } else if (inner.type === 'response.output_item.done') {
                     const item = inner.item;
                     if (item && item.type === 'function_call' && item.name && typeof item.arguments === 'string') {
