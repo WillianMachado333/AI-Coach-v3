@@ -7758,9 +7758,35 @@ class VoiceChatBot {
                     this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, false, Date.now());
                 } else if (inner.type === 'response.output_text.done' || inner.type === 'response.completed') {
                     if (this._liveBotItemId) {
-                        this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, true, Date.now());
+                        const finalText = this._liveBotTranscript;
+                        this.updateBotMessage(this._liveBotItemId, finalText, true, Date.now());
                         this._liveBotItemId = null;
                         this._liveBotTranscript = '';
+
+                        // A completed delegation is NOT itself heard by the
+                        // user — per OpenAI's docs, "Live speech and
+                        // delegated work continue independently." Rendering
+                        // the text (above) only fixed the chat bubble; the
+                        // voice layer needs an explicit session.commentary.append
+                        // to actually speak it. This was the real cause of
+                        // "no audio in call mode" — the delegation was
+                        // completing fine, GPT-Live was just never told to
+                        // say anything about it. Cap ~500 tokens (~2000 chars)
+                        // per the docs' append limit.
+                        //
+                        // delegation_id here must be null: per the docs, that
+                        // field identifies a CLIENT delegation task, and we
+                        // run Responses delegation — passing the response's
+                        // own delegation_id gets "Unknown client delegation"
+                        // (confirmed live). null == general session context,
+                        // which is what we want: just speak this answer.
+                        if (finalText && finalText.trim()) {
+                            this.sendMessage({
+                                type: 'session.commentary.append',
+                                delegation_id: null,
+                                content: finalText.length > 1800 ? finalText.slice(0, 1800) : finalText
+                            });
+                        }
                     }
                 } else if (inner.type === 'response.output_item.done') {
                     const item = inner.item;
@@ -7780,6 +7806,15 @@ class VoiceChatBot {
                         };
                         this.executeFunction(item.name, args, item.call_id, message.delegation_id || null);
                     }
+                } else {
+                    // Anything not explicitly handled above (response.created,
+                    // response.in_progress, content_part.added/.done,
+                    // function_call_arguments.delta/.done, output_item.added,
+                    // and any nested type OpenAI adds later) is expected and
+                    // inert — logged so a genuinely new silent-drop is
+                    // visible instead of invisible, per the text-rendering
+                    // bug this same envelope hid for days.
+                    console.log('[Erica][Live] response.event (unhandled inner):', inner.type, inner);
                 }
                 break;
             }
