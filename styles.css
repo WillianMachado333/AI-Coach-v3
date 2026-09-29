@@ -326,6 +326,21 @@
     opacity: 1;
 }
 
+/* 44x44 tap target; fits the pill's 48px inner height, so the pill doesn't grow. */
+.send-text-button {
+    align-items: center;
+    border-radius: 9999px;
+    display: flex;
+    flex: 0 0 auto;
+    height: 44px;
+    justify-content: center;
+    width: 44px;
+}
+
+.send-text-button.hidden {
+    display: none;
+}
+
 .send-text-button:hover {
     background: rgb(121, 203, 212, 0.1);
 }
@@ -345,26 +360,79 @@
     background: rgba(220, 38, 38, .10);
 }
 
-/* Voice mode keeps text available without allowing an inactive composer to
-   consume the full lower chat area. The call FAB remains a separate action.
-   `justify-content: flex-end` used to sit here — it pushed the whole row
-   (attach button, shrunk text pill, mic, call button) to the right edge,
-   leaving a dead gap on the left instead of the ordinary left-anchored
-   layout. That's the reported "composer alignment fights itself in voice
-   mode" bug: reproduced by toggling this class with no override, the row
-   sat flush right instead of flush left like every other state of this
-   composer. The row's default (flex-start) layout is correct here — only
-   the input pill needs to shrink, not the whole row's anchor. */
-#inputWrapper.voice-mode-active > div:first-child {
-    flex: 0 1 clamp(150px, 34vw, 240px);
-    width: clamp(150px, 34vw, 240px);
+/* Call mode swaps what's INSIDE the pill and nothing around it: same row,
+   same pill width and height, same #composerBar height, same chat bottom
+   padding. Shrinking the pill and floating a separate controls panel above
+   the composer made the whole bottom of the screen jump on every toggle. */
+#inputWrapper.voice-mode-active #userTextInput,
+#inputWrapper.voice-mode-active #dictationBtn {
+    display: none;
 }
 
-#inputWrapper.voice-mode-active #userTextInput {
-    min-height: 32px !important;
-    padding-top: 6px !important;
-    padding-bottom: 6px !important;
+.call-controls {
+    align-items: center;
+    display: flex;
+    flex: 1 1 auto;
+    gap: 4px;
+    /* The textarea's one-row height, so the pill doesn't change size. */
+    height: 48px;
+    min-width: 0;
+}
+
+.call-controls.hidden {
+    display: none;
+}
+
+.call-control-btn {
+    align-items: center;
+    border-radius: 9999px;
+    display: flex;
+    flex: 0 0 auto;
+    height: 44px;
+    justify-content: center;
+    transition: background-color 0.15s, color 0.15s;
+    width: 44px;
+}
+
+.call-control-btn:hover {
+    background: rgba(15, 23, 42, 0.05);
+}
+
+.call-status {
+    align-items: center;
+    color: #64748b;
+    display: flex;
     font-size: 13px;
+    gap: 6px;
+    margin-left: auto;
+    overflow: hidden;
+    padding-right: 12px;
+    white-space: nowrap;
+}
+
+.call-status-dot {
+    animation: call-status-pulse 1.6s ease-in-out infinite;
+    background: #14b8a6;
+    border-radius: 9999px;
+    flex: 0 0 auto;
+    height: 8px;
+    width: 8px;
+}
+
+@keyframes call-status-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .call-status-dot { animation: none; }
+}
+
+/* In a call the round button stays exactly where it is and becomes End call
+   (same handler: toggleMicTrack() stops an active call; .mic-active paints
+   it red). The handset tilts down, the usual hang-up glyph. */
+#micToggleBtn.call-active #micIcon {
+    transform: rotate(135deg) scale(var(--mic-scale));
 }
 
 /* The newest streamed phrase gets a quiet reading cue. The marker is made
@@ -385,13 +453,6 @@
     .streaming-highlight { transition: none; }
 }
 
-@media (max-width: 520px) {
-    #inputWrapper.voice-mode-active > div:first-child {
-        flex-basis: min(220px, calc(100vw - 84px));
-        width: min(220px, calc(100vw - 84px));
-    }
-}
-
 #chatContainer::-webkit-scrollbar-thumb {
     background-color: rgba(0, 0, 0, 0.1);
     border-radius: 20px;
@@ -407,12 +468,6 @@ textarea:focus {
 #chatContainer a {
     overflow-wrap: anywhere;
     word-break: break-word;
-}
-
-/* When the in-call control panel is open, give the chat extra bottom space so the last message isn't hidden */
-#chatContainer.call-panel-open {
-    padding-bottom: 13rem !important;
-    scroll-padding-bottom: 13rem;
 }
 
 #chatContainer {

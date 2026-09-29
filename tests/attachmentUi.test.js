@@ -22,8 +22,8 @@ test('the photo picker offers the library, not only the camera', () => {
 
 test('attach and remove controls are at least 44px tap targets', () => {
     const css = read('styles.css');
-    const block = (selector) => css.match(new RegExp(selector.replace(/[.]/g, '\\.') + '\\s*\\{([^}]*)\\}'))[1];
-    for (const selector of ['.attachment-button', '.attachment-tile-remove']) {
+    const block = (selector) => css.match(new RegExp('^' + selector.replace(/[.]/g, '\\.') + '\\s*\\{([^}]*)\\}', 'm'))[1];
+    for (const selector of ['.attachment-button', '.attachment-tile-remove', '.send-text-button', '.call-control-btn']) {
         const rules = block(selector);
         assert.match(rules, /width:\s*44px/, selector);
         assert.match(rules, /height:\s*44px/, selector);
