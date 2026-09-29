@@ -2170,10 +2170,13 @@ const server = http.createServer(async (req, res) => {
                 // Deterministic on the strongest available identifier so a
                 // reconnect within the same browser reuses the same file
                 // instead of piling up empty NDJSONs.
+                // One session per page visit (#27): the client sends the id it
+                // already holds so a reconnect within the page resumes it.
                 const sessionId = sessionLog.startSession({
                     email, userId, objectId,
                     caller: requestData.caller || null,
-                    url: req.headers.referer || null
+                    url: req.headers.referer || null,
+                    resumeSessionId: typeof requestData.sessionId === 'string' ? requestData.sessionId : null
                 });
 
                 // Check cache first
