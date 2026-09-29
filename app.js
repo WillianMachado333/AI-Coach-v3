@@ -4647,6 +4647,10 @@ class VoiceChatBot {
             this.stopRecording();
         }
 
+        // Cost metering: last Live seconds + this connection's minutes, before
+        // the channel that carried them goes away.
+        this._flushUsageOnDisconnect('disconnect');
+
         // GPT-Live: ask for a graceful close so the server finalizes usage
         // cleanly. Best-effort only — not waiting for session.closed here,
         // this is the comparison spike's disconnect path, not a billing-
@@ -7920,10 +7924,180 @@ class VoiceChatBot {
         this.setCallAudioEnabled(true);
     }
 
+    // ---- Usage metering: what this session costs at OpenAI ----------------
+    // Every usage figure the APIs report is POSTed to /api/session-log as
+    // kind 'usage' with the API's own field names and priced server-side
+    // (lib/usageCost.js). Nothing is summed here — the shapes differ and the
+    // server knows which is which from `source`:
+    //   Realtime  response.done                → per-response token usage
+    //   Realtime  input_audio_transcription.completed → whisper-1 minutes
+    //   GPT-Live  session.usage.updated/closed  → CUMULATIVE voice seconds
+    //   GPT-Live  response.event→response.completed → backend tokens, per response
+    _usageMeterState() {
+        if (!this._usageMeter) {
+            this._usageMeter = {
+                connectionId: null, connectedAt: null,
+                lastLiveSeconds: null, lastLiveSentAt: 0, liveSecondsPending: null,
+                realtimeModel: null, liveModel: null, backendModel: null,
+                warnedNoSession: false,
+            };
+            // A tab closed mid-call would otherwise lose up to a minute of
+            // Live seconds (usage.updated cadence); keepalive survives pagehide.
+            try { window.addEventListener('pagehide', () => this._flushUsageOnDisconnect('pagehide')); } catch (_) { /* non-browser */ }
+        }
+        return this._usageMeter;
+    }
+
+    _usageBeginConnection() {
+        const m = this._usageMeterState();
+        if (!m.connectionId) {
+            m.connectionId = 'c-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+            m.connectedAt = Date.now();
+            m.lastLiveSeconds = null; m.lastLiveSentAt = 0; m.liveSecondsPending = null;
+            // Server-configured model names, as a fallback for snapshots
+            // that arrive before/without a session.* event naming them.
+            if (!this._usageModelInfoPromise) {
+                this._usageModelInfoPromise = fetch(this.apiUrl('/api/voice-mode'))
+                    .then((r) => (r.ok ? r.json() : {}))
+                    .then((info) => { this._usageModelInfo = info || {}; return this._usageModelInfo; })
+                    .catch(() => ({}));
+            }
+        }
+        return m;
+    }
+
+    _captureRealtimeSessionModel(message) {
+        const m = this._usageBeginConnection();
+        const model = message && message.session && message.session.model;
+        if (model) m.realtimeModel = model;
+    }
+
+    _captureLiveSessionModels(session) {
+        const m = this._usageBeginConnection();
+        if (session && session.model) m.liveModel = session.model;
+        const backend = session && session.delegation && session.delegation.responses && session.delegation.responses.model;
+        if (backend) m.backendModel = backend;
+    }
+
+    _postUsage(snapshot) {
+        const m = this._usageBeginConnection();
+        if (!this.sessionId) {
+            // Loud, once: this connection's cost will be under-counted.
+            if (!m.warnedNoSession) {
+                m.warnedNoSession = true;
+                console.warn('[Erica][usage] snapshot dropped — no sessionId; cost for this connection is incomplete:', snapshot.source);
+            }
+            return;
+        }
+        const info = this._usageModelInfo || {};
+        const voiceMode = this.voiceApiMode || info.mode || 'realtime';
+        const body = {
+            sessionId: this.sessionId,
+            kind: 'usage',
+            voiceMode,
+            connectionId: m.connectionId,
+            sessionMinutes: m.connectedAt ? Math.round(((Date.now() - m.connectedAt) / 60000) * 100) / 100 : null,
+            t: new Date().toISOString(),
+            ...snapshot,
+        };
+        if (!body.model) {
+            if (snapshot.source === 'response.done') body.model = m.realtimeModel || info.model || null;
+            else if (snapshot.source === 'response.completed') body.model = m.backendModel || info.backendModel || null;
+            else if (snapshot.source === 'input_audio_transcription.completed') body.model = 'whisper-1';
+            else if (voiceMode === 'live') body.model = m.liveModel || info.liveModel || 'gpt-live-1';
+            else body.model = m.realtimeModel || info.model || null;
+        }
+        if (!body.backendModel && voiceMode === 'live') body.backendModel = m.backendModel || info.backendModel || null;
+        fetch(this.apiUrl('/api/session-log'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            keepalive: true,
+        }).then((res) => {
+            if (!res.ok) console.warn('[Erica][usage] snapshot rejected by server:', res.status, snapshot.source);
+        }).catch((e) => {
+            console.warn('[Erica][usage] snapshot POST failed:', e && e.message ? e.message : e, snapshot.source);
+        });
+    }
+
+    // Realtime: one snapshot per response — each response.done carries its own usage.
+    _recordRealtimeResponseUsage(message) {
+        const response = message && message.response;
+        if (!response) return;
+        if (!response.usage) {
+            console.warn('[Erica][usage] response.done without usage — this response is not metered:', response.id);
+            return;
+        }
+        this._postUsage({ source: 'response.done', responseId: response.id || null, status: response.status || null, usage: response.usage });
+    }
+
+    // Realtime: input transcription is a separate meter (whisper-1, per minute of audio).
+    _recordRealtimeTranscriptionUsage(message) {
+        if (!message || !message.usage) return;
+        this._postUsage({ source: 'input_audio_transcription.completed', itemId: message.item_id || null, model: 'whisper-1', usage: message.usage });
+    }
+
+    // GPT-Live: cumulative voice seconds. One POST per ≥10 s unless forced
+    // (session.closed / disconnect always go out); unchanged values are skipped.
+    _recordLiveSeconds(message, source, { force = false } = {}) {
+        const usage = message && message.usage;
+        if (!usage || typeof usage.seconds !== 'number') return;
+        const m = this._usageBeginConnection();
+        m.liveSecondsPending = usage.seconds;
+        const now = Date.now();
+        if (!force && m.lastLiveSeconds === usage.seconds) return;
+        if (!force && now - m.lastLiveSentAt < 10000) return;
+        m.lastLiveSeconds = usage.seconds;
+        m.lastLiveSentAt = now;
+        m.liveSecondsPending = null;
+        this._postUsage({
+            source,
+            usage: { seconds: usage.seconds },
+            reason: message.reason || undefined,
+            context_window: message.context_window || undefined,
+        });
+    }
+
+    // GPT-Live: the delegated backend's tokens, one snapshot per Responses response.
+    _recordLiveBackendUsage(inner, delegationId) {
+        const response = inner && inner.response;
+        if (!response) return;
+        if (!response.usage) {
+            console.warn('[Erica][usage] response.completed without usage — backend tokens not metered:', response.id);
+            return;
+        }
+        const m = this._usageBeginConnection();
+        if (response.model) m.backendModel = response.model;
+        this._postUsage({
+            source: 'response.completed',
+            responseId: response.id || null,
+            delegationId: delegationId || null,
+            model: response.model || null,
+            usage: response.usage,
+        });
+    }
+
+    // Disconnect / pagehide: push any Live seconds not yet sent, mark the
+    // connection's end (its wall-clock minutes), and close the clock so a
+    // reconnect starts a fresh connection.
+    _flushUsageOnDisconnect(reason = 'disconnect') {
+        const m = this._usageMeter;
+        if (!m || !m.connectionId) return;
+        const pending = this.voiceApiMode === 'live' && m.liveSecondsPending !== null ? m.liveSecondsPending : null;
+        if (pending !== null) {
+            this._recordLiveSeconds({ usage: { seconds: pending }, reason }, 'disconnect', { force: true });
+        } else if (reason === 'disconnect') {
+            this._postUsage({ source: 'disconnect', usage: null, reason });
+        }
+        m.connectionId = null;
+        m.connectedAt = null;
+    }
+
     handleLiveMessage(message) {
         switch (message.type) {
             case 'session.started':
                 console.log('[Erica][Live] session.started', message.session?.id);
+                this._captureLiveSessionModels(message.session);
                 this._resetLiveTurnGate();
                 this.configureLiveSession();
                 if (typeof this.hideLoader === 'function') this.hideLoader();
@@ -7938,8 +8112,14 @@ class VoiceChatBot {
                 this._sendPendingTextMessage();
                 break;
 
+            case 'session.usage.updated':
+                // Cumulative seconds + context-window ratio, ~once a minute.
+                this._recordLiveSeconds(message, 'session.usage.updated');
+                break;
+
             case 'session.closed':
-                console.log('[Erica][Live] session.closed — final usage:', message.usage);
+                console.log('[Erica][Live] session.closed — final usage:', message.usage, 'reason:', message.reason);
+                this._recordLiveSeconds(message, 'session.closed', { force: true });
                 break;
 
             case 'session.input_transcript.delta':
@@ -7990,6 +8170,7 @@ class VoiceChatBot {
             case 'response.event': {
                 const inner = message.event;
                 if (!inner) break;
+                if (inner.type === 'response.completed') this._recordLiveBackendUsage(inner, message.delegation_id || null);
                 this._onLiveResponseEvent(inner, message.delegation_id || null);
                 // When each delegation began: the voice layer may start saying
                 // the answer (from a tool result) before the backend's text.
@@ -8103,6 +8284,13 @@ class VoiceChatBot {
 
     handleMessage(message) {
         switch (message.type) {
+            case 'session.created':
+            case 'session.updated':
+                // Names the Realtime model actually serving this connection
+                // (fixed at SDP time in server.js) — what usage gets priced as.
+                this._captureRealtimeSessionModel(message);
+                break;
+
             case 'input_audio_buffer.speech_started':
                 // Capture the timestamp when user STARTS speaking
                 // This is the correct moment to timestamp the message, not when transcript arrives
@@ -8237,6 +8425,7 @@ class VoiceChatBot {
                 break;
 
             case 'conversation.item.input_audio_transcription.completed':
+                this._recordRealtimeTranscriptionUsage(message);
                 /* console.log('[Erica] Received input_audio_transcription.completed:', {
                     hasItem: !!message.item,
                     hasTranscript: !!message.item?.transcript,
@@ -8655,6 +8844,9 @@ class VoiceChatBot {
                 break;
 
             case 'response.done':
+                // Metered before any early return below: suppressed/preview
+                // responses cost money too.
+                this._recordRealtimeResponseUsage(message);
                 // Response finished - hide loader (safeguard)
                 if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
                     window.uiLayout.setWaitingState(this, false);

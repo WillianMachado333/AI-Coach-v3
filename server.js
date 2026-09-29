@@ -332,6 +332,22 @@ const VOICE_API = (process.env.ERICA_VOICE_API || 'realtime').toLowerCase() === 
 // not cost.
 const LIVE_BACKEND_MODEL = process.env.ERICA_LIVE_BACKEND_MODEL || 'gpt-5.6-terra';
 
+// Cost metering (/api/session-log kind 'usage'): the client names the model
+// it saw in session.created / session.started; when it could not, the
+// server's own configuration is the fallback — marked modelSource:
+// 'server-config' on the stored line so a mismatch is visible, not hidden.
+function defaultUsageModel(snapshot) {
+    switch (snapshot && snapshot.source) {
+        case 'response.done': return REALTIME_MODEL;
+        case 'response.completed': return LIVE_BACKEND_MODEL;
+        case 'input_audio_transcription.completed': return 'whisper-1';
+        case 'session.usage.updated':
+        case 'session.closed': return 'gpt-live-1';
+        case 'disconnect': return snapshot.voiceMode === 'live' ? 'gpt-live-1' : REALTIME_MODEL;
+        default: return null;
+    }
+}
+
 // ---- Preview TTS cache (filesystem) ----
 const PREVIEW_TTS_CACHE_DIR =
     process.env.ERICA_PREVIEW_TTS_CACHE_DIR ||
@@ -616,6 +632,8 @@ const server = http.createServer(async (req, res) => {
     //   kind='bot_turn'   { text, promptSnapshot? }
     //   kind='tool_call'  { name, args, result, error, ms }
     //   kind='event'      { name, meta }
+    //   kind='usage'      { source, voiceMode, model, backendModel, connectionId,
+    //                       responseId|itemId, usage (API field names), sessionMinutes }
     if (req.url === '/api/session-log' && req.method === 'POST') {
         let body = '';
         req.on('data', (c) => { body += c.toString(); });
@@ -645,6 +663,13 @@ const server = http.createServer(async (req, res) => {
                         sessionLog.logToolCall(sid, {
                             name: p.name, args: p.args, result: p.result, error: p.error, ms: p.ms
                         });
+                        break;
+                    case 'usage':
+                        sessionLog.logUsage(sid, Object.assign({}, p, {
+                            model: p.model || defaultUsageModel(p),
+                            modelSource: p.model ? 'client' : 'server-config',
+                            backendModel: p.backendModel || (p.voiceMode === 'live' ? LIVE_BACKEND_MODEL : null)
+                        }));
                         break;
                     case 'event':
                     default:
@@ -3035,7 +3060,14 @@ const server = http.createServer(async (req, res) => {
     // Config-only toggle — no code redeploy needed, just ERICA_VOICE_API.
     if (req.url.startsWith('/api/voice-mode')) {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        res.end(JSON.stringify({ mode: VOICE_API }));
+        // Model names ride along so usage snapshots can be priced even when
+        // the session events did not name them (cost metering, lib/usageCost.js).
+        res.end(JSON.stringify({
+            mode: VOICE_API,
+            model: REALTIME_MODEL,
+            liveModel: 'gpt-live-1',
+            backendModel: LIVE_BACKEND_MODEL
+        }));
         return;
     }
 
