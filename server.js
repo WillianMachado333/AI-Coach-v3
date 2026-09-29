@@ -2238,6 +2238,9 @@ const server = http.createServer(async (req, res) => {
                         age: Math.round((now - cached.ts) / 1000) + 's',
                         ttl: Math.round(cachedTtl / 1000) + 's'
                     });
+                    if (cached.fallback) {
+                        sessionLog.logEvent(sessionId, { name: 'prep_fallback', meta: { reason: 'cached', upstreamStatus: cached.upstreamStatus || null, ageS: Math.round((now - cached.ts) / 1000) } });
+                    }
 
                     const responseHeaders = {
                         'Content-Type': cached.headers['content-type'] || 'application/json',
@@ -2320,7 +2323,7 @@ const server = http.createServer(async (req, res) => {
                         // FALLBACK: If upstream API returns non-200, use local fallback file
                         if (statusCode !== 200) {
                             console.warn(`[SERVER] /api/erica-preparation - Upstream returned ${statusCode}, attempting fallback...`);
-                            servePrepFallback(res, cacheKey, now, sessionId);
+                            servePrepFallback(res, cacheKey, now, sessionId, { reason: 'upstream_status', upstreamStatus: statusCode });
                             return;
                         }
 
@@ -2364,7 +2367,7 @@ const server = http.createServer(async (req, res) => {
                 externalReq.on('error', (error) => {
                     console.error('[SERVER] /api/erica-preparation - Upstream request error:', error);
                     // FALLBACK: On network error, use local fallback file
-                    servePrepFallback(res, cacheKey, now, sessionId);
+                    servePrepFallback(res, cacheKey, now, sessionId, { reason: 'upstream_error', error: error?.code || error?.message || null });
                 });
 
                 externalReq.write(postData, 'utf8');
@@ -2373,7 +2376,7 @@ const server = http.createServer(async (req, res) => {
                 console.error('[SERVER] /api/erica-preparation - Handler error:', error);
                 // FALLBACK: On handler error, try fallback
                 const cacheKeyFallback = getPrepCacheKey(req.userId, req.email);
-                servePrepFallback(res, cacheKeyFallback, Date.now(), prepSessionId);
+                servePrepFallback(res, cacheKeyFallback, Date.now(), prepSessionId, { reason: 'handler_error', error: error?.message || null });
             }
         });
 
@@ -2393,17 +2396,23 @@ const server = http.createServer(async (req, res) => {
     // `sessionId`: the visit the handler already opened. The client needs it
     // here too, or it invents an s-c- id and the visit's events land apart
     // from its actor/identity in the Studio.
-    function servePrepFallback(res, cacheKey, now, sessionId) {
+    // `why`: { reason: upstream_status | upstream_error | handler_error,
+    // upstreamStatus?, error? }. The visit records a prep_fallback event:
+    // Erica ran without this person's preparation, and the Studio says so.
+    function servePrepFallback(res, cacheKey, now, sessionId, why = {}) {
         const fallbackPath = path.join(__dirname, 'ericaPreparationFallBack.txt');
+        const meta = { reason: why.reason || 'unknown', upstreamStatus: why.upstreamStatus || null, error: why.error ? String(why.error).slice(0, 200) : null, cached: false };
         fs.readFile(fallbackPath, 'utf8', (err, data) => {
             if (err) {
                 console.error('[SERVER] ❌ /api/erica-preparation - Fallback file error:', err.message);
+                sessionLog.logEvent(sessionId, { name: 'prep_fallback', meta: { ...meta, fallbackMissing: true } });
                 res.writeHead(503, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
                 res.end(JSON.stringify({ error: 'Service Unavailable (Upstream failed and fallback missing)' }));
                 return;
             }
 
-            console.warn('[SERVER] 🛡️ /api/erica-preparation - Serving fallback response for:', cacheKey, { sessionId: sessionId || null, cachedFor: Math.round(PREP_CACHE_FALLBACK_TTL_MS / 1000) + 's' });
+            console.warn('[SERVER] 🛡️ /api/erica-preparation - Serving fallback response for:', cacheKey, { sessionId: sessionId || null, reason: meta.reason, upstreamStatus: meta.upstreamStatus, cachedFor: Math.round(PREP_CACHE_FALLBACK_TTL_MS / 1000) + 's' });
+            sessionLog.logEvent(sessionId, { name: 'prep_fallback', meta });
 
             // Cache the fallback briefly (see PREP_CACHE_FALLBACK_TTL_MS): a
             // reload burst doesn't re-hit Wix, recovery shows within seconds.
@@ -2412,7 +2421,8 @@ const server = http.createServer(async (req, res) => {
                 data: data,
                 statusCode: 200,
                 headers: { 'content-type': 'application/json' },
-                fallback: true
+                fallback: true,
+                upstreamStatus: meta.upstreamStatus
             });
 
             res.writeHead(200, {
