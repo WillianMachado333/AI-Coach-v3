@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-09-29T02:00-icon-persona';
+    var VERSION = '2026-09-29T06:00-host-events';
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -99,6 +99,115 @@
     var IFRAME_ID = 'ct-bridge-iframe';
 
     var state = 'icon'; // 'icon' | 'expanded'
+
+    // --- CleverTap event pings (HOST_EVENT) ---
+    // The site already tells CleverTap where the user goes ("Visited Article
+    // Page", "Visited My Journey Page", …). A copy of the navigation/action
+    // ones goes to the coach so Erica knows where the user is without
+    // looking. clevertap.event.push is wrapped, never replaced: the original
+    // runs first and nothing here can make it fail. Only a few safe props
+    // travel (page path, article/quiz/page title, CTA text) — never Email,
+    // WixUserId or anything else CleverTap receives.
+    var HOST_EVENT_DENY = [/^ads\b/i, /^web_/i, /ai coach|erica|persona|coaching style|voice/i];
+    var HOST_EVENT_ALLOW = [/^visi?s?ted\b/i, /quiz/i, /^clicked\b/i, /\bcta\b/i, /^(started|completed|finished|submitted)\b/i];
+    var HOST_EVENT_PROPS = {
+        article: ['ArticleName', 'Article Name'],
+        quiz: ['QuizName', 'Quiz Name', 'Quiz'],
+        title: ['PageName', 'Page Name', 'PageTitle'],
+        cta: ['CTA', 'Cta', 'ButtonText', 'Button Text', 'Button Name']
+    };
+    var hostEventsReady = false; // the coach says so (HOST_EVENTS_READY)
+    var hostEventQueue = [];
+    var hostEventLast = {};
+    var hostEventTimes = [];
+    var hostEventUnknown = {};
+
+    function hostEventFrom(name, props) {
+        if (typeof name !== 'string' || !name.trim()) return null;
+        name = name.replace(/\s+/g, ' ').trim().slice(0, 80);
+        var denied = HOST_EVENT_DENY.some(function (re) { return re.test(name); });
+        if (denied || !HOST_EVENT_ALLOW.some(function (re) { return re.test(name); })) {
+            if (!hostEventUnknown[name]) {
+                hostEventUnknown[name] = true;
+                console.log('[CTBridge] CleverTap event not forwarded (not on the allowlist):', name);
+            }
+            return null;
+        }
+        var safe = {};
+        var raw = props && typeof props === 'object' ? props : {};
+        Object.keys(HOST_EVENT_PROPS).forEach(function (key) {
+            HOST_EVENT_PROPS[key].some(function (source) {
+                var value = raw[source];
+                if (typeof value === 'string' && value.trim()) { safe[key] = value.trim().slice(0, 100); return true; }
+                return false;
+            });
+        });
+        // A path, never a full URL: no query string (tokens, emails) leaves.
+        var page = window.location.pathname;
+        try { if (typeof raw.SourcePage === 'string') page = new URL(raw.SourcePage, window.location.href).pathname; } catch (_) {}
+        safe.page = String(page || '/').slice(0, 120);
+        return { type: 'HOST_EVENT', name: name, props: safe, ts: Date.now() };
+    }
+
+    function postHostEvent(evt) {
+        var iframe = document.getElementById(IFRAME_ID);
+        if (!hostEventsReady || !iframe || !iframe.contentWindow) {
+            hostEventQueue.push(evt);
+            if (hostEventQueue.length > 10) hostEventQueue.shift();
+            return;
+        }
+        try { iframe.contentWindow.postMessage(evt, new URL(IFRAME_SRC).origin); } catch (_) {}
+        console.log('[CTBridge] HOST_EVENT →', evt.name, evt.props.page);
+    }
+
+    function forwardCleverTapEvent(name, props) {
+        var evt = hostEventFrom(name, props);
+        if (!evt) return;
+        var now = Date.now();
+        // The same event on the same page within 5 s is one event; and never
+        // more than 12 a minute, whatever the site does.
+        var key = evt.name + '|' + evt.props.page;
+        if (hostEventLast[key] && now - hostEventLast[key] < 5000) return;
+        hostEventTimes = hostEventTimes.filter(function (t) { return now - t < 60000; });
+        if (hostEventTimes.length >= 12) return;
+        hostEventLast[key] = now;
+        hostEventTimes.push(now);
+        postHostEvent(evt);
+    }
+
+    // The CleverTap snippet starts clevertap.event as a queue array and the
+    // SDK swaps in its own object when it loads, so keep re-wrapping whatever
+    // is there.
+    function wrapCleverTapEvents() {
+        try {
+            var ct = window.clevertap;
+            var target = ct && ct.event;
+            if (!target || typeof target.push !== 'function' || target.__ctBridgeWrapped) return;
+            // Still the snippet's queue: what the page pushed before this
+            // script loaded (the page view, usually) is in it as name, props.
+            if (Array.isArray(target)) {
+                for (var i = 0; i < target.length; i++) {
+                    if (typeof target[i] !== 'string') continue;
+                    var next = target[i + 1];
+                    try { forwardCleverTapEvent(target[i], next && typeof next === 'object' ? next : null); } catch (_) {}
+                }
+            }
+            var original = target.push;
+            target.push = function () {
+                var result = original.apply(this, arguments);
+                try { forwardCleverTapEvent(arguments[0], arguments[1]); } catch (_) {}
+                return result;
+            };
+            target.__ctBridgeWrapped = true;
+        } catch (_) { /* never break CleverTap */ }
+    }
+    wrapCleverTapEvents();
+    var wrapTicks = 0;
+    var wrapTimer = setInterval(function () {
+        wrapCleverTapEvents();
+        // Fast while the SDK is loading, then a slow keep-alive.
+        if (++wrapTicks === 150) { clearInterval(wrapTimer); setInterval(wrapCleverTapEvents, 2000); }
+    }, 100);
 
     // --- CleverTap ID reader ---
     function readCleverTapId() {
@@ -183,6 +292,14 @@
         // Iframe asks parent for the visible text of the current page (so
         // Erica can be aware of what the user is actually looking at).
         // Bridge extracts a compact snapshot: url, title, main text.
+        // The coach is listening: send what happened while it was loading.
+        if (event.data.type === 'HOST_EVENTS_READY') {
+            hostEventsReady = true;
+            var pending = hostEventQueue.splice(0);
+            pending.forEach(postHostEvent);
+            return;
+        }
+
         if (event.data.type === 'REQUEST_PAGE_CONTEXT') {
             var snap = capturePageContext();
             try {

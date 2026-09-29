@@ -2149,6 +2149,32 @@ class VoiceChatBot {
         }));
     }
 
+    // A CleverTap event from the host page (bridge.js HOST_EVENT): where the
+    // user is and what they just did, as one line of context. It goes into
+    // the model session only — never this.messages, never saved history —
+    // and never with a response.create: Erica knows, she doesn't speak up.
+    _onHostEvent(event) {
+        const sentence = window.coachUiRules?.hostEventSentence?.(event);
+        if (!sentence) return;
+        if (!this._hostEventQueue) this._hostEventQueue = [];
+        this._hostEventQueue.push(sentence);
+        if (this._hostEventQueue.length > 5) this._hostEventQueue.shift();
+        this._flushHostEvents();
+    }
+
+    // Held until the session is configured (after the history replay), so a
+    // page-view ping from a coach that is still booting isn't lost.
+    _flushHostEvents() {
+        const queue = this._hostEventQueue || [];
+        if (!queue.length || !this.pc || this._historyInjectedFor !== this.pc) return;
+        if (!this.dataChannel || this.dataChannel.readyState !== 'open') return;
+        const type = this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create';
+        for (const text of queue.splice(0)) {
+            const ok = this.sendMessage({ type, item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] } });
+            (ok ? console.log : console.warn)(`[Erica] 📍 Host event ${ok ? 'injected into' : 'NOT sent to'} the ${this.voiceApiMode} session: ${text}`);
+        }
+    }
+
     // Once per session: configure can run more than once (preparation
     // arriving late re-pushes the config; rename and speed changes too).
     _injectHistoryIntoSession(reason) {
@@ -2524,6 +2550,12 @@ class VoiceChatBot {
     setupBridgeMessaging() {
         if (this._bridgeListenerAttached) return;
         this._bridgeListenerAttached = true;
+        // The bridge holds CleverTap pings until the coach listens.
+        setTimeout(() => {
+            try {
+                if (window.parent && window.parent !== window) window.parent.postMessage({ type: 'HOST_EVENTS_READY' }, '*');
+            } catch (_) { /* non-fatal */ }
+        }, 0);
         window.addEventListener('message', (event) => {
             const data = event?.data || {};
             if (data.type === 'GET_PILL_LABELS') {
@@ -2568,6 +2600,15 @@ class VoiceChatBot {
                     console.log('[Erica] page element focus:', this._lastElementFocus.kind, '·',
                         (this._lastElementFocus.hint || this._lastElementFocus.text).slice(0, 80));
                 } catch (_) {}
+                return;
+            }
+            if (data.type === 'HOST_EVENT' && typeof data.name === 'string') {
+                // State-changing (it reaches the model): trusted bridge origins only.
+                if (!this._isTrustedBridgeOrigin(event.origin)) {
+                    console.warn('[Erica] Rejected HOST_EVENT from untrusted origin:', event.origin);
+                    return;
+                }
+                this._onHostEvent({ name: data.name, props: data.props, ts: data.ts });
                 return;
             }
             if (data.type === 'SEND_PILL_INDEX' && typeof data.label === 'string' && data.label.trim()) {
@@ -5816,14 +5857,19 @@ class VoiceChatBot {
                     '  tools and no longer applies.',
                     '',
                     'PAGE AWARENESS (get_page_context) — LOOK BEFORE YOU ANSWER:',
-                    'You have a tool `get_page_context` that returns the title, URL,',
-                    'headings and visible text of the page the user is currently on.',
+                    'WHERE the user is: [Host event] lines come from the website itself and',
+                    'say which page the user just opened or what they just did. To answer',
+                    '"where am I?" or to know which page they are on, use the latest',
+                    '[Host event] — do not call get_page_context just for that.',
+                    'WHAT is on the page: you have a tool `get_page_context` that returns',
+                    'the title, URL, headings and visible text of the page the user is on.',
                     'CALL IT YOURSELF, without asking permission and without saying you',
                     'cannot see their screen:',
-                    '- whenever the user refers to "this page", "this report", "this',
-                    '  result", "here", "what I\'m looking at", or anything on screen;',
+                    '- whenever the user asks about "this page", "this report", "this',
+                    '  result", "what I\'m looking at", or anything on screen;',
                     '- whenever a good answer depends on what is in front of them;',
-                    '- at the start of a conversation on a new page.',
+                    '- at the start of a conversation on a new page, when no [Host event]',
+                    '  has told you where they are.',
                     'Call it again when the user may have moved to another page.',
                     'Then USE what it returns: when the page shows the user\'s own results',
                     '(a quiz report, a profile, a course step), name the specifics they are',
@@ -6644,7 +6690,7 @@ class VoiceChatBot {
             {
                 type: 'function',
                 name: 'get_page_context',
-                description: 'Fetch the visible content of the page the user is currently on (title, URL, headings, main text). Call it yourself, without asking permission, whenever the user asks about what they are looking at, references "this page", "here", "this report", "this result", or when the answer depends on knowing what content is in front of them right now; never tell the user you cannot see their screen before calling it. Also call it at the start of a conversation on a new page. Then answer with the specifics the page shows.',
+                description: 'Fetch the visible content of the page the user is currently on (title, URL, headings, main text). Call it yourself, without asking permission, whenever the user asks about what is ON the page — "this page", "this report", "this result", what they are looking at — or when the answer depends on knowing what content is in front of them right now; never tell the user you cannot see their screen before calling it. Not needed just to know WHICH page they are on: the latest [Host event] line already says that, so answer "where am I?" from it. Also call it at the start of a conversation on a new page when no [Host event] has said where they are. Then answer with the specifics the page shows.',
                 parameters: {
                     type: 'object',
                     properties: {},
@@ -7027,6 +7073,7 @@ class VoiceChatBot {
         // Replay the recent conversation into this new session, before the
         // opening line or any queued turn (same channel, so same order).
         if (sentOk) this._injectHistoryIntoSession('realtime session configured');
+        if (sentOk) this._flushHostEvents();
 
         // Note: opening line is triggered explicitly after connect/reconnect.
     }
@@ -7082,6 +7129,7 @@ class VoiceChatBot {
         this.lastSessionConfig.sentAt = Date.now();
         console.log('[Erica][Live] session.update (delegation.responses) sent:', sentOk, 'instructions length:', fullInstructions.length);
         if (sentOk) this._injectHistoryIntoSession('live session configured');
+        if (sentOk) this._flushHostEvents();
     }
 
     /**
