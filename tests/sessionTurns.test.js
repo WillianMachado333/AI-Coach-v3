@@ -165,3 +165,17 @@ test('client: turns are posted from the final-message hook, bot turns settle, pi
     assert.match(postFn, /kind: isUser \? 'user_turn' : 'bot_turn'/);
     assert.doesNotMatch(postFn, /synthetic|dataUrl|\.src\b/, 'no synthetic flag, no image data');
 });
+
+test('client: a Live delegation is claimed by one bot turn only (the in-call greeting after a typed answer gets none)', () => {
+    const src = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+    const fn = src.slice(src.indexOf('    _turnModelIds(message) {'), src.indexOf('    _postTurn(message, st) {'));
+    // Run the method body against a fake app: one delegation, two bot turns after the same user message.
+    const body = fn.slice(fn.indexOf('{') + 1, fn.lastIndexOf('}'));
+    const turnModelIds = new Function('message', body);
+    const app = { voiceApiMode: 'live', _liveDelegationStartedAt: new Map([['D1', 1000]]), messages: [{ role: 'user', timestamp: 900 }] };
+    assert.deepEqual(turnModelIds.call(app, { id: 'live-deleg-1', timestamp: 1500 }), { delegationId: 'D1' });
+    assert.deepEqual(turnModelIds.call(app, { id: 'live-bot-2', timestamp: 3000 }), {}, 'already claimed');
+    app._liveDelegationStartedAt.set('D2', 4000);
+    app.messages.push({ role: 'user', timestamp: 3900 });
+    assert.deepEqual(turnModelIds.call(app, { id: 'live-bot-3', timestamp: 4500 }), { delegationId: 'D2' });
+});

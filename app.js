@@ -8473,11 +8473,18 @@ class VoiceChatBot {
         if (!started || !started.size) return {};
         const lastUser = (this.messages || []).filter((m) => m.role === 'user' && m.timestamp <= (message.timestamp || Date.now()))
             .reduce((t, m) => Math.max(t, m.timestamp || 0), 0);
+        // A delegation answers once: the in-call greeting after a typed
+        // exchange must not inherit that exchange's delegation.
+        if (!this._turnClaimedDelegations) this._turnClaimedDelegations = new Set();
         let best = null;
         for (const [id, at] of started) {
+            if (this._turnClaimedDelegations.has(id)) continue;
             if (at >= lastUser - 1000 && (!best || at > best.at)) best = { id, at };
         }
-        return best ? { delegationId: best.id } : {};
+        if (!best) return {};
+        this._turnClaimedDelegations.add(best.id);
+        if (this._turnClaimedDelegations.size > 200) this._turnClaimedDelegations.delete(this._turnClaimedDelegations.values().next().value);
+        return { delegationId: best.id };
     }
 
     _postTurn(message, st) {
