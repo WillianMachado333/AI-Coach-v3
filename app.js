@@ -7846,6 +7846,29 @@ class VoiceChatBot {
         if (!this._livePending()) this._flushLiveHeldTurns(`${inner.type.replace('response.', '')} reply after ${this._liveContinuationFor}`);
     }
 
+    // Call mode: the spoken transcript is the reply — unless the voice layer
+    // never says it. A turn typed mid-call is answered by the backend while
+    // GPT-Live stays silent (or says a filler, or keeps speaking its
+    // greeting), and the answer used to vanish. Observed: when the delegation
+    // ran a tool, the voice layer answers from the tool result in its own
+    // words; when it didn't, the voice layer never says the backend's answer.
+    // So, 3 s after the answer finished, it counts as spoken if the speech
+    // since the delegation began covers it, or if the delegation ran a tool
+    // and a new utterance began after the call. Otherwise the backend text
+    // renders, and the log says so.
+    _scheduleLiveTextFallback(text, delegationId, responseId, since) {
+        setTimeout(() => {
+            const spoken = (this._liveSpoken || []).filter((s) => s.at >= since).map((s) => s.text).join('');
+            const covers = window.coachUiRules?.spokenCovers;
+            if (typeof covers === 'function' ? covers(text, spoken) : spoken.trim().length > 0) return;
+            const toolAt = delegationId && this._liveDelegationToolAt?.get(delegationId);
+            if (toolAt && (this._liveUtteranceStarts || []).some((at) => at > toolAt)) return;
+            console.warn(`[Erica][Live] backend text rendered — voice layer stayed silent for ${delegationId || responseId || 'an unidentified turn'}`);
+            if (typeof this.hideLoader === 'function') this.hideLoader();
+            this.updateBotMessage(`live-deleg-${Date.now()}`, text, true, Date.now());
+        }, 3000);
+    }
+
     _flushLiveHeldTurns(reason) {
         clearTimeout(this._livePendingWatchdog);
         this._livePendingWatchdog = null;
@@ -7953,9 +7976,20 @@ class VoiceChatBot {
 
             case 'session.output_transcript.delta':
                 if (typeof message.delta !== 'string') break;
+                // What was said, and when: _scheduleLiveTextFallback checks
+                // whether a backend answer was actually spoken.
+                if (!this._liveSpoken) this._liveSpoken = [];
+                this._liveSpoken.push({ at: Date.now(), text: message.delta });
+                if (this._liveSpoken.length > 400) this._liveSpoken.splice(0, this._liveSpoken.length - 400);
                 this._ungateLiveAudio('output_transcript');
                 if (typeof this.hideLoader === 'function') this.hideLoader();
-                if (!this._liveBotItemId) this._liveBotItemId = `live-bot-${Date.now()}`;
+                if (!this._liveBotItemId) {
+                    this._liveBotItemId = `live-bot-${Date.now()}`;
+                    // A new utterance (not the continuation of one already playing).
+                    if (!this._liveUtteranceStarts) this._liveUtteranceStarts = [];
+                    this._liveUtteranceStarts.push(Date.now());
+                    if (this._liveUtteranceStarts.length > 100) this._liveUtteranceStarts.shift();
+                }
                 this._liveBotTranscript = (this._liveBotTranscript || '') + message.delta;
                 this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, false, Date.now());
                 clearTimeout(this._liveBotFinalizeTimer);
@@ -7975,6 +8009,15 @@ class VoiceChatBot {
                 const inner = message.event;
                 if (!inner) break;
                 this._onLiveResponseEvent(inner, message.delegation_id || null);
+                // When each delegation began: the voice layer may start saying
+                // the answer (from a tool result) before the backend's text.
+                if (message.delegation_id) {
+                    if (!this._liveDelegationStartedAt) this._liveDelegationStartedAt = new Map();
+                    if (!this._liveDelegationStartedAt.has(message.delegation_id)) {
+                        this._liveDelegationStartedAt.set(message.delegation_id, Date.now());
+                        if (this._liveDelegationStartedAt.size > 50) this._liveDelegationStartedAt.delete(this._liveDelegationStartedAt.keys().next().value);
+                    }
+                }
 
                 // Delegated (backend) text. Kept in its own accumulator, not
                 // the voice transcript's: in a real call GPT-Live speaks a
@@ -7985,8 +8028,11 @@ class VoiceChatBot {
                 // reply (Responses delegation hands the result to the voice
                 // layer, which says it), so the backend text is only logged.
                 // Outside call mode Live emits no audio at all, so the
-                // backend text is the only reply and must render.
+                // backend text is the only reply and must render. In call
+                // mode it renders too if the voice layer never says it
+                // (_scheduleLiveTextFallback).
                 if (inner.type === 'response.output_text.delta' && typeof inner.delta === 'string') {
+                    if (!this._liveDelegatedText) this._liveDelegatedFirstTextAt = Date.now();
                     this._liveDelegatedText = (this._liveDelegatedText || '') + inner.delta;
                     if (!this.isRecording) {
                         if (typeof this.hideLoader === 'function') this.hideLoader();
@@ -7998,10 +8044,13 @@ class VoiceChatBot {
                     if (this._liveDelegatedItemId) {
                         this.updateBotMessage(this._liveDelegatedItemId, text, true, Date.now());
                     } else if (text.trim()) {
-                        console.log('[Erica][Live] delegated text not rendered (call mode — spoken transcript is the reply):', text.slice(0, 160));
+                        console.log('[Erica][Live] delegated text held (call mode — spoken transcript is the reply):', text.slice(0, 160));
+                        this._scheduleLiveTextFallback(text, message.delegation_id || null, inner.response?.id || null,
+                            this._liveDelegationStartedAt?.get(message.delegation_id) || this._liveDelegatedFirstTextAt || Date.now());
                     }
                     this._liveDelegatedItemId = null;
                     this._liveDelegatedText = '';
+                    this._liveDelegatedFirstTextAt = null;
                 } else if (inner.type === 'response.output_item.done') {
                     const item = inner.item;
                     if (item && item.type === 'function_call' && item.name && typeof item.arguments === 'string') {
@@ -8019,6 +8068,11 @@ class VoiceChatBot {
                             ts: Date.now()
                         };
                         this._trackLiveFunctionCall(item.call_id, item.name, message.delegation_id || null);
+                        if (message.delegation_id) {
+                            if (!this._liveDelegationToolAt) this._liveDelegationToolAt = new Map();
+                            if (!this._liveDelegationToolAt.has(message.delegation_id)) this._liveDelegationToolAt.set(message.delegation_id, Date.now());
+                            if (this._liveDelegationToolAt.size > 50) this._liveDelegationToolAt.delete(this._liveDelegationToolAt.keys().next().value);
+                        }
                         this.executeFunction(item.name, args, item.call_id, message.delegation_id || null);
                     }
                 } else {
