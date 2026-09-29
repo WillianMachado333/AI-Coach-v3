@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-08-10T03:20-focus-hardened';
+    var VERSION = '2026-09-28T00:40-awav-always-on';
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -36,12 +36,16 @@
     //   2. sessionStorage.ericaPreview === '1' (persists across internal
     //      Wix client-side navigations after the first ?erica=preview)
     //   3. Path ends with /playground (existing behaviour)
+    //   4. Host is the sandbox (awav.com) — always on there, so the whole
+    //      sandbox site shows V3; production stays behind rules 1-3.
     // Once activated via #1, we stamp sessionStorage so the flag survives
     // navigation to a report page etc.
     function isPreviewActivated() {
         try {
             var search = (window.location && window.location.search) || '';
             var path = (window.location && window.location.pathname) || '';
+            var host = (window.location && window.location.hostname) || '';
+            if (/(^|\.)awav\.com$/i.test(host)) return true;
             if (/[?&]erica=preview\b/i.test(search)) {
                 try { window.sessionStorage && sessionStorage.setItem('ericaPreview', '1'); } catch (_) {}
                 return true;
@@ -54,7 +58,7 @@
         }
     }
     if (!isPreviewActivated()) {
-        console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground) — skipping injection.');
+        console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground, not awav.com) — skipping injection.');
         return;
     }
     // Base coach URL. When the HOST page is running under the Coach Studio
