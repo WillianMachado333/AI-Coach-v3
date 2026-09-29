@@ -7853,6 +7853,20 @@ class VoiceChatBot {
         if (!this._livePending()) this._flushLiveHeldTurns(`${inner.type.replace('response.', '')} reply after ${this._liveContinuationFor}`);
     }
 
+    // What a Live transcript may show: the accumulated text without
+    // non-speech tags, or '' when nothing but tags has arrived (render
+    // nothing). A finished transcript that was all tags is logged, so a
+    // bubble that never appeared is explainable.
+    _nonSpeechFiltered(accumulated, who, final = false) {
+        const strip = window.coachUiRules?.stripNonSpeechTags;
+        if (typeof strip !== 'function') return accumulated;
+        const { text, dropped } = strip(accumulated);
+        if (final && dropped) {
+            console.log(`[Erica][Live] ${who} transcript was only non-speech tags (${JSON.stringify(accumulated).slice(0, 60)}) — not rendered`);
+        }
+        return text;
+    }
+
     // Call mode: the spoken transcript is the reply — unless the voice layer
     // never says it. A turn typed mid-call is answered by the backend while
     // GPT-Live stays silent (or says a filler, or keeps speaking its
@@ -8148,10 +8162,16 @@ class VoiceChatBot {
                 this._ungateLiveAudio('input_transcript');
                 if (!this._liveUserItemId) this._liveUserItemId = `live-user-${Date.now()}`;
                 this._liveUserTranscript = (this._liveUserTranscript || '') + message.delta;
-                this.updateUserMessage(this._liveUserItemId, this._liveUserTranscript, false, Date.now());
+                // Non-speech tags ([breath], [laughter]) never render, sync or
+                // count; a transcript that is only tags shows no bubble at all.
+                {
+                    const shown = this._nonSpeechFiltered(this._liveUserTranscript, 'user');
+                    if (shown) this.updateUserMessage(this._liveUserItemId, shown, false, Date.now());
+                }
                 clearTimeout(this._liveUserFinalizeTimer);
                 this._liveUserFinalizeTimer = setTimeout(() => {
-                    this.updateUserMessage(this._liveUserItemId, this._liveUserTranscript, true, Date.now());
+                    const shown = this._nonSpeechFiltered(this._liveUserTranscript, 'user', true);
+                    if (shown) this.updateUserMessage(this._liveUserItemId, shown, true, Date.now());
                     this._liveUserItemId = null;
                     this._liveUserTranscript = '';
                 }, 1500);
@@ -8174,10 +8194,14 @@ class VoiceChatBot {
                     if (this._liveUtteranceStarts.length > 100) this._liveUtteranceStarts.shift();
                 }
                 this._liveBotTranscript = (this._liveBotTranscript || '') + message.delta;
-                this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, false, Date.now());
+                {
+                    const shown = this._nonSpeechFiltered(this._liveBotTranscript, 'coach');
+                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, false, Date.now());
+                }
                 clearTimeout(this._liveBotFinalizeTimer);
                 this._liveBotFinalizeTimer = setTimeout(() => {
-                    this.updateBotMessage(this._liveBotItemId, this._liveBotTranscript, true, Date.now());
+                    const shown = this._nonSpeechFiltered(this._liveBotTranscript, 'coach', true);
+                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, true, Date.now());
                     this._liveBotItemId = null;
                     this._liveBotTranscript = '';
                 }, 1500);
