@@ -326,6 +326,21 @@
     opacity: 1;
 }
 
+/* 44x44 tap target; fits the pill's 48px inner height, so the pill doesn't grow. */
+.send-text-button {
+    align-items: center;
+    border-radius: 9999px;
+    display: flex;
+    flex: 0 0 auto;
+    height: 44px;
+    justify-content: center;
+    width: 44px;
+}
+
+.send-text-button.hidden {
+    display: none;
+}
+
 .send-text-button:hover {
     background: rgb(121, 203, 212, 0.1);
 }
