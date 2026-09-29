@@ -3213,6 +3213,14 @@ class VoiceChatBot {
         // once the conversation is underway they'd just clutter the view.
         this.hideQuickActions();
 
+        // A message that can't fit the data channel must be refused BEFORE the
+        // composer clears — dataChannel.send() throws past the cap, and the
+        // message used to appear "sent" while the coach never received it.
+        if (!this._userMessageFits(this._buildUserItemMessage(text, attachments, { consumeFocus: false }))) {
+            this._refuseSend(fromComposer, 'That’s too much for one message. Remove a photo or file and try again.');
+            return;
+        }
+
         // Detect dead connection: isConnected may be true but dataChannel degraded
         // (common after on-hold period where WebRTC silently drops)
         const channelDead = !this.dataChannel || this.dataChannel.readyState !== 'open';
@@ -3227,7 +3235,12 @@ class VoiceChatBot {
             this._pendingTextMessages.push({ text, attachments });
             if (fromComposer && this.textInput) {
                 this.textInput.value = '';
-                if (typeof this.clearAttachments === 'function') this.clearAttachments();
+                if (attachments.length && typeof this.markAttachmentsSending === 'function') {
+                    this.markAttachmentsSending(true);
+                    this._composerAttachmentsQueued = true;
+                } else if (typeof this.clearAttachments === 'function') {
+                    this.clearAttachments();
+                }
                 this.updateTextButtonVisibility();
             }
             this.isOnHold = false;
@@ -3250,6 +3263,13 @@ class VoiceChatBot {
             this.isOnHold = false;
         }
 
+        // Send first; the composer clears and the bubble appears only once
+        // the message has actually left.
+        if (!this.sendMessage(this._buildUserItemMessage(text, attachments))) {
+            this._refuseSend(fromComposer, 'Couldn’t send that. Check your connection and try again.');
+            return;
+        }
+
         // Track input type for bot reply attribution
         this._lastUserInputType = 'text';
 
@@ -3268,6 +3288,9 @@ class VoiceChatBot {
             this.textInput.value = '';
             if (typeof this.clearAttachments === 'function') this.clearAttachments();
             this.updateTextButtonVisibility();
+        } else if (this._composerAttachmentsQueued && attachments.length) {
+            this._composerAttachmentsQueued = false;
+            if (typeof this.clearAttachments === 'function') this.clearAttachments();
         }
 
         // Add user message to chat with absolute timestamp
@@ -3285,6 +3308,29 @@ class VoiceChatBot {
             this.botStartTimestamp = userTimestamp + 100; // 100ms after user message
         }
 
+        // Create a response to get the model's reply
+        setTimeout(() => {
+            if (this.isConnected) {
+                const responseConfig = {
+                    type: 'response.create'
+                };
+
+                this.sendMessage(responseConfig);
+            }
+
+            // Show loader and disable inputs while waiting for response
+            // Show loader and disable inputs while waiting for response
+            // Loader removed as per request for questions
+            // Mic button logic removed: Keep mic enabled during text response generation
+            // if (typeof this.setMicButtonState === 'function') this.setMicButtonState('disabled');
+
+        }, 100);
+    }
+
+    // The single data-channel message a user turn becomes. consumeFocus:false
+    // is for size checks before queueing — the element-focus hint is
+    // single-use and must survive until the real send.
+    _buildUserItemMessage(text, attachments, { consumeFocus = true } = {}) {
         // If the bridge told us the user just clicked / focused / selected
         // something on the host page, prepend that as a silent context line
         // so Erica can cite the specific element without the user having to
@@ -3301,7 +3347,7 @@ class VoiceChatBot {
                     sendText = '[Context — user just ' + kindLabel + ' on the page: '
                         + desc.slice(0, 300) + ']\n\n' + sendText;
                 }
-                this._lastElementFocus = null;
+                if (consumeFocus) this._lastElementFocus = null;
             }
         } catch (_) { /* non-fatal */ }
 
@@ -3327,33 +3373,31 @@ class VoiceChatBot {
                 });
             });
 
-        // Send the supported attachment/text content to Realtime/Live API.
-        this.sendMessage({
+        return {
             type: this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create',
             item: {
                 type: 'message',
                 role: 'user',
                 content: realtimeContent
             }
-        });
+        };
+    }
 
-        // Create a response to get the model's reply
-        setTimeout(() => {
-            if (this.isConnected) {
-                const responseConfig = {
-                    type: 'response.create'
-                };
+    _userMessageFits(itemMessage) {
+        const rules = window.attachmentRules;
+        if (!rules || typeof rules.messageFits !== 'function') return true;
+        return rules.messageFits(JSON.stringify(itemMessage), this.pc?.sctp?.maxMessageSize);
+    }
 
-                this.sendMessage(responseConfig);
-            }
-
-            // Show loader and disable inputs while waiting for response
-            // Show loader and disable inputs while waiting for response
-            // Loader removed as per request for questions
-            // Mic button logic removed: Keep mic enabled during text response generation
-            // if (typeof this.setMicButtonState === 'function') this.setMicButtonState('disabled');
-
-        }, 100);
+    // Keep what the user composed and say why it didn't go.
+    _refuseSend(fromComposer, reason) {
+        console.warn('[Erica] Send refused:', reason);
+        if (!fromComposer && this._composerAttachmentsQueued && typeof this.markAttachmentsSending === 'function') {
+            this._composerAttachmentsQueued = false;
+            this.markAttachmentsSending(false);
+        }
+        if (typeof this.showAttachmentError === 'function') this.showAttachmentError(reason);
+        this.updateTextButtonVisibility();
     }
 
     // ------------------------------------------------------------------
@@ -7041,7 +7085,14 @@ class VoiceChatBot {
             if (message.type === 'session.update') {
                 // console.log('[Erica] Sending session.update via dataChannel, voice:', message.session?.voice);
             }
-            this.dataChannel.send(messageStr);
+            try {
+                this.dataChannel.send(messageStr);
+            } catch (error) {
+                // e.g. "message larger than max-message-size" — was uncaught,
+                // so callers carried on as if it had been sent.
+                console.error('[Erica] dataChannel.send failed:', message.type, messageStr.length, 'chars —', error?.message || error);
+                return false;
+            }
             return true;
         } else {
             console.warn('[Erica] Cannot send message - dataChannel not ready:', {
