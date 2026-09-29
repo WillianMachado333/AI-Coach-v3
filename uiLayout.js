@@ -831,6 +831,33 @@
             return index === excludeIndex ? total : total + (Number(attachment.size) || 0);
         }, 0);
 
+        const releasePreview = (attachment) => {
+            if (attachment && attachment.previewUrl) {
+                URL.revokeObjectURL(attachment.previewUrl);
+                attachment.previewUrl = null;
+            }
+        };
+
+        const svgIcon = (paths, size) => {
+            const ns = 'http://www.w3.org/2000/svg';
+            const svg = document.createElementNS(ns, 'svg');
+            svg.setAttribute('width', String(size));
+            svg.setAttribute('height', String(size));
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('fill', 'none');
+            svg.setAttribute('stroke', 'currentColor');
+            svg.setAttribute('stroke-width', '2');
+            svg.setAttribute('stroke-linecap', 'round');
+            svg.setAttribute('stroke-linejoin', 'round');
+            svg.setAttribute('aria-hidden', 'true');
+            paths.forEach((d) => {
+                const path = document.createElementNS(ns, 'path');
+                path.setAttribute('d', d);
+                svg.appendChild(path);
+            });
+            return svg;
+        };
+
         const render = () => {
             const preview = app.attachmentPreview;
             if (!preview) return;
@@ -838,119 +865,171 @@
             preview.classList.toggle('hidden', app.pendingAttachments.length === 0);
 
             app.pendingAttachments.forEach((attachment, index) => {
-                const chip = document.createElement('div');
-                chip.className = 'attachment-chip' + (attachment.state === 'error' ? ' attachment-chip-error' : '');
-                chip.setAttribute('data-attachment-index', String(index));
+                const tile = document.createElement('div');
+                tile.className = 'attachment-tile'
+                    + (attachment.state === 'loading' ? ' is-loading' : '')
+                    + (attachment.state === 'sending' ? ' is-sending' : '');
+                tile.setAttribute('data-attachment-index', String(index));
 
-                const name = document.createElement('span');
-                name.className = 'attachment-chip-name';
-                name.textContent = attachment.name;
-                chip.appendChild(name);
-
-                const state = document.createElement('span');
-                state.className = 'text-xs text-slate-500';
-                state.textContent = attachment.state === 'ready' ? 'ready' : attachment.state === 'loading' ? 'preparing' : attachment.error;
-                chip.appendChild(state);
-
-                if (attachment.state === 'error') {
-                    const retry = document.createElement('button');
-                    retry.type = 'button';
-                    retry.className = 'attachment-chip-retry text-xs underline';
-                    retry.textContent = 'Retry';
-                    retry.setAttribute('aria-label', `Retry ${attachment.name}`);
-                    retry.addEventListener('click', () => processFile(attachment.file, index));
-                    chip.appendChild(retry);
+                const src = attachment.dataUrl || attachment.previewUrl;
+                if (attachment.kind === 'image' && src) {
+                    const img = document.createElement('img');
+                    img.className = 'attachment-tile-img';
+                    img.src = src;
+                    img.alt = attachment.name;
+                    tile.appendChild(img);
+                } else {
+                    const file = document.createElement('div');
+                    file.className = 'attachment-tile-file';
+                    file.appendChild(svgIcon(['M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z', 'M14 2v4a2 2 0 0 0 2 2h4'], 20));
+                    const label = document.createElement('span');
+                    label.className = 'attachment-tile-name';
+                    label.textContent = attachment.name;
+                    file.appendChild(label);
+                    tile.appendChild(file);
                 }
 
-                const remove = document.createElement('button');
-                remove.type = 'button';
-                remove.className = 'attachment-chip-remove text-lg leading-none';
-                remove.textContent = '×';
-                remove.setAttribute('aria-label', `Remove ${attachment.name}`);
-                remove.addEventListener('click', () => {
-                    app.pendingAttachments.splice(index, 1);
-                    render();
-                    updateTextButtonVisibility(app);
-                });
-                chip.appendChild(remove);
-                preview.appendChild(chip);
+                if (attachment.state === 'loading') {
+                    const spinner = document.createElement('span');
+                    spinner.className = 'attachment-tile-spinner';
+                    spinner.setAttribute('aria-hidden', 'true');
+                    tile.appendChild(spinner);
+                } else if (attachment.state === 'sending') {
+                    const sending = document.createElement('span');
+                    sending.className = 'attachment-tile-sending';
+                    sending.textContent = 'Sending…';
+                    tile.appendChild(sending);
+                }
+
+                if (attachment.state !== 'sending') {
+                    const remove = document.createElement('button');
+                    remove.type = 'button';
+                    remove.className = 'attachment-tile-remove';
+                    remove.setAttribute('aria-label', `Remove ${attachment.name}`);
+                    const dot = document.createElement('span');
+                    dot.appendChild(svgIcon(['M18 6 6 18', 'm6 6 12 12'], 12));
+                    remove.appendChild(dot);
+                    remove.addEventListener('click', () => {
+                        releasePreview(attachment);
+                        app.pendingAttachments.splice(index, 1);
+                        if (!app.pendingAttachments.some((entry) => entry.state === 'loading')) setStatus('');
+                        render();
+                    });
+                    tile.appendChild(remove);
+                }
+                preview.appendChild(tile);
             });
             updateTextButtonVisibility(app);
         };
 
-        const readFile = (file, kind) => new Promise((resolve, reject) => {
+        const readText = (file) => new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onprogress = (event) => {
-                if (event.lengthComputable) {
-                    setStatus(`Preparing ${file.name} (${Math.round((event.loaded / event.total) * 100)}%)`);
-                } else {
-                    setStatus(`Preparing ${file.name}…`);
-                }
-            };
-            reader.onerror = () => reject(new Error('The file could not be read.'));
+            reader.onerror = () => reject(new Error('couldn’t be read.'));
             reader.onload = () => {
-                if (kind === 'image') {
-                    resolve({ dataUrl: String(reader.result || '') });
-                    return;
-                }
                 const prepared = rules.truncateText(reader.result);
                 resolve({ text: prepared.text, truncated: prepared.truncated });
             };
-            if (kind === 'image') reader.readAsDataURL(file);
-            else reader.readAsText(file);
+            reader.readAsText(file);
         });
 
-        async function processFile(file, replaceIndex = -1) {
-            const currentCount = app.pendingAttachments.length - (replaceIndex >= 0 ? 1 : 0);
-            const validation = rules.validateFile(file, currentCount, getBytes(replaceIndex));
-            const item = {
-                file,
-                name: String(file?.name || 'Unnamed file'),
-                size: Number(file?.size) || 0,
-                state: 'loading',
-                kind: validation.kind || rules.kindForFile(file),
-                error: validation.error || ''
-            };
+        const loadImage = (url) => new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('couldn’t be opened in this browser. Try a JPG or PNG.'));
+            img.src = url;
+        });
 
-            if (replaceIndex >= 0) app.pendingAttachments[replaceIndex] = item;
-            else app.pendingAttachments.push(item);
-            render();
+        // Re-encode to JPEG under the per-photo budget: full-size phone
+        // photos would otherwise exceed the data channel's message cap and
+        // fail to send. Browsers apply EXIF orientation when drawing an
+        // <img> to canvas, so rotated phone photos stay upright.
+        async function preparePhoto(item) {
+            const img = await loadImage(item.previewUrl);
+            const budget = rules.imageBudgetFor(app.pc?.sctp?.maxMessageSize);
+            let side = rules.MAX_IMAGE_SIDE;
+            for (let attempt = 0; attempt < 7; attempt++) {
+                const { width, height } = rules.fitWithin(img.naturalWidth, img.naturalHeight, side);
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, width, height);
+                ctx.drawImage(img, 0, 0, width, height);
+                for (const quality of [0.82, 0.7, 0.58]) {
+                    const dataUrl = canvas.toDataURL('image/jpeg', quality);
+                    if (dataUrl.length <= budget) {
+                        return { dataUrl, size: dataUrl.length, width, height };
+                    }
+                }
+                side = Math.round(side * 0.75);
+            }
+            throw new Error('is too detailed to send. Try a different photo.');
+        }
 
+        async function processFile(file) {
+            const name = String(file?.name || 'File');
+            const validation = rules.validateFile(file, app.pendingAttachments.length, getBytes());
             if (!validation.ok) {
-                item.state = 'error';
-                setStatus(validation.error, true);
-                render();
+                // Rejected files never become tiles — the reason shows inline
+                // and there is nothing half-added to clean up.
+                setStatus(`“${name}” wasn’t added. ${validation.error}`, true);
                 return;
             }
 
-            setStatus(`Preparing ${item.name}…`);
+            const item = {
+                file,
+                name,
+                size: Number(file.size) || 0,
+                kind: validation.kind,
+                state: 'loading',
+                previewUrl: validation.kind === 'image' ? URL.createObjectURL(file) : null
+            };
+            app.pendingAttachments.push(item);
+            setStatus(validation.kind === 'image' ? 'Preparing photo…' : `Reading ${name}…`);
+            render();
+
             try {
-                const payload = await readFile(file, validation.kind);
-                Object.assign(item, payload, { state: 'ready', error: '' });
-                setStatus(`${app.pendingAttachments.filter((entry) => entry.state === 'ready').length} attachment(s) ready.`);
+                const payload = validation.kind === 'image' ? await preparePhoto(item) : await readText(file);
+                if (!app.pendingAttachments.includes(item)) return; // removed while preparing
+                releasePreview(item);
+                Object.assign(item, payload, { state: 'ready' });
+                if (!app.pendingAttachments.some((entry) => entry.state === 'loading')) setStatus('');
             } catch (error) {
-                item.state = 'error';
-                item.error = error.message || 'The file could not be read.';
-                setStatus(item.error, true);
+                releasePreview(item);
+                const at = app.pendingAttachments.indexOf(item);
+                if (at >= 0) app.pendingAttachments.splice(at, 1);
+                setStatus(`“${name}” ${error.message || 'couldn’t be read.'}`, true);
             }
             render();
         }
 
         app.getReadyAttachments = () => app.pendingAttachments
             .filter((attachment) => attachment.state === 'ready')
-            .map(({ file, ...attachment }) => attachment);
+            .map(({ file, previewUrl, ...attachment }) => attachment);
         app.clearAttachments = () => {
+            app.pendingAttachments.forEach(releasePreview);
             app.pendingAttachments.splice(0);
             setStatus('');
             render();
         };
+        // Queued send (connection not ready yet): keep the tiles visible as
+        // "Sending…" instead of letting them vanish for the seconds it takes
+        // to reconnect; back to ready if the send is refused.
+        app.markAttachmentsSending = (sending) => {
+            app.pendingAttachments.forEach((attachment) => {
+                if (sending && attachment.state === 'ready') attachment.state = 'sending';
+                else if (!sending && attachment.state === 'sending') attachment.state = 'ready';
+            });
+            render();
+        };
+        app.showAttachmentError = (message) => setStatus(message, true);
 
         app.attachmentButton.addEventListener('click', () => app.attachmentInput.click());
         app.attachmentInput.addEventListener('change', async () => {
             const files = Array.from(app.attachmentInput.files || []);
             app.attachmentInput.value = '';
             for (const file of files) await processFile(file);
-            render();
         });
         render();
     }
