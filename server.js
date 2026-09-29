@@ -30,6 +30,7 @@ const injectedDataStore = require('./lib/injectedDataStore');
 const { createHealthPayload } = require('./lib/health');
 const { resolvePublicPath, looksLikeProbe } = require('./lib/staticPath');
 const { liveSessionInput } = require('./lib/liveSessionInput');
+const { revalidationHeaders, isNotModified } = require('./lib/staticCache');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -3074,13 +3075,24 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(500);
                 res.end(`Server Error: ${error.code}`, 'utf-8');
             }
-        } else {
+            return;
+        }
+        // .html/.js/.css revalidate on every load (lib/staticCache.js); the
+        // Wix embed kept stale versions after deploys without this.
+        fs.stat(filePath, (statError, stat) => {
+            const cache = revalidationHeaders(extname, content, statError ? null : stat.mtime);
+            if (isNotModified(req.headers, cache)) {
+                res.writeHead(304, { ...cache, 'Access-Control-Allow-Origin': '*' });
+                res.end();
+                return;
+            }
             res.writeHead(200, {
                 'Content-Type': contentType,
-                'Access-Control-Allow-Origin': '*'
+                'Access-Control-Allow-Origin': '*',
+                ...cache
             });
             res.end(content, 'utf-8');
-        }
+        });
     });
 });
 
