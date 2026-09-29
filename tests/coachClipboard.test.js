@@ -218,7 +218,9 @@ test('runDistill: duplicate cursor, throttle, no identity, simulator and no user
     const base = { objectId: 'guestdup', sessionId: 's-2', turns: TURNS, cursor: 'c1' };
     assert.equal((await cb.runDistill(base, { client, model: 'm', now: T0 })).ok, true);
     assert.equal((await cb.runDistill(base, { client, model: 'm', now: later(5) })).skipped, 'duplicate');
-    assert.equal((await cb.runDistill({ ...base, cursor: 'c2' }, { client, model: 'm', now: new Date(T0.getTime() + 5000) })).skipped, 'throttled');
+    const newer = [...TURNS, { role: 'user', text: 'Something new to note.' }];
+    assert.equal((await cb.runDistill({ ...base, cursor: 'c2', turns: newer }, { client, model: 'm', now: new Date(T0.getTime() + 5000) })).skipped, 'throttled');
+    assert.equal((await cb.runDistill({ ...base, cursor: 'c2' }, { client, model: 'm', now: later(3) })).skipped, 'no_new_turns');
     assert.equal((await cb.runDistill({ ...base, objectId: null }, { client, model: 'm', now: later(9) })).skipped, 'no_identity');
     assert.equal((await cb.runDistill({ ...base, caller: 'admin-simulator' }, { client, model: 'm', now: later(9) })).skipped, 'simulator');
     assert.equal((await cb.runDistill({ ...base, cursor: 'c3', turns: [{ role: 'assistant', text: 'hello' }] }, { client, model: 'm', now: later(9) })).skipped, 'no_user_turns');
@@ -229,7 +231,7 @@ test('runDistill: a failed model call writes NOTHING and logs clipboard_error lo
     cb._reset();
     const log = fakeLog();
     const before = cb.read('ctid-guestabc');
-    const res = await cb.runDistill({ objectId: 'guestabc', sessionId: 's-3', turns: TURNS, cursor: 'm9' }, { client: fakeClient([], { fail: true }), model: 'gpt-4.1-mini', sessionLog: log, now: later(60) });
+    const res = await cb.runDistill({ objectId: 'guestabc', sessionId: 's-3', turns: [...TURNS, { role: 'user', text: 'My interview moved to Thursday.' }], cursor: 'm9' }, { client: fakeClient([], { fail: true }), model: 'gpt-4.1-mini', sessionLog: log, now: later(60) });
     assert.equal(res.ok, false);
     assert.deepEqual(cb.read('ctid-guestabc'), before);
     assert.equal(log.events[0].name, 'clipboard_error');
@@ -274,6 +276,11 @@ test('Studio: edits lock the item and are audited with counts only; wipe deletes
     assert.deepEqual(w, { removed: true, items: 2 });
     assert.equal(audits[1].action, 'clipboard.wipe');
     assert.equal(cb.blockForVisit({ userId: 'member-9' }).text, '');
+    // What stays is a tombstone: no notes, no write history, no readable text.
+    const tomb = cb.read('user-member-9');
+    assert.deepEqual(tomb.items, []);
+    assert.ok(tomb.wipedAt);
+    assert.ok(!/Acme|Monday|interview/i.test(JSON.stringify(tomb)), 'no content survives a wipe');
 });
 
 test('pricing: clipboard.distill is priced as Responses tokens and shows as its own cost part', () => {
@@ -373,4 +380,33 @@ test('GPT-Live: the block reaches the VOICE layer via session.instructions.appen
     const parts = splitForLiveAppend(block);
     assert.ok(parts.every((p) => p.length <= 1800), parts.map((p) => p.length).join(','));
     assert.equal(parts.join('\n'), block);
+});
+
+test('INVARIANT: turns already read are never re-distilled — restored history on a new page, and after a Studio wipe', async () => {
+    cb._reset();
+    const calls = [];
+    const client = fakeClient([{ op: 'add', kind: 'goal', text: 'Preparing for an interview at Acme' }], { calls });
+    const log = fakeLog();
+    const first = await cb.runDistill({ objectId: 'guesthist', sessionId: 's-h', turns: TURNS, cursor: 'p1-m3' }, { client, model: 'm', sessionLog: log, now: T0 });
+    assert.equal(first.diff.added, 1);
+    assert.equal(cb.read('ctid-guesthist').distilledHashes.length, TURNS.length);
+    // Next visit, new page: the client resends the restored history (its cursor is per page).
+    const again = await cb.runDistill({ objectId: 'guesthist', sessionId: 's-h', turns: TURNS, cursor: 'p2-m3' }, { client, model: 'm', now: later(10) });
+    assert.equal(again.skipped, 'no_new_turns');
+    assert.equal(calls.length, 1, 'no model call for turns already read');
+    // Only the new turns go to the model, with the 2 turns before them as labelled context.
+    const more = [...TURNS, { role: 'user', text: 'I also want to ask for a remote day each week.' }];
+    await cb.runDistill({ objectId: 'guesthist', sessionId: 's-h', turns: more, cursor: 'p2-m4' }, { client, model: 'm', now: later(20) });
+    assert.equal(calls.length, 2);
+    const prompt = calls[1].input[1].content;
+    assert.match(prompt, /Earlier turns, already noted — context only:/);
+    assert.match(prompt, /\(New turns:\)\nPerson: I also want to ask for a remote day each week\./);
+    assert.doesNotMatch(prompt.split('(New turns:)')[1], /freeze on salary/);
+    // Studio deletes everything; the old history still mentions Acme — it must not come back.
+    cb.wipe('ctid-guesthist', { actor: 'admin' });
+    const afterWipe = await cb.runDistill({ objectId: 'guesthist', sessionId: 's-h', turns: more, cursor: 'p3-m4' }, { client, model: 'm', now: later(40) });
+    assert.equal(afterWipe.skipped, 'no_new_turns');
+    assert.equal(calls.length, 2);
+    assert.equal(cb.blockForVisit({ objectId: 'guesthist' }).text, '');
+    assert.equal(cb.list().filter((r) => r.key === 'ctid-guesthist')[0].items.length, 0);
 });
