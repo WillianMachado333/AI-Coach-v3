@@ -2206,6 +2206,7 @@ class VoiceChatBot {
     // Held until the session is configured (after the history replay), so a
     // page-view ping from a coach that is still booting isn't lost.
     _flushHostEvents() {
+        this._injectClipboardIntoSession();
         const queue = this._hostEventQueue || [];
         if (!queue.length || !this.pc || this._historyInjectedFor !== this.pc) return;
         if (!this.dataChannel || this.dataChannel.readyState !== 'open') return;
@@ -2250,6 +2251,7 @@ class VoiceChatBot {
      *   are more likely to persist the assistant reply as the last stored message.
      */
     saveConversationHistory({ preferSoon = false } = {}) {
+        this._clipboardNoteActivity();
         const userId = this.getUserIdFromURL();
         if (!userId) {
             // Silently fail if no userId - don't spam console
@@ -5043,6 +5045,10 @@ class VoiceChatBot {
         this.trackCoachEvent('Stopped AI Voice Mode', {
             SessionDuration: durationSeconds
         });
+
+        // The coach's clipboard: a hang-up closes a stretch of conversation.
+        // Wait for the last transcripts to finalize (≈1.5 s) before sending.
+        setTimeout(() => this._scheduleClipboardDistill('hangup'), 4000);
     }
 
     // Voice Inactivity Timeout Management
@@ -8230,6 +8236,129 @@ class VoiceChatBot {
         }
         m.connectionId = null;
         m.connectedAt = null;
+    }
+
+    // ------------------------------------------------------------------
+    // The coach's clipboard (#23): Erica's private notes about the person,
+    // read once per model session and updated by a server-side distill
+    // after each stretch of conversation. The user never sees it.
+    //
+    //   read:  _injectClipboardIntoSession() — called from _flushHostEvents,
+    //          i.e. after the history replay, once per peer connection; one
+    //          system item, no response.create, never in this.messages.
+    //   write: _scheduleClipboardDistill(reason) — hang-up, 3 min idle after
+    //          the last finished message, and pagehide (keepalive). Only the
+    //          messages after the last distilled one (+2 for context) are
+    //          sent; the server keeps distilled facts, not the transcript.
+    // ------------------------------------------------------------------
+
+    _clipboardIdentity() {
+        let userId = null;
+        try { userId = this.getUserIdFromURL() || null; } catch (_) { /* guest */ }
+        const objectId = (typeof window !== 'undefined' && window.__ttCleverTapId) ? String(window.__ttCleverTapId) : null;
+        let caller = 'app';
+        try { caller = new URLSearchParams(window.location.search).get('caller') || 'app'; } catch (_) { /* default */ }
+        return { userId, objectId, caller };
+    }
+
+    _clipboardState() {
+        if (this._clipboard) return this._clipboard;
+        this._clipboard = { cursor: null, visitAt: new Date().toISOString(), idleTimer: null, inFlight: false };
+        try {
+            window.addEventListener('pagehide', () => this._scheduleClipboardDistill('pagehide'));
+        } catch (_) { /* no window in tests */ }
+        return this._clipboard;
+    }
+
+    _injectClipboardIntoSession() {
+        if (!this.pc || this._historyInjectedFor !== this.pc) return;
+        if (this._clipboardInjectedFor === this.pc) return;
+        if (!this.dataChannel || this.dataChannel.readyState !== 'open') return;
+        const identity = this._clipboardIdentity();
+        if (!identity.userId && !identity.objectId) return; // no identity → no notes (retried on the next flush)
+        const pc = this.pc;
+        this._clipboardInjectedFor = pc;
+        fetch(this.apiUrl('/api/clipboard/block'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: this.sessionId || null, ...identity })
+        })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+            .then((data) => {
+                if (this.pc !== pc) return; // replaced by a reconnect; the new session fetches its own
+                const text = data && typeof data.text === 'string' ? data.text : '';
+                if (!text) {
+                    console.log('[Erica] 📋 Clipboard: no notes about this person yet');
+                    return;
+                }
+                const type = this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create';
+                const ok = this.sendMessage({ type, item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] } });
+                (ok ? console.log : console.warn)(`[Erica] 📋 Clipboard ${ok ? 'injected into' : 'NOT sent to'} the ${this.voiceApiMode} session (${data.lines} lines)`);
+                if (!ok) this._clipboardInjectedFor = null;
+            })
+            .catch((err) => {
+                console.warn('[Erica] 📋 Clipboard fetch FAILED — Erica starts this session without her notes:', err?.message || err);
+                if (this.pc === pc) this._clipboardInjectedFor = null;
+            });
+    }
+
+    // Every finished message (the history-save debounce calls this): push
+    // the idle distill 3 minutes out.
+    _clipboardNoteActivity() {
+        const st = this._clipboardState();
+        clearTimeout(st.idleTimer);
+        st.idleTimer = setTimeout(() => this._scheduleClipboardDistill('idle'), 3 * 60 * 1000);
+    }
+
+    _clipboardPendingTurns() {
+        const st = this._clipboardState();
+        const all = (typeof this.getConversationHistory === 'function' ? this.getConversationHistory() : [])
+            .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.isFinal && typeof m.content === 'string' && m.content.trim());
+        let start = 0;
+        if (st.cursor) {
+            const idx = all.findIndex((m) => m.id === st.cursor);
+            start = idx >= 0 ? idx + 1 : 0;
+        }
+        const fresh = all.slice(start);
+        if (!fresh.some((m) => m.role === 'user')) return null;
+        const turns = all.slice(Math.max(0, start - 2)).slice(-40)
+            .map((m) => ({ role: m.role, text: m.content.slice(0, 2000) }));
+        return { turns, lastId: fresh[fresh.length - 1].id };
+    }
+
+    _scheduleClipboardDistill(reason) {
+        const st = this._clipboardState();
+        clearTimeout(st.idleTimer);
+        const identity = this._clipboardIdentity();
+        if (!identity.userId && !identity.objectId) return;
+        const pending = this._clipboardPendingTurns();
+        if (!pending) return;
+        if (st.inFlight && reason !== 'pagehide') return;
+        const body = JSON.stringify({
+            sessionId: this.sessionId || null, ...identity, reason,
+            turns: pending.turns, cursor: String(pending.lastId), visitAt: st.visitAt
+        });
+        const url = this.apiUrl('/api/clipboard/distill');
+        if (reason === 'pagehide') {
+            // The page is going away: fire and forget (keepalive caps the body at 64 KB).
+            try { fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body.slice(0, 60000), keepalive: true }); } catch (_) { /* best effort */ }
+            return;
+        }
+        st.inFlight = true;
+        fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+            .then((r) => r.json().catch(() => ({})).then((data) => ({ status: r.status, data })))
+            .then(({ status, data }) => {
+                if (data && data.ok && (!data.skipped || data.skipped === 'duplicate' || data.skipped === 'no_user_turns')) {
+                    st.cursor = pending.lastId;
+                    if (data.diff) console.log(`[Erica] 📋 Clipboard updated (${reason}):`, data.diff);
+                } else if (data && (data.skipped === 'throttled' || data.skipped === 'in_flight')) {
+                    st.idleTimer = setTimeout(() => this._scheduleClipboardDistill('retry'), 45 * 1000);
+                } else {
+                    console.warn(`[Erica] 📋 Clipboard NOT updated (${reason}) — HTTP ${status}:`, data && (data.error || data.skipped) || 'unknown');
+                }
+            })
+            .catch((err) => console.warn(`[Erica] 📋 Clipboard distill request failed (${reason}):`, err?.message || err))
+            .finally(() => { st.inFlight = false; });
     }
 
     handleLiveMessage(message) {
