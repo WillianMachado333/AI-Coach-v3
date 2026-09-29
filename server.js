@@ -28,6 +28,7 @@ const agentHistory = require('./lib/agentHistory');
 const runtimeConfig = require('./lib/runtimeConfig');
 const injectedDataStore = require('./lib/injectedDataStore');
 const { createHealthPayload } = require('./lib/health');
+const { resolvePublicPath, looksLikeProbe } = require('./lib/staticPath');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -3029,10 +3030,17 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // Serve static files
-    let filePath = '.' + req.url.split('?')[0];
-    if (filePath === './') {
-        filePath = './index.html';
+    // Serve static files — only what the browser needs (lib/staticPath.js).
+    const filePath = resolvePublicPath(req.url, __dirname);
+    if (!filePath) {
+        if (looksLikeProbe(req.url)) {
+            console.warn('[SERVER] Refused static path:', JSON.stringify(String(req.url).slice(0, 200)),
+                'ip:', req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '?',
+                'ua:', JSON.stringify(String(req.headers['user-agent'] || '').slice(0, 120)));
+        }
+        res.writeHead(404, { 'Content-Type': 'text/html' });
+        res.end('<h1>404 - File Not Found</h1>', 'utf-8');
+        return;
     }
 
     const extname = String(path.extname(filePath)).toLowerCase();
