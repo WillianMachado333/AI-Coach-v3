@@ -29,6 +29,7 @@ const runtimeConfig = require('./lib/runtimeConfig');
 const injectedDataStore = require('./lib/injectedDataStore');
 const { createHealthPayload } = require('./lib/health');
 const { resolvePublicPath, looksLikeProbe } = require('./lib/staticPath');
+const { liveSessionInput } = require('./lib/liveSessionInput');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -2940,6 +2941,22 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
+            // Raw SDP, or JSON { sdp, input } when the client restores a
+            // conversation: input becomes session.input (lib/liveSessionInput.js).
+            let sdp = body;
+            let input = [];
+            if (String(req.headers['content-type'] || '').toLowerCase().includes('application/json')) {
+                try {
+                    const parsed = JSON.parse(body);
+                    sdp = String(parsed.sdp || '');
+                    input = liveSessionInput(parsed.input);
+                } catch (_) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'Expected JSON { sdp, input }' }));
+                    return;
+                }
+            }
+
             const voice = req.headers['x-erica-voice'] || 'marin';
             let shortInstructions = 'You are a voice coaching assistant. Delegate substantive reasoning, ' +
                 'knowledge lookups, and tool use to your backend. Keep spoken replies natural, warm, and ' +
@@ -2961,6 +2978,7 @@ const server = http.createServer(async (req, res) => {
                             model: 'gpt-live-1',
                             instructions: shortInstructions,
                             audio: { output: { voice } },
+                            ...(input.length ? { input } : {}),
                             delegation: {
                                 type: 'responses',
                                 responses: {
@@ -2984,11 +3002,12 @@ const server = http.createServer(async (req, res) => {
                                 }
                             }
                         },
-                        transport: { type: 'webrtc', sdp: body }
+                        transport: { type: 'webrtc', sdp }
                     })
                 });
 
                 const responseText = await openaiRes.text();
+                if (input.length) console.log('[SERVER] /api/proxy/live - session.input:', input.length, 'prior messages');
                 if (openaiRes.status !== 200 && openaiRes.status !== 201) {
                     console.error('[SERVER] /api/proxy/live - OpenAI API error:', {
                         status: openaiRes.status,

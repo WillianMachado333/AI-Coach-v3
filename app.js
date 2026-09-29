@@ -2116,81 +2116,54 @@ class VoiceChatBot {
         // this.logConversationHistory();
     }
 
-    async sendHistoryToOpenAI(history) {
-        if (!history || !Array.isArray(history) || history.length === 0) {
-            return;
+    // A new model session starts empty while the UI restores the old
+    // bubbles, so after every reload or reconnect Erica started from zero
+    // ("I don't have that earlier context"). The recent conversation — what
+    // the user sees — goes into each new session as prior conversation
+    // messages, never with a response.create. Messages rather than a
+    // "conversation so far" block in the instructions: they are the API's
+    // own representation of past turns, and the user's words stay user-role
+    // text instead of gaining system authority.
+    //   Realtime: conversation.item.create right after session.update.
+    //   GPT-Live: session.input at creation (establishConnection). Its voice
+    //   layer never sees items added later — response.item.create reaches
+    //   only the delegated backend.
+    _historyItems() {
+        const onScreen = Array.isArray(this.messages) ? this.messages : [];
+        // Server/preparation history is already merged into this.messages;
+        // the queued copy is only a fallback for a session configured first.
+        const source = onScreen.length ? onScreen : (this.conversationHistoryToSend || []);
+        const turns = window.coachUiRules?.recentHistory ? window.coachUiRules.recentHistory(source) : [];
+        return turns.map((turn) => ({
+            type: 'message',
+            role: turn.role,
+            content: [{ type: turn.role === 'assistant' ? 'output_text' : 'input_text', text: turn.text }]
+        }));
+    }
+
+    // Once per session: configure can run more than once (preparation
+    // arriving late re-pushes the config; rename and speed changes too).
+    _injectHistoryIntoSession(reason) {
+        if (this._historyInjectedFor && this._historyInjectedFor === this.pc) return 0;
+        this._historyInjectedFor = this.pc;
+        this.conversationHistoryToSend = null;
+        if (this.voiceApiMode === 'live') return 0; // sent as session.input at creation
+        const items = this._historyItems();
+        if (!items.length) {
+            console.log(`[Erica] History: nothing to replay into the ${this.voiceApiMode} session (${reason})`);
+            return 0;
         }
-
-        // Wait for data channel to be ready
-        if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-            // Wait a bit and try again
-            setTimeout(() => this.sendHistoryToOpenAI(history), 500);
-            return;
-        }
-
-        // console.log('[Erica] Sending conversation history to OpenAI:', history.length, 'messages');
-
-        // Send each message to OpenAI in the correct format
-        const itemType = this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create';
-        for (const msg of history) {
-            try {
-                if (msg.role === 'user') {
-                    // User messages use input_text
-                    this.sendMessage({
-                        type: itemType,
-                        item: {
-                            type: 'message',
-                            role: 'user',
-                            content: [
-                                {
-                                    type: 'input_text',
-                                    text: msg.content
-                                }
-                            ]
-                        }
-                    });
-                } else if (msg.role === 'assistant') {
-                    // Assistant messages use 'text' type (not input_text or output_text)
-                    // This is the format OpenAI Realtime API expects for assistant message history
-                    this.sendMessage({
-                        type: itemType,
-                        item: {
-                            type: 'message',
-                            role: 'assistant',
-                            content: [
-                                {
-                                    type: 'output_text',
-                                    text: msg.content
-                                }
-                            ]
-                        }
-                    });
-                } else if (msg.role === 'system') {
-                    // System messages (e.g., summaries)
-                    this.sendMessage({
-                        type: itemType,
-                        item: {
-                            type: 'message',
-                            role: 'system',
-                            content: [
-                                {
-                                    type: 'input_text',
-                                    text: msg.content
-                                }
-                            ]
-                        }
-                    });
-                }
-
-                // Small delay between messages to avoid overwhelming the API
-                await new Promise(resolve => setTimeout(resolve, 100));
-            } catch (error) {
-                console.error('[Erica] Error sending history message:', error, msg);
-                // Continue with next message even if one fails
+        let sent = 0;
+        let chars = 0;
+        for (const item of items) {
+            if (this.sendMessage({ type: 'conversation.item.create', item })) {
+                sent++;
+                chars += item.content[0].text.length;
             }
         }
-
-        // console.log('[Erica] Finished sending conversation history');
+        const log = sent === items.length ? console.log : console.warn;
+        log(`[Erica] History: replayed ${sent}/${items.length} messages (${chars} chars) into the ${this.voiceApiMode} session (${reason})`);
+        return sent;
     }
 
     /**
@@ -6319,10 +6292,20 @@ class VoiceChatBot {
                 } catch (_) { /* header omitted, server default kicks in */ }
             }
 
+            // GPT-Live's voice layer only knows prior turns given at creation
+            // (session.input); items added later reach the backend alone. So
+            // a restored conversation rides along with the SDP.
+            let body = this.pc.localDescription.sdp;
+            const liveHistory = isLive ? this._historyItems() : [];
+            if (liveHistory.length) {
+                headers['Content-Type'] = 'application/json';
+                body = JSON.stringify({ sdp: body, input: liveHistory });
+                console.log(`[Erica] History: ${liveHistory.length} messages sent with the new live session (session.input)`);
+            }
             const response = await fetch(this.apiUrl(proxyPath), {
                 method: 'POST',
                 headers,
-                body: this.pc.localDescription.sdp
+                body
             });
 
             if (!response.ok) {
@@ -7013,14 +6996,9 @@ class VoiceChatBot {
             this._instructionOverflow = null;
         }
 
-        // Send conversation history after session is configured
-        if (this.conversationHistoryToSend) {
-            // Wait a bit for session.update to be processed
-            setTimeout(() => {
-                this.sendHistoryToOpenAI(this.conversationHistoryToSend);
-                this.conversationHistoryToSend = null; // Clear after sending
-            }, 500);
-        }
+        // Replay the recent conversation into this new session, before the
+        // opening line or any queued turn (same channel, so same order).
+        if (sentOk) this._injectHistoryIntoSession('realtime session configured');
 
         // Note: opening line is triggered explicitly after connect/reconnect.
     }
@@ -7075,6 +7053,7 @@ class VoiceChatBot {
         this.lastSessionConfig.sentOk = sentOk;
         this.lastSessionConfig.sentAt = Date.now();
         console.log('[Erica][Live] session.update (delegation.responses) sent:', sentOk, 'instructions length:', fullInstructions.length);
+        if (sentOk) this._injectHistoryIntoSession('live session configured');
     }
 
     /**
