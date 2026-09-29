@@ -2423,6 +2423,7 @@ class VoiceChatBot {
         // Note: Audio track events fire once at connection, not per-message
         if ((role === 'user' || role === 'bot') && messageText.length > 0) {
             this.resetVoiceInactivityTimer();
+            if (!this.isRestoringHistory) this._silentCallSawLife(role, id);
         }
 
         if (existing) {
@@ -2848,6 +2849,9 @@ class VoiceChatBot {
     }
 
     toggleMicTrack() {
+        // A call is starting (cold or warm): from here, 20 s without a word
+        // is a silent call (#32). A hang-up click disarms in stopRecording.
+        if (!this.isRecording) this._silentCallArm('click');
         // Detect dead connection (same as sendTextMessage)
         const channelDead = !this.dataChannel || this.dataChannel.readyState !== 'open';
         if (channelDead && this.isConnected) {
@@ -4980,6 +4984,7 @@ class VoiceChatBot {
     }
 
     stopRecording(force = false) {
+        this._silentCallDisarm();
         console.log('[Erica Debug] stopRecording ENTRY. isRecording:', this.isRecording, 'timestamp:', this.recordingStartTimestamp, 'Force:', force);
         if (!this.isRecording && !force) {
             console.warn('[Erica Debug] stopRecording checking failed: isRecording is false');
@@ -8532,6 +8537,101 @@ class VoiceChatBot {
         }).catch(() => { /* the original turn is already logged */ });
     }
 
+    // ------------------------------------------------------------------
+    // Silent calls (#32).
+    //
+    // 1) GPT-Live one-shots (the opening line): speakOneShot() waits for
+    //    the response it asked for to START. Realtime resolves that on its
+    //    own response.created; on Live the backend's response.created comes
+    //    wrapped in response.event and nothing resolved it, so every Live
+    //    opening line waited out the 15 s timeout — and a call started from
+    //    a cold page (no pre-connect, #25) attached the mic only after it:
+    //    ~23 s of dead air, measured on staging. Observed from the
+    //    response.event case.
+    //
+    // 2) The alarm: 20 s after a call starts with no word from Erica or the
+    //    user, say so loudly (console.error) and log a `silent_call` event
+    //    with the connection state, so the Studio can count them instead of
+    //    a user sitting in silence unnoticed.
+    // ------------------------------------------------------------------
+
+    _liveOneShotObserve(inner) {
+        const os = this._oneShot;
+        if (!os || !os.active || !inner) return;
+        const id = inner.response && inner.response.id;
+        if (inner.type === 'response.created' && !os.responseId && id) {
+            os.responseId = id;
+            if (os._resolveStarted && !os._startedResolved) {
+                os._startedResolved = true;
+                os._resolveStarted(true);
+            }
+        } else if ((inner.type === 'response.completed' || inner.type === 'response.failed' || inner.type === 'response.cancelled' || inner.type === 'response.incomplete')
+            && id && os.responseId === id) {
+            this._endOneShot({ responseId: id });
+        }
+    }
+
+    _silentCallArm(reason) {
+        if (this._silentCall && this._silentCall.timer) return;
+        const st = this._silentCall = { armedAt: Date.now(), reason, timer: null };
+        st.timer = setTimeout(() => { this._silentCallCheck(); }, 20000);
+    }
+
+    _silentCallDisarm() {
+        const st = this._silentCall;
+        if (st && st.timer) { clearTimeout(st.timer); st.timer = null; }
+    }
+
+    // Any spoken word in the call — Erica's or the user's — is a sign of
+    // life. Text that arrives before the mic is on (the delegated greeting
+    // on Live) is not: the person in the call hears nothing yet.
+    _silentCallSawLife(role, id) {
+        const st = this._silentCall;
+        if (!st || !st.timer || !this.isRecording) return;
+        if (role === 'bot' && String(id || '').startsWith('live-deleg-')) return;
+        clearTimeout(st.timer);
+        st.timer = null;
+        st.firstLifeMs = Date.now() - st.armedAt;
+    }
+
+    async _silentCallCheck() {
+        const st = this._silentCall;
+        if (!st) return;
+        st.timer = null;
+        const pc = this.pc;
+        let outboundPackets = null;
+        try {
+            const stats = pc ? await pc.getStats() : null;
+            if (stats) stats.forEach((r) => { if (r.type === 'outbound-rtp' && (r.kind === 'audio' || r.mediaType === 'audio')) outboundPackets = r.packetsSent; });
+        } catch (_) { /* stats unavailable */ }
+        const track = this.localStream && this.localStream.getAudioTracks ? this.localStream.getAudioTracks()[0] : null;
+        const meta = {
+            voiceMode: this.voiceApiMode || null,
+            reason: st.reason,
+            msSinceStart: Date.now() - st.armedAt,
+            isConnected: !!this.isConnected,
+            isConnecting: !!this.isConnecting,
+            isRecording: !!this.isRecording,
+            pc: pc ? pc.connectionState : null,
+            ice: pc ? pc.iceConnectionState : null,
+            dataChannel: this.dataChannel ? this.dataChannel.readyState : null,
+            outboundPackets,
+            micTrack: track ? track.readyState : null,
+            senderHasTrack: !!(this.audioSender && this.audioSender.track),
+            oneShotPending: !!(this._oneShot && this._oneShot.active && !this._oneShot._startedResolved),
+        };
+        console.error('[Erica] 🔇 SILENT CALL — 20 s into the call, no word from Erica or the user:', meta);
+        if (!this.sessionId) return;
+        try {
+            fetch(this.apiUrl('/api/session-log'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: this.sessionId, kind: 'event', name: 'silent_call', meta }),
+                keepalive: true
+            }).catch(() => { /* the console line above is the loud part */ });
+        } catch (_) { /* best effort */ }
+    }
+
     handleLiveMessage(message) {
         switch (message.type) {
             case 'session.started':
@@ -8619,6 +8719,8 @@ class VoiceChatBot {
             case 'response.event': {
                 const inner = message.event;
                 if (!inner) break;
+                // The opening line (speakOneShot) waits for its response to start (#32).
+                this._liveOneShotObserve(inner);
                 // Erica's reasoning (#24): collected per delegation for the
                 // Studio; never rendered, never printed.
                 const reasoning = this._liveReasoningLog().observe(inner, message.delegation_id || null);
