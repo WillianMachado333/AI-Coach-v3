@@ -30,6 +30,17 @@ const { LANGUAGE_RULE } = require('./lib/coachUiRules');
 const injectedDataStore = require('./lib/injectedDataStore');
 const coachClipboard = require('./lib/coachClipboard');
 const sessionTurns = require('./lib/sessionTurns');
+const signedIdentity = require('./lib/signedIdentity');
+const auditLog = require('./lib/audit');
+
+// #28: an identity the request may not act as → 401, said plainly.
+function refuseIdentity(res, idn) {
+    res.writeHead(401, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'identity refused', reason: idn.reason || 'signed identity required' }));
+}
+// Server → Wix HTTP functions: the bearer those functions should require
+// (the Wix side of #28). Sent whenever the secret is configured.
+const wixAuthHeader = () => (process.env.ERICA_WIX_API_SECRET ? { Authorization: 'Bearer ' + process.env.ERICA_WIX_API_SECRET } : {});
 const { createHealthPayload } = require('./lib/health');
 const { resolvePublicPath, looksLikeProbe } = require('./lib/staticPath');
 const { liveSessionInput } = require('./lib/liveSessionInput');
@@ -1773,8 +1784,13 @@ const server = http.createServer(async (req, res) => {
                 const requestData = body ? JSON.parse(body) : {};
                 const query = String(requestData.query || '').trim();
                 const scope = String(requestData.scope || 'all');
-                const userId = requestData.userId ? String(requestData.userId) : null;
-                const objectId = requestData.objectId ? String(requestData.objectId) : null;
+                const idn = signedIdentity.resolve(req, {
+                    userId: requestData.userId ? String(requestData.userId) : null,
+                    objectId: requestData.objectId ? String(requestData.objectId) : null
+                }, { endpoint: 'knowledge-search', audit: auditLog, body: requestData });
+                if (!idn.ok) return refuseIdentity(res, idn);
+                const userId = idn.userId;
+                const objectId = idn.objectId;
 
                 if (!query) {
                     res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -1814,6 +1830,14 @@ const server = http.createServer(async (req, res) => {
     if (req.url.startsWith('/api/debug/user')) {
         (async () => {
             try {
+                // Any person's activity + vector-store files: Coach Studio
+                // admins only (#28 — it was an open GET).
+                const adminSession = await admin.requireAdminSession(req);
+                if (!adminSession) {
+                    res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+                    res.end(JSON.stringify({ error: 'admin session required' }));
+                    return;
+                }
                 const url = new URL(req.url, `http://${req.headers.host}`);
                 const userId = url.searchParams.get('userId') || null;
                 const objectId = url.searchParams.get('objectId') || null;
@@ -1882,8 +1906,11 @@ const server = http.createServer(async (req, res) => {
         req.on('end', async () => {
             try {
                 const requestData = body ? JSON.parse(body) : {};
-                const userId = requestData.userId;
-                const objectId = requestData.objectId;
+                const idn = signedIdentity.resolve(req, { userId: requestData.userId, objectId: requestData.objectId },
+                    { endpoint: 'user-activity', audit: auditLog, body: requestData });
+                if (!idn.ok) return refuseIdentity(res, idn);
+                const userId = idn.userId;
+                const objectId = idn.objectId;
 
                 if (!userId && !objectId) {
                     res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -1970,7 +1997,10 @@ const server = http.createServer(async (req, res) => {
             };
             let p;
             try { p = body ? JSON.parse(body) : {}; } catch (_) { return reply(400, { error: 'invalid JSON' }); }
-            const identity = { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null, caller: p.caller || null };
+            const idn = signedIdentity.resolve(req, { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null },
+                { endpoint: 'clipboard', audit: auditLog, body: p });
+            if (!idn.ok) return refuseIdentity(res, idn);
+            const identity = { userId: idn.userId, objectId: idn.objectId, caller: p.caller || null };
             const sid = typeof p.sessionId === 'string' ? p.sessionId : null;
             try {
                 if (!isDistill) {
@@ -2129,7 +2159,7 @@ const server = http.createServer(async (req, res) => {
             body += chunk.toString();
         });
 
-        req.on('end', () => {
+        req.on('end', async () => {
             try {
                 logAt('debug', '[SERVER] /api/erica-preparation - Body received:', safePreview(body, 500));
 
@@ -2146,13 +2176,20 @@ const server = http.createServer(async (req, res) => {
                 const requestData = JSON.parse(body);
                 console.log('[SERVER] /api/erica-preparation - Parsed data:', requestData);
 
-                // Accept either userId (preferred) or email; allow empty (guest mode)
-                const userId = requestData.userId;
-                const email = requestData.email;
-                // objectId (CleverTap anonymous ID) bridged from parent page for
-                // guest users. When userId is absent, we use objectId to key the
-                // activity cache and CleverTap query.
-                const objectId = requestData.objectId;
+                // Who this is (#28): from the Wix-signed token when there is one;
+                // the loose userId/email only while ERICA_REQUIRE_SIGNED_IDENTITY
+                // is off. objectId (CleverTap, guest) stays unsigned either way.
+                // The Studio Simulator poses as a user: allowed for an admin session only.
+                const simulatorCaller = String(requestData.caller || '').toLowerCase().includes('simulator') || String(req.url || '').includes('simulator=1');
+                const trustLoose = simulatorCaller && signedIdentity.status().required && !signedIdentity.tokenFrom(req, requestData)
+                    ? !!(await admin.requireAdminSession(req)) : false;
+                const idn = signedIdentity.resolve(req, { userId: requestData.userId, email: requestData.email, objectId: requestData.objectId },
+                    { endpoint: 'erica-preparation', audit: auditLog, body: requestData, trustLoose });
+                if (!idn.ok) return refuseIdentity(res, idn);
+                const userId = idn.userId;
+                const email = idn.email;
+                const objectId = idn.objectId;
+                if (idn.source === 'unsigned') logAt('info', '[SERVER] /api/erica-preparation - identity is UNSIGNED (loose userId/email; ERICA_REQUIRE_SIGNED_IDENTITY off)');
 
                 if (!userId && !email) {
                     logAt('info', '[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
@@ -2176,7 +2213,8 @@ const server = http.createServer(async (req, res) => {
                     email, userId, objectId,
                     caller: requestData.caller || null,
                     url: req.headers.referer || null,
-                    resumeSessionId: typeof requestData.sessionId === 'string' ? requestData.sessionId : null
+                    resumeSessionId: typeof requestData.sessionId === 'string' ? requestData.sessionId : null,
+                    identitySource: idn.source
                 });
 
                 // Check cache first
@@ -2244,6 +2282,7 @@ const server = http.createServer(async (req, res) => {
                     path: PREP_PATH,
                     method: 'POST',
                     headers: {
+                        ...wixAuthHeader(),
                         'Content-Type': 'application/json',
                         'Content-Length': Buffer.byteLength(postData, 'utf8'),
                         // Emulate a standard browser to avoid aggressive WAF/bot blocking (429s)
@@ -2394,7 +2433,10 @@ const server = http.createServer(async (req, res) => {
         req.on('end', () => {
             try {
                 const requestData = JSON.parse(body);
-                const userId = requestData.userId;
+                const idn = signedIdentity.resolve(req, { userId: requestData.userId }, { endpoint: 'conversation-history-save', audit: auditLog, body: requestData });
+                if (!idn.ok) return refuseIdentity(res, idn);
+                if (signedIdentity.status().required && idn.source !== 'signed') return refuseIdentity(res, { reason: 'signed identity required' });
+                const userId = idn.userId;
                 const text = requestData.text;
 
                 if (!userId || !text) {
@@ -2418,6 +2460,7 @@ const server = http.createServer(async (req, res) => {
                     path: '/_functions/ericaConversationHistorySave',
                     method: 'POST',
                     headers: {
+                        ...wixAuthHeader(),
                         'Content-Type': 'application/json',
                         'Content-Length': Buffer.byteLength(postData, 'utf8'),
                         // Emulate a standard browser to avoid aggressive WAF/bot blocking (429s)
@@ -2507,7 +2550,10 @@ const server = http.createServer(async (req, res) => {
                     logAt('debug', '[SERVER] /api/conversation-history-fetch - Body received:', safePreview(body, 400));
                 }
                 const requestData = JSON.parse(body);
-                const userId = requestData.userId;
+                const idn = signedIdentity.resolve(req, { userId: requestData.userId }, { endpoint: 'conversation-history-fetch', audit: auditLog, body: requestData });
+                if (!idn.ok) return refuseIdentity(res, idn);
+                if (signedIdentity.status().required && idn.source !== 'signed') return refuseIdentity(res, { reason: 'signed identity required' });
+                const userId = idn.userId;
 
                 if (!userId) {
                     logAt('warn', '[SERVER] /api/conversation-history-fetch - No userId in request:', { reqId });
@@ -2534,6 +2580,7 @@ const server = http.createServer(async (req, res) => {
                     path: '/_functions/ericaConversationHistoryFetch',
                     method: 'POST',
                     headers: {
+                        ...wixAuthHeader(),
                         'Content-Type': 'application/json',
                         'Content-Length': Buffer.byteLength(postData, 'utf8')
                     }
@@ -3203,6 +3250,11 @@ server.listen(PORT, () => {
     console.log(`[SERVER] Voice API: ${VOICE_API}` + (VOICE_API === 'live'
         ? ` (model gpt-live-1, backend ${LIVE_BACKEND_MODEL})`
         : ` (model ${REALTIME_MODEL})`));
+
+    // Signed identity (#28): say which mode this server is in, loudly if misconfigured.
+    const idStatus = signedIdentity.status();
+    if (idStatus.required && !idStatus.secretConfigured) console.error('[SERVER] 🔴 ERICA_REQUIRE_SIGNED_IDENTITY=on but WIX_IDENTITY_SECRET is not set — every signed-in identity will be refused');
+    else console.log(`[SERVER] Identity: signed tokens ${idStatus.secretConfigured ? 'verified' : 'NOT verifiable (no WIX_IDENTITY_SECRET)'}; unsigned userId/email ${idStatus.required ? 'REFUSED' : 'accepted (ERICA_REQUIRE_SIGNED_IDENTITY off)'}`);
 
     // Coach clipboard: guest records expire 90 days after the last visit.
     try { coachClipboard.sweepExpiredGuests(); } catch (e) { console.warn('[SERVER] clipboard sweep failed:', e?.message || e); }
