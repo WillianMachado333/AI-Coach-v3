@@ -2501,6 +2501,8 @@ class VoiceChatBot {
         if (isFinal && !this.isRestoringHistory) {
             // Prefer saving shortly after bot final so the stored transcript typically ends with the assistant reply.
             this.saveConversationHistory({ preferSoon: role === 'bot' });
+            // Studio transcript (#30): one session-log turn per final message.
+            this._logTurnFor(message);
 
             // Trigger summarization check
             if (this.messages.length >= 70) { // Slight optimization: check early
@@ -2668,6 +2670,7 @@ class VoiceChatBot {
                 // realtime channel. No DOM keydown fallback needed.
                 try {
                     if (typeof this.sendTextMessage === 'function') {
+                        this._nextTurnInputType = { type: 'pill', until: Date.now() + 2000 };
                         this.sendTextMessage(data.label);
                     } else {
                         console.warn('[Erica] SEND_PILL_INDEX: sendTextMessage not available');
@@ -3595,6 +3598,7 @@ class VoiceChatBot {
             btn.classList.remove('hidden');
             btn.onclick = () => {
                 if (typeof this.sendTextMessage === 'function') {
+                    this._nextTurnInputType = { type: 'pill', until: Date.now() + 2000 };
                     this.sendTextMessage(suggestion);
                 }
             };
@@ -8171,6 +8175,11 @@ class VoiceChatBot {
     _recordRealtimeResponseUsage(message) {
         const response = message && message.response;
         if (!response) return;
+        if (response.id && Array.isArray(response.output)) {
+            if (!this._turnResponseByItem) this._turnResponseByItem = new Map();
+            for (const item of response.output) if (item && item.id) this._turnResponseByItem.set(item.id, response.id);
+            if (this._turnResponseByItem.size > 400) this._turnResponseByItem.delete(this._turnResponseByItem.keys().next().value);
+        }
         if (!response.usage) {
             console.warn('[Erica][usage] response.done without usage — this response is not metered:', response.id);
             return;
@@ -8409,6 +8418,111 @@ class VoiceChatBot {
             })
             .catch((err) => console.warn(`[Erica] 📋 Clipboard distill request failed (${reason}):`, err?.message || err))
             .finally(() => { st.inFlight = false; });
+    }
+
+    // ------------------------------------------------------------------
+    // Session transcript for the Studio (#30): one session-log event per
+    // FINAL message — user_turn { text, inputType, attachment names } and
+    // bot_turn { text, voiceMode, responseId / delegationId }. Hooked where
+    // upsertMessage already saves history on a final message, so typed and
+    // spoken, Live and Realtime all land; never partial deltas, never a
+    // restored message. User text is redacted server-side unless
+    // STORE_MESSAGE_TEXT says otherwise.
+    // ------------------------------------------------------------------
+
+    _logTurnFor(message) {
+        if (!message || this.isRestoringHistory) return;
+        if (message.role !== 'user' && message.role !== 'bot') return;
+        if (!this._turnLog) this._turnLog = new Map(); // messageId -> { posted, text, timer }
+        let st = this._turnLog.get(message.id);
+        if (!st) {
+            st = { posted: false, text: null, timer: null };
+            this._turnLog.set(message.id, st);
+            if (this._turnLog.size > 400) this._turnLog.delete(this._turnLog.keys().next().value);
+        }
+        const flush = () => {
+            if (!st.posted) this._postTurn(message, st);
+            else if (message.role === 'bot' && String(message.text || '').trim() !== st.text) this._postTurnRevision(message, st);
+        };
+        if (message.role === 'user') { flush(); return; }
+        // Bot: a short settle so the Realtime response id is known and a
+        // re-finalize (QC cleanup) lands as one turn, not two.
+        clearTimeout(st.timer);
+        st.timer = setTimeout(flush, 600);
+    }
+
+    _turnInputType(message) {
+        const pending = this._nextTurnInputType;
+        if (pending && pending.until > Date.now() && String(message.id).startsWith('user-text-')) {
+            this._nextTurnInputType = null;
+            return pending.type;
+        }
+        if (Array.isArray(message.attachments) && message.attachments.some((a) => a && a.kind === 'image')) return 'photo';
+        return message.inputType === 'voice' ? 'voice' : 'text';
+    }
+
+    // Which model response produced this bot message: Realtime maps output
+    // item → response id at response.done; on GPT-Live the answer belongs to
+    // the latest delegation opened since the user's last message.
+    _turnModelIds(message) {
+        if (this.voiceApiMode !== 'live') {
+            const responseId = this._turnResponseByItem ? this._turnResponseByItem.get(message.id) : null;
+            return responseId ? { responseId } : {};
+        }
+        const started = this._liveDelegationStartedAt;
+        if (!started || !started.size) return {};
+        const lastUser = (this.messages || []).filter((m) => m.role === 'user' && m.timestamp <= (message.timestamp || Date.now()))
+            .reduce((t, m) => Math.max(t, m.timestamp || 0), 0);
+        let best = null;
+        for (const [id, at] of started) {
+            if (at >= lastUser - 1000 && (!best || at > best.at)) best = { id, at };
+        }
+        return best ? { delegationId: best.id } : {};
+    }
+
+    _postTurn(message, st) {
+        const text = String(message.text || '').trim();
+        const attachments = Array.isArray(message.attachments) ? message.attachments.map((a) => a && a.name).filter(Boolean) : [];
+        if (!text && !attachments.length) return; // hidden by QC / empty: nothing was said
+        if (!this.sessionId) {
+            if (!this._turnNoSessionWarned) {
+                this._turnNoSessionWarned = true;
+                console.warn('[Erica] 🗒 Turn NOT logged — no session id yet (preparation not answered); the Studio transcript will miss it');
+            }
+            return;
+        }
+        const isUser = message.role === 'user';
+        const meta = { messageId: message.id, at: new Date(message.timestamp || Date.now()).toISOString() };
+        if (isUser) {
+            meta.inputType = this._turnInputType(message);
+            if (attachments.length) meta.attachments = attachments;
+        } else {
+            meta.voiceMode = this.voiceApiMode || null;
+            meta.inCall = !!this.isRecording;
+            Object.assign(meta, this._turnModelIds(message));
+        }
+        st.posted = true;
+        st.text = text;
+        fetch(this.apiUrl('/api/session-log'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: this.sessionId, kind: isUser ? 'user_turn' : 'bot_turn', text, meta }),
+            keepalive: true
+        }).then((r) => {
+            if (!r.ok) console.warn(`[Erica] 🗒 ${isUser ? 'user' : 'bot'} turn NOT logged — HTTP ${r.status}`);
+        }).catch((err) => console.warn(`[Erica] 🗒 ${isUser ? 'user' : 'bot'} turn NOT logged:`, err?.message || err));
+    }
+
+    _postTurnRevision(message, st) {
+        const text = String(message.text || '').trim();
+        st.text = text;
+        if (!this.sessionId) return;
+        fetch(this.apiUrl('/api/session-log'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId: this.sessionId, kind: 'turn_revised', meta: { messageId: message.id, text } }),
+            keepalive: true
+        }).catch(() => { /* the original turn is already logged */ });
     }
 
     handleLiveMessage(message) {
