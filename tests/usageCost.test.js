@@ -74,6 +74,23 @@ test('live backend response.completed: cached input, reasoning inside output, lo
     assert.equal(big.usd, Math.round((300000 * 4.0 + 100 * 18.0) / 1e6 * 1e6) / 1e6);
 });
 
+test('live backend: cache writes (seen on the wire) bill at 1.25x input, inside input_tokens', () => {
+    // Verbatim from a staging capture, 2026-09-29: 8788 = 8270 cached + 442 written + 76 plain.
+    const usage = {
+        input_tokens: 8788, input_tokens_details: { cache_write_tokens: 442, cached_tokens: 8270 },
+        output_tokens: 147, output_tokens_details: { reasoning_tokens: 64 }, total_tokens: 8935,
+    };
+    const p = cost.priceResponsesUsage('gpt-5.6-terra', usage);
+    const expected = (76 * 2.0 + 442 * 2.0 * 1.25 + 8270 * 0.2 + 147 * 12.0) / 1e6;
+    assert.equal(p.usd, Math.round(expected * 1e6) / 1e6);
+    assert.equal(p.tokens.cache_write, 442);
+    assert.equal(p.tokens.cached_in, 8270);
+    // A cache-write count that overshoots the uncached remainder is clamped, never negative plain input.
+    const odd = cost.priceResponsesUsage('gpt-5.6-terra', { input_tokens: 100, input_tokens_details: { cached_tokens: 90, cache_write_tokens: 50 }, output_tokens: 0 });
+    assert.equal(odd.tokens.cache_write, 10);
+    assert.equal(odd.usd, Math.round((10 * 2.0 * 1.25 + 90 * 0.2) / 1e6 * 1e6) / 1e6);
+});
+
 test('transcription usage: duration shape priced per minute, token shape needs a token model', () => {
     const d = cost.priceTranscriptionUsage('whisper-1', { type: 'duration', seconds: 30 });
     assert.equal(d.usd, 0.003);
