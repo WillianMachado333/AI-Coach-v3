@@ -6460,10 +6460,13 @@ class VoiceChatBot {
                 }, 800);
             } else {
                 // Also try to cancel any response that might be active but not tracked
-                // Clear input buffer to stop any ongoing processing
-                this.sendMessage({
-                    type: 'input_audio_buffer.clear'
-                });
+                // Clear input buffer to stop any ongoing processing. Realtime-only
+                // event: GPT-Live answers it with invalid_request_error.
+                if (this.voiceApiMode !== 'live') {
+                    this.sendMessage({
+                        type: 'input_audio_buffer.clear'
+                    });
+                }
 
                 // Clear active audio responses
                 this.activeAudioResponses.clear();
