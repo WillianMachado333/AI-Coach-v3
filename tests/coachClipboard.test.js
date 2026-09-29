@@ -291,7 +291,7 @@ test('pricing: clipboard.distill is priced as Responses tokens and shows as its 
     const s = usageCost.summarizeSession([{ type: 'usage', t: T0.toISOString(), source: 'clipboard.distill', model: 'gpt-4.1-mini', responseId: 'r1', usage: u }]);
     assert.equal(s.parts.clipboard, 0.00264);
     assert.equal(s.usd, 0.00264);
-    assert.match(usageCost.toCsv([{ sessionId: 's', cost: s }]).split('\r\n')[0], /usd_clipboard$/);
+    assert.match(usageCost.toCsv([{ sessionId: 's', cost: s }]).split('\r\n')[0], /usd_clipboard,person,legacyVisits$/);
 });
 
 test('client: the block rides the host-event gate, as a system item with no response.create; triggers are wired', () => {

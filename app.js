@@ -5562,6 +5562,8 @@ class VoiceChatBot {
                                     ...(typeof window !== 'undefined' && window.__ttCleverTapId
                                         ? { objectId: String(window.__ttCleverTapId) }
                                         : {}),
+                                    // Same page, same visit (#27): a reconnect resumes this session.
+                                    ...(this.sessionId && /^s-v/.test(this.sessionId) ? { sessionId: this.sessionId } : {}),
                                     ...(prepId && typeof prepId === 'string' && prepId.includes('@')
                                         ? { email: prepId }
                                         : prepId
