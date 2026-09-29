@@ -104,3 +104,28 @@ test('a backend answer counts as spoken only if the speech covers it', () => {
         " Hi there, I'm Erica. Nice to meet you. What would you like to explore today?"), false);
     assert.equal(rules.spokenCovers('', ' anything'), true);
 });
+
+test('recent history: last finished turns, API roles, clipped and capped', () => {
+    const messages = [
+        { role: 'user', text: 'first', final: true },
+        { role: 'bot', text: 'reply one', final: true },
+        { role: 'bot', text: 'still streaming', final: false },
+        { role: 'system', text: 'not a turn', final: true },
+        { role: 'user', text: '   ', final: true },
+        { role: 'user', content: 'from the server shape' }
+    ];
+    assert.deepEqual(rules.recentHistory(messages), [
+        { role: 'user', text: 'first' },
+        { role: 'assistant', text: 'reply one' },
+        { role: 'user', text: 'from the server shape' }
+    ]);
+    const many = Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? 'bot' : 'user', text: `turn ${i}`, final: true }));
+    const last = rules.recentHistory(many);
+    assert.equal(last.length, 12);
+    assert.equal(last[11].text, 'turn 39');
+    const long = Array.from({ length: 12 }, (_, i) => ({ role: 'user', text: 'x'.repeat(3000) + i, final: true }));
+    const capped = rules.recentHistory(long);
+    assert.ok(capped.every((t) => t.text.length <= 1500));
+    assert.ok(capped.reduce((sum, t) => sum + t.text.length, 0) <= 6000);
+    assert.deepEqual(rules.recentHistory(null), []);
+});
