@@ -6363,7 +6363,7 @@ class VoiceChatBot {
                     `You are ${name}, a ${roleLabel} at Talent Transformation, in a live voice conversation. ` +
                     'Speak naturally and warmly; keep replies concise (2-4 sentences) unless asked for more. ' +
                     'Never say the word "score" — say "result" or "pattern" instead. ' +
-                    'Always reply in the language the user is currently speaking; do not default to English. ' +
+                    this._languageRule() + ' ' +
                     'Delegate substantive reasoning, knowledge lookups, and tool use to your backend — it has ' +
                     'your full coaching instructions and the tools you need. ' +
                     'Your backend can see the page the user is on: when they mention this page, this report or ' +
@@ -6784,6 +6784,13 @@ class VoiceChatBot {
     // string as session.delegation.responses.instructions (the backend/
     // substance layer) while session.instructions itself stays short — see
     // configureLiveSession().
+    // The language rule every voice prompt carries (lib/coachUiRules.js).
+    _languageRule() {
+        const rule = window.coachUiRules && window.coachUiRules.LANGUAGE_RULE;
+        if (!rule) console.error('[Erica] LANGUAGE_RULE missing — voice prompts go out without a language rule');
+        return rule || '';
+    }
+
     _buildComposedInstructions() {
         // Build instructions using SANDWICH approach:
         //   [1] Persona identity block (primacy — "who am I")
@@ -6843,10 +6850,8 @@ class VoiceChatBot {
         // [2] GLOBAL PREAMBLE (rules, scope, resources — identical for all coaches)
         instructions += globalBlock;
 
-        // [3] LANGUAGE DETECTION
-        instructions += '\n\nAlways respond in the same language the user is currently using. ' +
-            'Detect the language of the user\'s latest message and reply in that exact language. ' +
-            'Do not default to English. Do not carry over the language from previous messages in the conversation history.';
+        // [3] LANGUAGE (one rule, shared with the Live short instructions)
+        instructions += '\n\n' + this._languageRule();
 
         // --- Fix 3: Persona reinforcement at the END (recency effect) ---
         if (persona) {
@@ -6932,7 +6937,7 @@ class VoiceChatBot {
                     bd.voiceStyle = Math.max(0, preSep.length - bd.persona);
                 }
                 // Language block is our fixed constant.
-                const langBlock = 'Always respond in the same language';
+                const langBlock = this._languageRule().slice(0, 40);
                 const langIdx = instructions.indexOf(langBlock);
                 if (langIdx > 0) bd.languageDetection = Math.min(500, instructions.length - langIdx);
                 // Reinforcement at the very end.
