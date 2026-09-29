@@ -363,8 +363,9 @@
 /* Call mode swaps what's INSIDE the pill and nothing around it: same row,
    same pill width and height, same #composerBar height, same chat bottom
    padding. Shrinking the pill and floating a separate controls panel above
-   the composer made the whole bottom of the screen jump on every toggle. */
-#inputWrapper.voice-mode-active #userTextInput,
+   the composer made the whole bottom of the screen jump on every toggle.
+   The textarea stays (typing mid-call); only the dictation mic gives its
+   slot to the mute and speaker toggles. */
 #inputWrapper.voice-mode-active #dictationBtn {
     display: none;
 }
@@ -372,11 +373,8 @@
 .call-controls {
     align-items: center;
     display: flex;
-    flex: 1 1 auto;
-    gap: 4px;
-    /* The textarea's one-row height, so the pill doesn't change size. */
-    height: 48px;
-    min-width: 0;
+    flex: 0 0 auto;
+    gap: 2px;
 }
 
 .call-controls.hidden {
@@ -396,36 +394,6 @@
 
 .call-control-btn:hover {
     background: rgba(15, 23, 42, 0.05);
-}
-
-.call-status {
-    align-items: center;
-    color: #64748b;
-    display: flex;
-    font-size: 13px;
-    gap: 6px;
-    margin-left: auto;
-    overflow: hidden;
-    padding-right: 12px;
-    white-space: nowrap;
-}
-
-.call-status-dot {
-    animation: call-status-pulse 1.6s ease-in-out infinite;
-    background: #14b8a6;
-    border-radius: 9999px;
-    flex: 0 0 auto;
-    height: 8px;
-    width: 8px;
-}
-
-@keyframes call-status-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .call-status-dot { animation: none; }
 }
 
 /* In a call the round button stays exactly where it is and becomes End call

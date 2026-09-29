@@ -80,3 +80,27 @@ test('persona assets key off the profile files, not the voice or the display nam
         assert.equal(rules.personaAssetKey(profile), null);
     }
 });
+
+// Regression: a turn typed mid-call was answered by the backend ("BANANA")
+// while the voice layer kept saying its greeting — "something was spoken"
+// hid the answer. Only speech that covers the answer counts.
+test('a backend answer counts as spoken only if the speech covers it', () => {
+    assert.equal(rules.spokenCovers('BANANA', " Hey there! I'm Erica, nice to meet you."), false);
+    assert.equal(rules.spokenCovers('BANANA', ' Banana.'), true);
+    assert.equal(rules.spokenCovers('Two plus two equals four.', ''), false);
+    // Paraphrase of the same answer (spoken from the tool result), curly vs straight apostrophes.
+    assert.equal(rules.spokenCovers(
+        'I’m not able to access the page context right now, so I can’t confirm its title.',
+        " I can't see the page context right now, so I can't confirm its title."), true);
+    assert.equal(rules.spokenCovers(
+        'I’m unable to access the current page’s details right now, so I can’t confirm its title.',
+        " Okay, I'll check that quickly. I’m having a little trouble pulling that in right now, so I can’t confirm the page title at the moment."), true);
+    // Shortened: the voice layer drops half of the answer.
+    assert.equal(rules.spokenCovers(
+        'I can’t access the current page’s details right now, so I’m unable to see its title.',
+        " Mhm, checking it now. I’m not able to see that page's details right now."), true);
+    // A greeting still playing never counts as a real answer.
+    assert.equal(rules.spokenCovers('Great job finishing the quiz, keep building on your strengths.',
+        " Hi there, I'm Erica. Nice to meet you. What would you like to explore today?"), false);
+    assert.equal(rules.spokenCovers('', ' anything'), true);
+});

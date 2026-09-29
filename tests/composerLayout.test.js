@@ -37,3 +37,24 @@ test('the round call button stays in place and becomes End call', () => {
     const fn = layout.slice(layout.indexOf('function setCallModePanelOpen('), layout.indexOf('function updateCallPanelSpeakerUI('));
     assert.match(fn, /'End call'/);
 });
+
+// Reported: "ficamos sem a opção de mandar mensagem de texto" and "estamos
+// contando que está em call em 3 pontos diferentes". The textarea stays in a
+// call; the dictation slot becomes [mute][speaker]; End call is the only
+// in-composer call indicator.
+test('in a call the textarea stays and the dictation slot becomes mute + speaker', () => {
+    const html = read('index.html');
+    const at = (id) => html.indexOf(`id="${id}"`);
+    assert.ok(at('attachmentButton') < at('userTextInput'), 'attach, then textarea');
+    assert.ok(at('userTextInput') < at('callModePanel') && at('callModePanel') < at('dictationBtn'), 'call controls sit in the dictation slot');
+    assert.ok(at('callMicMuteBtn') < at('callSpeakerBtn'), 'mute, then speaker');
+    const css = read('styles.css');
+    assert.doesNotMatch(css, /voice-mode-active\s+#userTextInput/, 'the textarea must not be hidden in a call');
+    assert.match(css, /voice-mode-active\s+#dictationBtn\s*\{\s*display:\s*none/);
+});
+
+test('End call is the one in-composer call indicator', () => {
+    for (const file of ['index.html', 'styles.css', 'uiLayout.js']) {
+        assert.doesNotMatch(read(file), /call-status|>\s*In call\s*</, file);
+    }
+});

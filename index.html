@@ -47,7 +47,7 @@
     </script>
 
     <!-- Custom animations remaining in CSS -->
-    <link rel="stylesheet" href="styles.css?v=20260929d">
+    <link rel="stylesheet" href="styles.css?v=20260929v">
 
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -445,11 +445,32 @@
                         class="w-full bg-transparent border-none focus:ring-0 resize-none py-3 pl-1 pr-2 text-gray-800 placeholder-gray-400 max-h-32 text-[15px] leading-normal text-base"
                         style="min-height: 48px;"></textarea>
 
-                    <!-- Call controls. In a call they take the textarea's place
-                         inside this same pill, so the composer keeps one
-                         geometry in both modes: same row, same height, same
-                         pill; the round button to the right becomes End call. -->
+                    <!-- Call controls. In a call the dictation mic's slot becomes the
+                         mute toggle, with the speaker toggle next to it; the textarea
+                         stays, so the user can type mid-call. Same pill, same height,
+                         same row; the round button to the right becomes End call, the
+                         one in-composer sign that a call is on. -->
                     <div id="callModePanel" class="call-controls hidden" role="group" aria-label="Call controls">
+                        <button id="callMicMuteBtn" type="button" class="call-control-btn text-iconColor"
+                            aria-label="Mute microphone">
+                            <!-- mic on -->
+                            <svg id="callMicOnIcon" xmlns="http://www.w3.org/2000/svg" width="19" height="19"
+                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 1a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3Z" />
+                                <path d="M19 11a7 7 0 0 1-14 0" />
+                                <path d="M12 18v4" />
+                            </svg>
+                            <!-- mic off -->
+                            <svg id="callMicOffIcon" xmlns="http://www.w3.org/2000/svg" width="19" height="19"
+                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" class="hidden">
+                                <line x1="1" y1="1" x2="23" y2="23"></line>
+                                <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
+                                <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path>
+                                <line x1="12" y1="19" x2="12" y2="23"></line>
+                            </svg>
+                        </button>
                         <div class="relative flex items-center">
                             <button id="callSpeakerBtn" type="button" class="call-control-btn text-iconColor"
                                 aria-label="Toggle sound">
@@ -483,27 +504,6 @@
                                 <div class="bar"></div>
                             </div>
                         </div>
-                        <button id="callMicMuteBtn" type="button" class="call-control-btn text-iconColor"
-                            aria-label="Mute microphone">
-                            <!-- mic on -->
-                            <svg id="callMicOnIcon" xmlns="http://www.w3.org/2000/svg" width="19" height="19"
-                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                                stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M12 1a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3Z" />
-                                <path d="M19 11a7 7 0 0 1-14 0" />
-                                <path d="M12 18v4" />
-                            </svg>
-                            <!-- mic off -->
-                            <svg id="callMicOffIcon" xmlns="http://www.w3.org/2000/svg" width="19" height="19"
-                                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                                stroke-linecap="round" stroke-linejoin="round" class="hidden">
-                                <line x1="1" y1="1" x2="23" y2="23"></line>
-                                <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
-                                <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path>
-                                <line x1="12" y1="19" x2="12" y2="23"></line>
-                            </svg>
-                        </button>
-                        <span class="call-status"><span class="call-status-dot" aria-hidden="true"></span>In call</span>
                     </div>
 
                     <!-- Dictation fills the text field; it is distinct from the call action. -->
@@ -669,10 +669,10 @@
     <script src="stateManager.js?v=20260428b"></script>
     <script src="iframeMessaging.js?v=20260428b"></script>
     <script src="navigator.js?v=20260428b"></script>
-    <script src="lib/coachUiRules.js?v=20260929p"></script>
+    <script src="lib/coachUiRules.js?v=20260929v"></script>
     <script src="lib/attachmentRules.js?v=20260929a"></script>
     <script src="uiLayout.js?v=20260929p"></script>
-    <script src="app.js?v=20260929p"></script>
+    <script src="app.js?v=20260929v"></script>
 </body>
 
 </html>
