@@ -28,6 +28,7 @@ const agentHistory = require('./lib/agentHistory');
 const runtimeConfig = require('./lib/runtimeConfig');
 const { LANGUAGE_RULE } = require('./lib/coachUiRules');
 const injectedDataStore = require('./lib/injectedDataStore');
+const coachClipboard = require('./lib/coachClipboard');
 const { createHealthPayload } = require('./lib/health');
 const { resolvePublicPath, looksLikeProbe } = require('./lib/staticPath');
 const { liveSessionInput } = require('./lib/liveSessionInput');
@@ -1928,6 +1929,57 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // The coach's clipboard (#23): Erica's private notes about the person.
+    // Identity is trusted from the client here exactly as it is for
+    // conversation history (see lib/coachClipboard.js). Neither route ever
+    // returns more than the rendered block for the caller's own identity.
+    //
+    //   POST /api/clipboard/block   { sessionId?, userId?, objectId?, caller? } -> { text, lines }
+    //   POST /api/clipboard/distill { sessionId, userId?, objectId?, caller?, turns[], cursor, visitAt? } -> { ok, skipped?, diff? }
+    if (req.url.startsWith('/api/clipboard/block') || req.url.startsWith('/api/clipboard/distill')) {
+        const isDistill = req.url.startsWith('/api/clipboard/distill');
+        if (req.method !== 'POST') {
+            res.writeHead(405, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+        }
+        let body = '';
+        let tooBig = false;
+        req.on('data', (chunk) => {
+            body += chunk.toString();
+            if (body.length > 96 * 1024) { tooBig = true; req.destroy(); }
+        });
+        req.on('end', async () => {
+            if (tooBig) return;
+            const reply = (status, obj) => {
+                res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+                res.end(JSON.stringify(obj));
+            };
+            let p;
+            try { p = body ? JSON.parse(body) : {}; } catch (_) { return reply(400, { error: 'invalid JSON' }); }
+            const identity = { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null, caller: p.caller || null };
+            const sid = typeof p.sessionId === 'string' ? p.sessionId : null;
+            try {
+                if (!isDistill) {
+                    const block = coachClipboard.blockForVisit(identity);
+                    if (sid && block.key) {
+                        sessionLog.logEvent(sid, { name: 'clipboard_read', meta: { key: block.key, lines: block.lines, omitted: block.omitted || 0, chars: block.text.length, adopted: !!block.adopted } });
+                    }
+                    return reply(200, { text: block.text, lines: block.lines });
+                }
+                const result = await coachClipboard.runDistill(
+                    { ...identity, sessionId: sid, turns: p.turns, cursor: typeof p.cursor === 'string' ? p.cursor.slice(0, 120) : null, visitAt: typeof p.visitAt === 'string' ? p.visitAt.slice(0, 40) : null },
+                    { client: vectorStore.getClientOrNull(), model: process.env.CLIPBOARD_MODEL || 'gpt-4.1-mini', sessionLog }
+                );
+                return reply(result.ok ? 200 : 502, result);
+            } catch (e) {
+                console.error(`[SERVER] /api/clipboard/${isDistill ? 'distill' : 'block'} error:`, e?.message || e);
+                return reply(500, { error: 'clipboard error' });
+            }
+        });
+        return;
+    }
+
     // Handle follow-up suggestions (dynamic quick-action pills)
     // POST body: { messages: [...], persona?: string }
     // Returns:   { suggestions: string[], model: string }
@@ -3135,6 +3187,10 @@ server.listen(PORT, () => {
     console.log(`[SERVER] Voice API: ${VOICE_API}` + (VOICE_API === 'live'
         ? ` (model gpt-live-1, backend ${LIVE_BACKEND_MODEL})`
         : ` (model ${REALTIME_MODEL})`));
+
+    // Coach clipboard: guest records expire 90 days after the last visit.
+    try { coachClipboard.sweepExpiredGuests(); } catch (e) { console.warn('[SERVER] clipboard sweep failed:', e?.message || e); }
+    setInterval(() => { try { coachClipboard.sweepExpiredGuests(); } catch (_) {} }, 24 * 3600 * 1000).unref();
 
     // Fetch OpenAI key on server start
     fetchOpenAIKey().catch((error) => {
