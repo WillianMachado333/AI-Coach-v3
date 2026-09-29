@@ -21,6 +21,19 @@ test('serves what the client loads', () => {
     assert.equal(resolvePublicPath('/', root), path.join(root, 'index.html'));
 });
 
+// A browser module left out of the allowlist 404s and the feature it carries
+// silently stops (the page only warns in the console).
+test('every script index.html loads is served, and none looks like a probe', () => {
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    const srcs = [...html.matchAll(/<script src="([^"]+)"/g)].map((m) => m[1])
+        .filter((src) => !/^https?:/.test(src)).map((src) => '/' + src);
+    assert.ok(srcs.some((s) => s.startsWith('/lib/liveReasoning.js')), 'index.html loads lib/liveReasoning.js');
+    for (const src of srcs) {
+        assert.ok(resolvePublicPath(src, root), `${src} should be served`);
+        assert.equal(looksLikeProbe(src), false, `${src} is not a probe`);
+    }
+});
+
 test('every allowlisted root file exists (a rename must not silently 404 the app)', () => {
     for (const rel of PUBLIC_FILES) assert.ok(fs.existsSync(path.join(root, rel)), rel);
 });

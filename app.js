@@ -7171,7 +7171,9 @@ class VoiceChatBot {
                         instructions: fullInstructions,
                         tools: this._toolDefinitions(),
                         tool_choice: 'auto',
-                        parallel_tool_calls: true
+                        parallel_tool_calls: true,
+                        // Erica's reasoning, for the Studio's session log only (#24).
+                        reasoning: { summary: 'auto' }
                     }
                 }
             }
@@ -8203,6 +8205,35 @@ class VoiceChatBot {
         });
     }
 
+    // One event per delegation that reasoned: its summary (reasoning_summary)
+    // or the fact the summarizer returned none (reasoning_unsummarized), the
+    // tools it called and the answer it wrote (lib/liveReasoning.js). The
+    // Studio's session page shows it as "Erica's reasoning".
+    _liveReasoningLog() {
+        if (!this._liveReasoning) {
+            const lib = window.liveReasoning;
+            this._liveReasoning = lib
+                ? lib.createLiveReasoningLog({ post: (meta) => this._postReasoningSummary(meta) })
+                : { observe: () => ({ reasoning: false, posted: null }), flushAll: () => [] };
+            if (!lib) console.warn('[Erica][Live] lib/liveReasoning.js not loaded — reasoning not logged');
+        }
+        return this._liveReasoning;
+    }
+
+    _postReasoningSummary(meta) {
+        console.log('[Erica][Live] reasoning logged:', meta.summarized ? meta.chars + ' chars' : 'no summary returned (' + meta.reasoningTokens + ' reasoning tokens)',
+            '· tools', JSON.stringify(meta.toolCalls), '·', meta.status, '·', meta.delegationId);
+        fetch(this.apiUrl('/api/session-log'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // keepalive: the disconnect flush runs on pagehide too.
+            keepalive: true,
+            // Unsummarized turns get their own name: metrics count reasoning_summary
+            // events as captured reasoning.
+            body: JSON.stringify({ sessionId: this.sessionId, kind: 'event', name: meta.summarized ? 'reasoning_summary' : 'reasoning_unsummarized', meta })
+        }).catch((e) => console.warn('[Erica][Live] reasoning log POST failed:', e && e.message));
+    }
+
     // GPT-Live: the delegated backend's tokens, one snapshot per Responses response.
     _recordLiveBackendUsage(inner, delegationId) {
         const response = inner && inner.response;
@@ -8226,6 +8257,7 @@ class VoiceChatBot {
     // connection's end (its wall-clock minutes), and close the clock so a
     // reconnect starts a fresh connection.
     _flushUsageOnDisconnect(reason = 'disconnect') {
+        if (this._liveReasoning) this._liveReasoning.flushAll(reason);
         const m = this._usageMeter;
         if (!m || !m.connectionId) return;
         const pending = this.voiceApiMode === 'live' && m.liveSecondsPending !== null ? m.liveSecondsPending : null;
@@ -8466,6 +8498,9 @@ class VoiceChatBot {
             case 'response.event': {
                 const inner = message.event;
                 if (!inner) break;
+                // Erica's reasoning (#24): collected per delegation for the
+                // Studio; never rendered, never printed.
+                const reasoning = this._liveReasoningLog().observe(inner, message.delegation_id || null);
                 if (inner.type === 'response.completed') this._recordLiveBackendUsage(inner, message.delegation_id || null);
                 this._onLiveResponseEvent(inner, message.delegation_id || null);
                 // When each delegation began: the voice layer may start saying
@@ -8490,7 +8525,9 @@ class VoiceChatBot {
                 // backend text is the only reply and must render. In call
                 // mode it renders too if the voice layer never says it
                 // (_scheduleLiveTextFallback).
-                if (inner.type === 'response.output_text.delta' && typeof inner.delta === 'string') {
+                if (reasoning.reasoning) {
+                    // Reasoning summary parts: in the session log, not the console.
+                } else if (inner.type === 'response.output_text.delta' && typeof inner.delta === 'string') {
                     if (!this._liveDelegatedText) this._liveDelegatedFirstTextAt = Date.now();
                     this._liveDelegatedText = (this._liveDelegatedText || '') + inner.delta;
                     if (!this.isRecording) {
@@ -8537,8 +8574,8 @@ class VoiceChatBot {
                 } else {
                     // Anything not explicitly handled above (response.created,
                     // response.in_progress, content_part.added/.done,
-                    // function_call_arguments.delta/.done, output_item.added,
-                    // and any nested type OpenAI adds later) is expected and
+                    // function_call_arguments.delta/.done, output_item.added
+                    // other than reasoning, and any nested type OpenAI adds later) is expected and
                     // inert — logged so a genuinely new silent-drop is
                     // visible instead of invisible, per the text-rendering
                     // bug this same envelope hid for days.
