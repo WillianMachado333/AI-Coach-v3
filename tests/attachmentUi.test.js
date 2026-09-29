@@ -64,3 +64,13 @@ test('bubble photos and the lightbox close button are 44px tap targets', () => {
     assert.match(block('.image-lightbox-close'), /width:\s*44px/);
     assert.match(block('.image-lightbox-close'), /height:\s*44px/);
 });
+
+test('attachment names render as text, never as HTML', () => {
+    // A file named <img src=x onerror=…>.png comes from the user's disk.
+    const ui = read('uiLayout.js');
+    const fn = ui.slice(ui.indexOf('    function renderBubbleAttachments('), ui.indexOf('    function updateMessageElement('));
+    assert.match(fn, /name.textContent = attachment.name/);
+    for (const assignment of fn.match(/innerHTML = [^;]+;/g) || []) {
+        assert.match(assignment, /^innerHTML = '<svg[^$`]*';$/, 'innerHTML only ever gets a static icon: ' + assignment.slice(0, 60));
+    }
+});
