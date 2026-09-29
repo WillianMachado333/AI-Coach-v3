@@ -602,7 +602,11 @@ const ERICA_API_ORIGIN = `https://www.${ERICA_API_HOST}`;
 // Cache guest preparation responses to reduce Wix API load and improve speed
 const PREP_CACHE_GUEST_TTL_MS = Number(process.env.ERICA_PREP_GUEST_TTL_MS) || 24 * 60 * 60 * 1000; // 24 hours default
 const PREP_CACHE_AUTH_TTL_MS = Number(process.env.ERICA_PREP_AUTH_TTL_MS) || 2 * 60 * 1000; // 2 minutes default
-const prepCache = new Map(); // key -> { ts: number, data: string, statusCode: number, headers: object }
+// A fallback (Wix failed) is generic, not this person's preparation: cache it
+// only long enough to absorb a burst of reloads against a rate-limited Wix,
+// so the person gets their real preparation back seconds after Wix recovers.
+const PREP_CACHE_FALLBACK_TTL_MS = Number(process.env.ERICA_PREP_FALLBACK_TTL_MS) || 20 * 1000; // 20 seconds default
+const prepCache = new Map(); // key -> { ts: number, data: string, statusCode: number, headers: object, fallback?: true }
 
 // Helper to get cache key from request
 function getPrepCacheKey(userId, email) {
@@ -2160,6 +2164,9 @@ const server = http.createServer(async (req, res) => {
         });
 
         req.on('end', async () => {
+            // Set once the visit is opened, so every fallback below can still
+            // hand the client its visit id.
+            let prepSessionId = null;
             try {
                 logAt('debug', '[SERVER] /api/erica-preparation - Body received:', safePreview(body, 500));
 
@@ -2216,27 +2223,30 @@ const server = http.createServer(async (req, res) => {
                     resumeSessionId: typeof requestData.sessionId === 'string' ? requestData.sessionId : null,
                     identitySource: idn.source
                 });
+                prepSessionId = sessionId;
 
                 // Check cache first
                 const cacheKey = getPrepCacheKey(userId, email);
                 const cached = prepCache.get(cacheKey);
                 const now = Date.now();
                 const ttl = cacheKey === '__guest__' ? PREP_CACHE_GUEST_TTL_MS : PREP_CACHE_AUTH_TTL_MS;
+                const cachedTtl = cached && cached.fallback ? PREP_CACHE_FALLBACK_TTL_MS : ttl;
 
-                if (cached && (now - cached.ts) < ttl) {
+                if (cached && (now - cached.ts) < cachedTtl) {
                     // Cache hit - return immediately
-                    logAt('info', '[SERVER] ✅ /api/erica-preparation - Cache HIT:', cacheKey, {
+                    logAt(cached.fallback ? 'warn' : 'info', `[SERVER] ${cached.fallback ? '🛡️' : '✅'} /api/erica-preparation - Cache HIT${cached.fallback ? ' (FALLBACK — Wix failed moments ago)' : ''}:`, cacheKey, {
                         age: Math.round((now - cached.ts) / 1000) + 's',
-                        ttl: Math.round(ttl / 1000) + 's'
+                        ttl: Math.round(cachedTtl / 1000) + 's'
                     });
 
                     const responseHeaders = {
                         'Content-Type': cached.headers['content-type'] || 'application/json',
                         'Access-Control-Allow-Origin': '*',
-                        'Access-Control-Expose-Headers': 'X-Session-Id',
-                        'Cache-Control': cacheKey === '__guest__' ? 'public, max-age=86400' : 'private, max-age=120',
+                        'Access-Control-Expose-Headers': 'X-Session-Id, X-Erica-Fallback',
+                        'Cache-Control': cached.fallback ? 'no-store' : cacheKey === '__guest__' ? 'public, max-age=86400' : 'private, max-age=120',
                         'X-Cache': 'HIT',
-                        'X-Session-Id': sessionId
+                        'X-Session-Id': sessionId,
+                        ...(cached.fallback ? { 'X-Erica-Fallback': 'true' } : {})
                     };
 
                     // Inject canonical Injected Data blocks (courses / quizzes /
@@ -2249,7 +2259,7 @@ const server = http.createServer(async (req, res) => {
 
                     // Best-effort sync to user's vector store. Cheap when unchanged
                     // (hash cache short-circuits). Never blocks the response.
-                    if (runtimeConfig.isEnabled('user_report')) syncPreparationToVectorStore(userId, cached.data);
+                    if (!cached.fallback && runtimeConfig.isEnabled('user_report')) syncPreparationToVectorStore(userId, cached.data);
                     // Activity keeps its own on-disk cache so a repeated cache-hit
                     // here is still cheap. Signed-in users use userId; guest users
                     // use their bridged objectId.
@@ -2310,7 +2320,7 @@ const server = http.createServer(async (req, res) => {
                         // FALLBACK: If upstream API returns non-200, use local fallback file
                         if (statusCode !== 200) {
                             console.warn(`[SERVER] /api/erica-preparation - Upstream returned ${statusCode}, attempting fallback...`);
-                            servePrepFallback(res, cacheKey, now, ttl);
+                            servePrepFallback(res, cacheKey, now, sessionId);
                             return;
                         }
 
@@ -2354,7 +2364,7 @@ const server = http.createServer(async (req, res) => {
                 externalReq.on('error', (error) => {
                     console.error('[SERVER] /api/erica-preparation - Upstream request error:', error);
                     // FALLBACK: On network error, use local fallback file
-                    servePrepFallback(res, cacheKey, now, ttl);
+                    servePrepFallback(res, cacheKey, now, sessionId);
                 });
 
                 externalReq.write(postData, 'utf8');
@@ -2363,8 +2373,7 @@ const server = http.createServer(async (req, res) => {
                 console.error('[SERVER] /api/erica-preparation - Handler error:', error);
                 // FALLBACK: On handler error, try fallback
                 const cacheKeyFallback = getPrepCacheKey(req.userId, req.email);
-                const ttlFallback = cacheKeyFallback === '__guest__' ? PREP_CACHE_GUEST_TTL_MS : PREP_CACHE_AUTH_TTL_MS;
-                servePrepFallback(res, cacheKeyFallback, Date.now(), ttlFallback);
+                servePrepFallback(res, cacheKeyFallback, Date.now(), prepSessionId);
             }
         });
 
@@ -2381,7 +2390,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Helper to serve ericaPreparationFallBack.txt
-    function servePrepFallback(res, cacheKey, now, ttl) {
+    // `sessionId`: the visit the handler already opened. The client needs it
+    // here too, or it invents an s-c- id and the visit's events land apart
+    // from its actor/identity in the Studio.
+    function servePrepFallback(res, cacheKey, now, sessionId) {
         const fallbackPath = path.join(__dirname, 'ericaPreparationFallBack.txt');
         fs.readFile(fallbackPath, 'utf8', (err, data) => {
             if (err) {
@@ -2391,22 +2403,26 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            console.warn('[SERVER] 🛡️ /api/erica-preparation - Serving fallback response for:', cacheKey);
+            console.warn('[SERVER] 🛡️ /api/erica-preparation - Serving fallback response for:', cacheKey, { sessionId: sessionId || null, cachedFor: Math.round(PREP_CACHE_FALLBACK_TTL_MS / 1000) + 's' });
 
-            // Cache the fallback response to avoid thrashing the disk/API
+            // Cache the fallback briefly (see PREP_CACHE_FALLBACK_TTL_MS): a
+            // reload burst doesn't re-hit Wix, recovery shows within seconds.
             prepCache.set(cacheKey, {
                 ts: now,
                 data: data,
                 statusCode: 200,
-                headers: { 'content-type': 'application/json' }
+                headers: { 'content-type': 'application/json' },
+                fallback: true
             });
 
             res.writeHead(200, {
                 'Content-Type': 'application/json',
                 'Access-Control-Allow-Origin': '*',
-                'Cache-Control': 'private, max-age=60',
+                'Access-Control-Expose-Headers': 'X-Session-Id, X-Erica-Fallback',
+                'Cache-Control': 'no-store',
                 'X-Erica-Fallback': 'true',
-                'X-Cache': 'MISS'
+                'X-Cache': 'MISS',
+                ...(sessionId ? { 'X-Session-Id': sessionId } : {})
             });
             // Fallback path also gets canonical blocks — Erica still needs
             // the right names/URLs even in degraded mode.
