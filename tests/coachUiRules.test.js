@@ -151,3 +151,35 @@ test('a user bubble shows its attachments, not the [Attached: …] line', () => 
     assert.equal(rules.userBubbleParts({ text: '[Attached: x.png]', attachments: [{ kind: 'image', name: 'x.png', src: 'javascript:alert(1)' }] }).attachments[0].src, null);
     assert.deepEqual(rules.userBubbleParts({ text: 'plain words' }), { text: 'plain words', attachments: [] });
 });
+
+// Regression: in call mode a user bubble rendered as just "[breath" — GPT-Live's
+// transcripts carry non-speech tags, split across deltas.
+test('non-speech tags are removed; a transcript of only tags is dropped', () => {
+    const strip = rules.stripNonSpeechTags;
+    assert.deepEqual(strip('[breath]'), { text: '', dropped: true });
+    assert.deepEqual(strip('[breath'), { text: '', dropped: true }, 'unterminated: exactly what a bubble showed');
+    assert.deepEqual(strip('[bre'), { text: '', dropped: true }, 'a tag still arriving');
+    assert.deepEqual(strip('[laughter] [breath]'), { text: '', dropped: true });
+    assert.deepEqual(strip('hi [breath] there'), { text: 'hi there', dropped: false });
+    assert.deepEqual(strip('hi [breath], there'), { text: 'hi, there', dropped: false });
+    assert.deepEqual(strip('[Speaker 1] hi'), { text: 'hi', dropped: false });
+    assert.deepEqual(strip('Sure [music] thing [laugh'), { text: 'Sure thing', dropped: false });
+});
+
+test('text without a tag comes back untouched, spacing included (deltas are re-filtered whole)', () => {
+    for (const text of [' Hi, there', ' hello ', 'plain text', '', 'see item [1] below', 'a [12] b']) {
+        assert.deepEqual(rules.stripNonSpeechTags(text), { text, dropped: false }, JSON.stringify(text));
+    }
+    assert.deepEqual(rules.stripNonSpeechTags(null), { text: '', dropped: false });
+    assert.deepEqual(rules.stripNonSpeechTags(undefined), { text: '', dropped: false });
+});
+
+test('a tag split across deltas is filtered on the accumulated transcript', () => {
+    let accumulated = '';
+    const shown = [];
+    for (const delta of ['[bre', 'ath', ']', ' Hel', 'lo [lau', 'ghter] th', 'ere']) {
+        accumulated += delta;
+        shown.push(rules.stripNonSpeechTags(accumulated).text);
+    }
+    assert.deepEqual(shown, ['', '', '', 'Hel', 'Hello', 'Hello th', 'Hello there']);
+});
