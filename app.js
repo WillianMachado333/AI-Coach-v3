@@ -5629,7 +5629,16 @@ class VoiceChatBot {
                             parsed = responseText;
                         }
 
-                        this._prepCache.set(cacheKey, { ts: Date.now(), data: parsed });
+                        // The server's generic fallback (Wix failed) is not this
+                        // person's preparation: don't hold it for 60 s, so the
+                        // next connect asks again and gets the real one.
+                        let isFallback = false;
+                        try { isFallback = response.headers.get('X-Erica-Fallback') === 'true'; } catch (_) { /* header read never blocks flow */ }
+                        if (isFallback) {
+                            console.warn('[Erica] ⚠️ Preparation is the generic FALLBACK (Wix unavailable) — not cached; the next connect asks again');
+                        } else {
+                            this._prepCache.set(cacheKey, { ts: Date.now(), data: parsed });
+                        }
                         return parsed;
                     })().finally(() => {
                         this._prepFetchInFlight = null;
