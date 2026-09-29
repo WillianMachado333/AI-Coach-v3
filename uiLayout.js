@@ -1252,7 +1252,7 @@
                 const buildCandidates = (type) => { // type: 'idle', 'speaking', 'waving'
                     const profile = app.currentVoiceProfile || {};
                     const raw = [];
-                    // Priority: Explicit path in profile (if matches type), companionId, id, character, selectedVoice
+                    // Priority: explicit path in profile (if matches type), then the persona's asset name
 
                     // 1. Explicit path overrides
                     // We include ALL known video paths as seeds, because we can derive speaking from idle, etc.
@@ -1260,8 +1260,12 @@
                     if (profile.speakingVideo) raw.push(profile.speakingVideo);
                     if (profile.wavingVideo) raw.push(profile.wavingVideo);
 
-                    // 2. Name based candidates
-                    raw.push(profile.companionId, profile.id, profile.character, app.selectedVoice);
+                    // 2. The persona's asset name (Steve.webm). Not the voice, the
+                    // companion style or the display name: none of those name a
+                    // file, and each miss was a 404 (Marin.webm, marin.webm).
+                    const personaKey = window.coachUiRules?.personaAssetKey?.(profile)
+                        || window.coachUiRules?.personaAssetKey?.({ thumb: app.currentVoiceThumbUrl });
+                    raw.push(personaKey);
 
                     const items = [];
                     raw.forEach((val) => {
