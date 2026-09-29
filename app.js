@@ -4669,12 +4669,17 @@ class VoiceChatBot {
     // called this.connect() directly without teardown, orphaning an
     // RTCPeerConnection + <audio> + intervals on every reconnect —
     // catastrophic on a flaky network.
-    _teardownWebRTCOnly() {
+    //
+    // keepMic: a call is in progress. The mic stream, the AudioContext and
+    // the local level loop stay, so establishConnection() re-attaches the
+    // same track to the new sender. Stopping them left the reconnected call
+    // "on" but deaf: no outbound RTP, no transcript, no reply.
+    _teardownWebRTCOnly({ keepMic = false } = {}) {
         try { if (this.dataChannel) { this.dataChannel.close(); this.dataChannel = null; } } catch (_) {}
         try { if (this.pc) { this.pc.close(); this.pc = null; } } catch (_) {}
         this.audioSender = null;
         try {
-            if (this.localStream) {
+            if (this.localStream && !keepMic) {
                 this.localStream.getTracks().forEach((t) => t.stop());
                 this.localStream = null;
             }
@@ -4687,10 +4692,12 @@ class VoiceChatBot {
                 this.remoteAudio = null;
             }
         } catch (_) {}
-        try {
-            if (this.audioContext) { this.audioContext.close(); this.audioContext = null; }
-        } catch (_) {}
-        try { if (this.audioLevelInterval) { clearInterval(this.audioLevelInterval); this.audioLevelInterval = null; } } catch (_) {}
+        if (!keepMic) {
+            try {
+                if (this.audioContext) { this.audioContext.close(); this.audioContext = null; }
+            } catch (_) {}
+            try { if (this.audioLevelInterval) { clearInterval(this.audioLevelInterval); this.audioLevelInterval = null; } } catch (_) {}
+        }
         try { if (this.audioCheckInterval) { clearInterval(this.audioCheckInterval); this.audioCheckInterval = null; } } catch (_) {}
         try { if (this.remoteLevelInterval) { clearInterval(this.remoteLevelInterval); this.remoteLevelInterval = null; } } catch (_) {}
         this.remoteAnalyser = null;
@@ -6053,8 +6060,12 @@ class VoiceChatBot {
             if (this.localStream) {
                 const track = this.localStream.getAudioTracks()[0];
                 if (track && this.audioSender) {
-                    // console.log('[Erica] Attaching existing local stream to new connection');
                     this.audioSender.replaceTrack(track);
+                    if (this.isRecording) {
+                        console.log(`[Erica] reconnect: mic re-attached to the new connection (track ${track.readyState}, ${track.enabled ? 'enabled' : 'muted'})`);
+                    }
+                } else if (this.isRecording) {
+                    console.warn('[Erica] reconnect: call is on but there is no live mic track to attach');
                 }
             }
 
@@ -6447,7 +6458,11 @@ class VoiceChatBot {
                         // orphan an RTCPeerConnection + <audio> element +
                         // level-check intervals on every reconnect. On a
                         // flaky network the old code stacked all of these.
-                        try { this._teardownWebRTCOnly(); } catch (_) {}
+                        // Metering: this connection's usage ends here; the new
+                        // session starts its own (Live seconds restart at 0).
+                        try { this._flushUsageOnDisconnect('reconnect'); } catch (_) {}
+                        const keepMic = !!(this.isRecording && this.localStream);
+                        try { this._teardownWebRTCOnly({ keepMic }); } catch (_) {}
 
                         // Small delay to let the connection fully close
                         setTimeout(() => {
