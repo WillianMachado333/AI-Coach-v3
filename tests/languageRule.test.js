@@ -37,7 +37,8 @@ test('the rule reaches all three prompts', () => {
     const realtime = app.slice(app.indexOf('    configureSession() {'), app.indexOf('    configureLiveSession() {'));
     assert.match(realtime, /_buildComposedInstructions\(\)/, 'Realtime session.instructions uses the composed instructions');
     // 3. …and the Live delegation.responses.instructions, built from the same composed instructions.
-    const liveDelegation = app.slice(app.indexOf('    configureLiveSession() {'));
+    // (built by the shared Live helpers configureLiveSession and every refresh use, #31)
+    const liveDelegation = app.slice(app.indexOf('    _liveFullInstructions() {'));
     assert.match(liveDelegation.slice(0, 1200), /const instructions = this\._buildComposedInstructions\(\);/);
     assert.match(liveDelegation.slice(0, 2500), /instructions: fullInstructions/);
 });
