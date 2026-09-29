@@ -350,3 +350,27 @@ test('HTTP: Studio clipboard routes need an admin session; the public route retu
         server.kill();
     }
 });
+
+test('GPT-Live: the block reaches the VOICE layer via session.instructions.append (≤ 500 tokens per event), and the backend via an item', () => {
+    const src = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+    const inject = src.slice(src.indexOf('    _injectClipboardIntoSession() {'), src.indexOf('    _clipboardNoteActivity() {'));
+    assert.match(inject, /type: 'session\.instructions\.append', delegation_id: null, content/);
+    assert.match(inject, /type: 'response\.item\.create', item/);
+    assert.match(inject, /type: 'conversation\.item\.create', item/);
+    const { splitForLiveAppend } = require('../lib/coachUiRules');
+    assert.deepEqual(splitForLiveAppend(''), []);
+    assert.deepEqual(splitForLiveAppend('short\nblock'), ['short\nblock']);
+    // The largest block the budget allows still fits in ≤ 1,800-char appends, whole lines only.
+    let r = cb.emptyRecord('user-live', T0);
+    const long = (w) => `${w} `.repeat(40);
+    ({ record: r } = cb.applyOps(r, [
+        ...['a', 'b', 'c'].map((w) => ({ op: 'add', kind: 'goal', text: long('goal' + w) })),
+        ...['a', 'b', 'c'].map((w) => ({ op: 'add', kind: 'blocker', text: long('block' + w) })),
+        ...['a', 'b', 'c'].map((w) => ({ op: 'add', kind: 'preference', text: long('pref' + w) })),
+        { op: 'add', kind: 'journey', text: long('journey') },
+    ], ctx()));
+    const block = cb.render(r, { now: T0 }).text;
+    const parts = splitForLiveAppend(block);
+    assert.ok(parts.every((p) => p.length <= 1800), parts.map((p) => p.length).join(','));
+    assert.equal(parts.join('\n'), block);
+});
