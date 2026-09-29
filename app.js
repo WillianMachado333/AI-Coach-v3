@@ -3072,7 +3072,7 @@ class VoiceChatBot {
             // Update session instructions so the AI knows its new name immediately
             if (this.isConnected) {
                 console.log('[Erica] Updating session instructions with new name...');
-                this.configureSession().catch(err => console.error('[Erica] Failed to update session instructions:', err));
+                try { this.configureSession(); } catch (err) { console.error('[Erica] Failed to update session instructions:', err); }
             }
         }
     }
@@ -3093,7 +3093,7 @@ class VoiceChatBot {
             // Update session if connected
             if (this.isConnected) {
                 console.log('[Erica] Updating session instructions with new speed...');
-                this.configureSession().catch(err => console.error('[Erica] Failed to update session instructions:', err));
+                try { this.configureSession(); } catch (err) { console.error('[Erica] Failed to update session instructions:', err); }
             }
         }
     }
@@ -3767,9 +3767,11 @@ class VoiceChatBot {
             this.userActivityMarkdown = activityBlock;
             console.log('[Erica.activitySync] 📊 injected — customInstructions', beforeLen, '→', this.customInstructions.length, 'chars');
             console.log('[Erica.activitySync] block preview:\n' + activityBlock);
-            if (this.isConnected && typeof this.configureSession === 'function') {
-                console.log('[Erica.activitySync] 🔁 re-configuring Realtime session with activity in prompt');
-                this.configureSession();
+            const activityChanged = activityBlock !== this._lastActivityBlock;
+            this._lastActivityBlock = activityBlock;
+            if (this.isConnected) {
+                console.log(`[Erica.activitySync] 🔁 re-configuring the ${this.voiceApiMode} session with activity in prompt${activityChanged ? '' : ' (unchanged)'}`);
+                this._refreshSessionInstructions('activity timeline', { changed: activityChanged });
             } else {
                 console.warn('[Erica.activitySync] ⚠️ NOT connected yet — activity is stored, will be picked up on first configureSession call');
             }
@@ -3837,14 +3839,17 @@ class VoiceChatBot {
                 ''
             );
             this.customInstructions = pageBlock + '\n\n' + base;
+            const pageChanged = pageBlock !== this._lastPageBlock;
+            this._lastPageBlock = pageBlock;
 
-            if (this.isConnected && typeof this.configureSession === 'function') {
+            if (this.isConnected) {
                 console.log('[Erica] 🌐 Page context injected into prompt:', {
                     title: snap.title,
                     headings: (snap.headings || []).length,
-                    textChars: bodyText.length
+                    textChars: bodyText.length,
+                    changed: pageChanged
                 });
-                this.configureSession();
+                this._refreshSessionInstructions('page context', { changed: pageChanged });
             }
         } catch (e) {
             console.warn('[Erica] page context injection failed:', e?.message || e);
@@ -7045,6 +7050,13 @@ class VoiceChatBot {
     }
 
     configureSession() {
+        // GPT-Live is first configured by configureLiveSession() on
+        // session.started. A later reconfigure from any caller (persona,
+        // voice speed, rename, late preparation, page/activity refresh)
+        // must not send this Realtime-shaped update — Live answers
+        // "Unknown parameter: 'session.type'" (#31). It refreshes the
+        // backend's instructions instead.
+        if (this.voiceApiMode === 'live') return this._refreshSessionInstructions('configureSession');
         const instructions = this._buildComposedInstructions();
 
         // Configure the OpenAI Realtime GA session
@@ -7161,19 +7173,24 @@ class VoiceChatBot {
     // gets the SAME big composed blob Realtime sends as session.instructions.
     // Reuses _buildComposedInstructions()/_toolDefinitions() — no duplicated
     // persona-assembly or tool-schema logic between the two voice APIs.
-    configureLiveSession() {
+    // Live's backend is a normal Responses-model call with a large
+    // context window, not the Realtime session's 16,384-token cap — the
+    // overflow-splitting _buildComposedInstructions() does for Realtime
+    // doesn't apply here, so fold any overflow back in instead of
+    // dropping it or sending it as a separate message.
+    _liveFullInstructions() {
         const instructions = this._buildComposedInstructions();
-        // Live's backend is a normal Responses-model call with a large
-        // context window, not the Realtime session's 16,384-token cap — the
-        // overflow-splitting _buildComposedInstructions() does for Realtime
-        // doesn't apply here, so fold any overflow back in instead of
-        // dropping it or sending it as a separate message.
         const fullInstructions = this._instructionOverflow
             ? instructions + '\n\n' + this._instructionOverflow
             : instructions;
         this._instructionOverflow = null;
+        return fullInstructions;
+    }
 
-        const config = {
+    // The whole delegation.responses object, one definition for the first
+    // configure and every later refresh (#31) so the two can't drift.
+    _liveDelegationUpdate(fullInstructions) {
+        return {
             type: 'session.update',
             session: {
                 delegation: {
@@ -7189,6 +7206,40 @@ class VoiceChatBot {
                 }
             }
         };
+    }
+
+    // Re-push the model instructions after the composed prompt changed
+    // mid-session (page context, activity timeline — #31). Realtime: the
+    // full configureSession(), as before. GPT-Live: configureSession() is
+    // Realtime-shaped ("Unknown parameter: 'session.type'" ~92 s into every
+    // Live call) — send only the backend's delegation instructions, and
+    // only on a real change; the one-time history / clipboard / host-event
+    // injection of configureLiveSession() is not repeated.
+    _refreshSessionInstructions(reason, { changed = true } = {}) {
+        if (!this.isConnected) return false;
+        if (this.voiceApiMode !== 'live') {
+            this.configureSession();
+            return true;
+        }
+        if (!changed) return false;
+        // Before the channel opens there is nothing to refresh:
+        // configureLiveSession() sends the full config on session.started.
+        if (!this.dataChannel || this.dataChannel.readyState !== 'open') return false;
+        const fullInstructions = this._liveFullInstructions();
+        const sentOk = this.sendMessage(this._liveDelegationUpdate(fullInstructions));
+        if (this.lastSessionConfig) {
+            this.lastSessionConfig.instructions = fullInstructions;
+            this.lastSessionConfig.customInstructions = this.customInstructions;
+            this.lastSessionConfig.refreshedAt = Date.now();
+            this.lastSessionConfig.refreshReason = reason;
+        }
+        (sentOk ? console.log : console.warn)(`[Erica][Live] backend instructions ${sentOk ? 'refreshed' : 'NOT refreshed'} (${reason}), length:`, fullInstructions.length);
+        return sentOk;
+    }
+
+    configureLiveSession() {
+        const fullInstructions = this._liveFullInstructions();
+        const config = this._liveDelegationUpdate(fullInstructions);
 
         this.lastSessionConfig = {
             instructions: fullInstructions,

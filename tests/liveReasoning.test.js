@@ -153,7 +153,8 @@ test('only reasoning events are reasoning', () => {
 
 test('app.js asks for the summary and keeps it out of the console and the chat', () => {
     const app = read('app.js');
-    const cfg = app.slice(app.indexOf('    configureLiveSession() {'), app.indexOf('    configureLiveSession() {') + 1500);
+    // The delegation object is built once for the first configure and every refresh (#31).
+    const cfg = app.slice(app.indexOf('    _liveDelegationUpdate(fullInstructions) {'), app.indexOf('    _liveDelegationUpdate(fullInstructions) {') + 1500);
     assert.match(cfg, /reasoning: \{ summary: 'auto' \}/);
     const handler = app.slice(app.indexOf("            case 'response.event': {"), app.indexOf('            // Temporary field-debug instrumentation'));
     const observe = handler.indexOf('this._liveReasoningLog().observe(inner');
