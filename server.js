@@ -26,6 +26,7 @@ const metrics = require('./lib/metrics');
 const simulator = require('./lib/simulator');
 const agentHistory = require('./lib/agentHistory');
 const runtimeConfig = require('./lib/runtimeConfig');
+const { LANGUAGE_RULE } = require('./lib/coachUiRules');
 const injectedDataStore = require('./lib/injectedDataStore');
 const { createHealthPayload } = require('./lib/health');
 const { resolvePublicPath, looksLikeProbe } = require('./lib/staticPath');
@@ -2986,7 +2987,7 @@ const server = http.createServer(async (req, res) => {
             const voice = req.headers['x-erica-voice'] || 'marin';
             let shortInstructions = 'You are a voice coaching assistant. Delegate substantive reasoning, ' +
                 'knowledge lookups, and tool use to your backend. Keep spoken replies natural, warm, and ' +
-                'concise. Always reply in the language the user is currently speaking.';
+                'concise. ' + LANGUAGE_RULE;
             try {
                 const encoded = req.headers['x-erica-live-instructions'];
                 if (encoded) shortInstructions = Buffer.from(String(encoded), 'base64').toString('utf8');
