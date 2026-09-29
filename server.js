@@ -29,6 +29,7 @@ const runtimeConfig = require('./lib/runtimeConfig');
 const { LANGUAGE_RULE } = require('./lib/coachUiRules');
 const injectedDataStore = require('./lib/injectedDataStore');
 const coachClipboard = require('./lib/coachClipboard');
+const sessionTurns = require('./lib/sessionTurns');
 const { createHealthPayload } = require('./lib/health');
 const { resolvePublicPath, looksLikeProbe } = require('./lib/staticPath');
 const { liveSessionInput } = require('./lib/liveSessionInput');
@@ -655,12 +656,20 @@ const server = http.createServer(async (req, res) => {
                     promptHash = p.promptHash;
                 }
                 switch (p.kind) {
+                    // Real turns (#30): one per final message. The meta is a
+                    // whitelist (no client-set `synthetic`, which would store
+                    // user text raw); user text redaction is sessionLog's.
                     case 'user_turn':
-                        sessionLog.logUserTurn(sid, { text: p.text, promptHash, meta: p.meta });
+                        sessionLog.logUserTurn(sid, { text: sessionTurns.sanitizeTurnText(p.text), promptHash, meta: sessionTurns.sanitizeTurnMeta(p.meta, 'user_turn') });
                         break;
                     case 'bot_turn':
-                        sessionLog.logBotTurn(sid, { text: p.text, promptHash, meta: p.meta });
+                        sessionLog.logBotTurn(sid, { text: sessionTurns.sanitizeTurnText(p.text), promptHash, meta: sessionTurns.sanitizeTurnMeta(p.meta, 'bot_turn') });
                         break;
+                    case 'turn_revised': {
+                        const rev = sessionTurns.sanitizeRevision(p.meta);
+                        if (rev) sessionLog.logEvent(sid, { name: 'turn_revised', meta: rev });
+                        break;
+                    }
                     case 'tool_call':
                         sessionLog.logToolCall(sid, {
                             name: p.name, args: p.args, result: p.result, error: p.error, ms: p.ms
@@ -700,7 +709,11 @@ const server = http.createServer(async (req, res) => {
                         break;
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-                res.end(JSON.stringify({ ok: true, promptHash }));
+                // Turn posts learn how user text was stored ('raw' | 'redacted'),
+                // so a run can prove which mode it exercised.
+                res.end(JSON.stringify(p.kind === 'user_turn' || p.kind === 'bot_turn'
+                    ? { ok: true, promptHash, store: sessionLog.storeMode() }
+                    : { ok: true, promptHash }));
             } catch (e) {
                 console.error('[SERVER] /api/session-log error:', e?.message || e);
                 res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
