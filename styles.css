@@ -745,3 +745,115 @@ textarea:focus {
     border-color: #14b8a6 !important;
     /* Teal-500 border */
 }
+
+/* Attachments inside a user bubble: the photo itself (tap to enlarge), a
+   placeholder when only its name survived a reload, a chip for a text file. */
+.bubble-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+.bubble-attachments + p {
+    margin-top: 8px;
+}
+
+.bubble-photo {
+    border-radius: 12px;
+    cursor: zoom-in;
+    display: block;
+    max-width: 100%;
+    min-height: 44px;
+    min-width: 44px;
+    overflow: hidden;
+    padding: 0;
+}
+
+.bubble-photo img {
+    display: block;
+    height: auto;
+    max-height: 220px;
+    max-width: min(220px, 100%);
+    object-fit: cover;
+}
+
+.bubble-photo-missing {
+    align-items: center;
+    background: rgba(15, 23, 42, 0.04);
+    border: 1px dashed #cbd5e1;
+    border-radius: 12px;
+    color: #64748b;
+    display: grid;
+    gap: 2px 8px;
+    grid-template-columns: auto 1fr;
+    max-width: 220px;
+    padding: 8px 10px;
+}
+
+.bubble-photo-missing svg {
+    grid-row: span 2;
+}
+
+.bubble-photo-missing-name {
+    color: #334155;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bubble-photo-missing-note {
+    font-size: 12px;
+}
+
+.bubble-file-chip {
+    align-items: center;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 9999px;
+    color: #334155;
+    display: inline-flex;
+    font-size: 13px;
+    gap: 6px;
+    max-width: 220px;
+    padding: 6px 12px;
+}
+
+.bubble-file-chip span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.image-lightbox {
+    align-items: center;
+    background: rgba(15, 23, 42, 0.86);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    padding: 16px;
+    position: fixed;
+    z-index: 200;
+}
+
+.image-lightbox img {
+    border-radius: 8px;
+    max-height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+}
+
+.image-lightbox-close {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.14);
+    border-radius: 9999px;
+    color: #fff;
+    display: flex;
+    height: 44px;
+    justify-content: center;
+    position: absolute;
+    right: 12px;
+    top: 12px;
+    width: 44px;
+}

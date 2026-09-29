@@ -1965,6 +1965,90 @@
         textElement.setAttribute('data-streaming', '1');
     }
 
+    // Photos and files a user bubble carries. A photo is its image while the
+    // page lives; after a reload only its name was kept (history never stores
+    // images), so it says so instead of leaving a blank.
+    function renderBubbleAttachments(messageDiv, attachments) {
+        const key = JSON.stringify(attachments.map((a) => [a.kind, a.name, !!a.src]));
+        let box = messageDiv._attachmentsEl;
+        if (box && box._key === key) return;
+        if (!attachments.length) {
+            if (box) box.remove();
+            messageDiv._attachmentsEl = null;
+            return;
+        }
+        if (!box) {
+            box = document.createElement('div');
+            box.className = 'bubble-attachments';
+            messageDiv._contentWrapper.insertBefore(box, messageDiv._textElement);
+            messageDiv._attachmentsEl = box;
+        }
+        box._key = key;
+        box.textContent = '';
+        attachments.forEach((attachment) => {
+            if (attachment.kind === 'image' && attachment.src) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'bubble-photo';
+                button.setAttribute('aria-label', `Open photo ${attachment.name}`);
+                const img = document.createElement('img');
+                img.src = attachment.src;
+                img.alt = attachment.name;
+                button.appendChild(img);
+                button.addEventListener('click', () => openImageLightbox(attachment.src, attachment.name));
+                box.appendChild(button);
+            } else if (attachment.kind === 'image') {
+                const tile = document.createElement('div');
+                tile.className = 'bubble-photo-missing';
+                tile.setAttribute('role', 'img');
+                tile.setAttribute('aria-label', `Photo ${attachment.name} — not kept after reload`);
+                tile.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="9" cy="9" r="2"></circle><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"></path></svg>';
+                const name = document.createElement('span');
+                name.className = 'bubble-photo-missing-name';
+                name.textContent = attachment.name;
+                const note = document.createElement('span');
+                note.className = 'bubble-photo-missing-note';
+                note.textContent = 'Photo not kept after reload';
+                tile.append(name, note);
+                box.appendChild(tile);
+            } else {
+                const chip = document.createElement('span');
+                chip.className = 'bubble-file-chip';
+                chip.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path><path d="M14 2v4a2 2 0 0 0 2 2h4"></path></svg>';
+                const name = document.createElement('span');
+                name.textContent = attachment.name;
+                chip.appendChild(name);
+                box.appendChild(chip);
+            }
+        });
+    }
+
+    function openImageLightbox(src, alt) {
+        const overlay = document.createElement('div');
+        overlay.className = 'image-lightbox';
+        overlay.setAttribute('role', 'dialog');
+        overlay.setAttribute('aria-modal', 'true');
+        overlay.setAttribute('aria-label', alt || 'Photo');
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = alt || '';
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'image-lightbox-close';
+        close.setAttribute('aria-label', 'Close photo');
+        close.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>';
+        overlay.append(img, close);
+        const onKey = (event) => { if (event.key === 'Escape') dismiss(); };
+        const dismiss = () => {
+            overlay.remove();
+            document.removeEventListener('keydown', onKey);
+        };
+        overlay.addEventListener('click', (event) => { if (event.target !== img) dismiss(); });
+        document.addEventListener('keydown', onKey);
+        document.body.appendChild(overlay);
+        close.focus();
+    }
+
     function updateMessageElement(app, message) {
         if (!app.chatMessages) return;
 
@@ -2053,13 +2137,25 @@
             } catch (_) { /* non-fatal */ }
         }
 
+        // User bubbles show what was attached above the text: the photo
+        // itself (tap to enlarge) or a named chip for a text file — never the
+        // raw "[Attached: …]" line.
+        let shownText = message.text || '';
+        if (message.role === 'user' && window.coachUiRules?.userBubbleParts) {
+            const parts = window.coachUiRules.userBubbleParts(message);
+            shownText = parts.text;
+            renderBubbleAttachments(messageDiv, parts.attachments);
+        }
+
         // Update Text
         const textElement = messageDiv._textElement;
         if (textElement) {
+            // A photo sent with no words: the bubble is just the photo.
+            textElement.style.display = message.role === 'user' && !shownText ? 'none' : '';
             if (message.final) {
                 textElement.removeAttribute('data-streaming');
                 textElement.removeAttribute('data-streaming-final');
-                textElement.innerHTML = formatText(message.text || '');
+                textElement.innerHTML = formatText(shownText);
             } else if (message.role !== 'user') {
                 // The newest transcript phrase is the best available timing
                 // signal during streaming. It is visual-only and falls back
@@ -2067,7 +2163,7 @@
                 renderStreamingText(textElement, message.text || '', !!app.isRecording);
             } else {
                 textElement.removeAttribute('data-streaming');
-                textElement.textContent = message.text || ''; // plain during streaming
+                textElement.textContent = shownText; // plain during streaming
             }
         }
 

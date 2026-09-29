@@ -129,3 +129,25 @@ test('recent history: last finished turns, API roles, clipped and capped', () =>
     assert.ok(capped.reduce((sum, t) => sum + t.text.length, 0) <= 6000);
     assert.deepEqual(rules.recentHistory(null), []);
 });
+
+// Reported: the bubble showed "[Attached: Career Quiz Square Thumb 10-Jan-2022.avif]"
+// instead of the photo.
+test('a user bubble shows its attachments, not the [Attached: …] line', () => {
+    const text = 'What do you see?\n\n[Attached: Career Quiz Square Thumb 10-Jan-2022.avif, notes.txt]';
+    // Sent in this page: the message carries the photo itself.
+    const live = rules.userBubbleParts({ text, attachments: [{ kind: 'image', name: 'Career Quiz Square Thumb 10-Jan-2022.avif', src: 'data:image/jpeg;base64,AAAA' }, { kind: 'text', name: 'notes.txt' }] });
+    assert.equal(live.text, 'What do you see?');
+    assert.deepEqual(live.attachments, [
+        { kind: 'image', name: 'Career Quiz Square Thumb 10-Jan-2022.avif', src: 'data:image/jpeg;base64,AAAA' },
+        { kind: 'text', name: 'notes.txt', src: null }
+    ]);
+    // Restored history (or saved before attachment lists existed): names only, kind from the extension.
+    const restored = rules.userBubbleParts({ text });
+    assert.equal(restored.text, 'What do you see?');
+    assert.deepEqual(restored.attachments.map((a) => [a.kind, a.src]), [['image', null], ['text', null]]);
+    // A photo with no words is just the photo.
+    assert.equal(rules.userBubbleParts({ text: '[Attached: IMG_0042.HEIC]' }).text, '');
+    // Only image data/blob URLs ever reach an <img>.
+    assert.equal(rules.userBubbleParts({ text: '[Attached: x.png]', attachments: [{ kind: 'image', name: 'x.png', src: 'javascript:alert(1)' }] }).attachments[0].src, null);
+    assert.deepEqual(rules.userBubbleParts({ text: 'plain words' }), { text: 'plain words', attachments: [] });
+});
