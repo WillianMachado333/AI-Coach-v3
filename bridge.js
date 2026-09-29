@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-09-29T06:00-host-events';
+    var VERSION = '2026-09-29T08:00-live-standby';
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -531,6 +531,8 @@
             case 'connecting': colour = '#f59e0b'; break;
             case 'disconnected': colour = '#ef4444'; break;
             case 'onhold': colour = '#6b7280'; break;
+            // GPT-Live before its first session: ready, not connected on purpose.
+            case 'standby': colour = '#94a3b8'; break;
             default: colour = '#f59e0b';
         }
         mergeStyle(icon, {
