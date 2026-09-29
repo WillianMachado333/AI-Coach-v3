@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-09-28T00:40-awav-always-on';
+    var VERSION = '2026-09-29T02:00-icon-persona';
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -69,14 +69,27 @@
     var _isSimHost = /[?&]simulator=1\b/i.test(_hostSearch);
     var IFRAME_SRC = 'https://web-staging-2c7ff.up.railway.app/index.html?caller='
         + (_isSimHost ? 'admin-simulator&simulator=1' : 'web');
-    var ICON_STILL_SRC = 'https://web-staging-2c7ff.up.railway.app/companions/Erica-thumb.png';
-    // 84p is actually the HIGHEST resolution we have for Erica webm clips
-    // (base /companions/idle/Erica.webm is smaller than the 84p variant —
-    // odd naming). PNG thumb is higher-res than any video and is used as
-    // the resting background layer so the icon reads crisp when idle.
-    var ICON_IDLE_WEBM = 'https://web-staging-2c7ff.up.railway.app/companions/idle/84p/Erica.webm';
-    var ICON_SPEAKING_WEBM = 'https://web-staging-2c7ff.up.railway.app/companions/speaking/84p/Erica.webm';
-    var ICON_WAVING_MP4 = 'https://web-staging-2c7ff.up.railway.app/companions/waving/Erica.mp4';
+    // The icon shows the active persona: Erica until the iframe announces
+    // another one (CT_ICON_PERSONA). 84p is actually the HIGHEST resolution
+    // we have for the webm clips (base /companions/idle/<name>.webm is
+    // smaller than the 84p variant — odd naming). PNG thumb is higher-res
+    // than any video and is used as the resting background layer so the
+    // icon reads crisp when idle.
+    var COMPANIONS_BASE = 'https://web-staging-2c7ff.up.railway.app/companions/';
+    var PERSONA_KEY_RE = /^[A-Z][A-Za-z]{1,23}$/;
+    var THUMB_FILE_RE = /^[A-Za-z]{2,24}-thumb\.png$/;
+    // `thumb` is the still's exact file name when the iframe knows it:
+    // thumbs are not all TitleCase (omar-thumb.png), the clips are.
+    function personaAssets(key, thumb) {
+        return {
+            still: COMPANIONS_BASE + (thumb && THUMB_FILE_RE.test(thumb) ? thumb : key + '-thumb.png'),
+            idle: COMPANIONS_BASE + 'idle/84p/' + key + '.webm',
+            speaking: COMPANIONS_BASE + 'speaking/84p/' + key + '.webm',
+            waving: COMPANIONS_BASE + 'waving/' + key + '.mp4'
+        };
+    }
+    var iconPersona = 'Erica';
+    var iconThumb = null;
     var ICON_ID = 'ct-bridge-icon';
     var HOVER_PILLS_ID = 'ct-bridge-hover-pills';
     var IDLE_VIDEO_ID = 'ct-bridge-icon-video-idle';
@@ -138,6 +151,14 @@
         // Iframe app announces avatar animation state (speaking / waving /
         // clapping / idle). Bridge swaps the persistent corner-icon sprite
         // so Erica visibly reacts even without opening the chat.
+        // Iframe app announces the active persona (Erica → Steve): the
+        // corner icon swaps to that persona's still and clips, same size and
+        // same animation state machine.
+        if (event.data.type === 'CT_ICON_PERSONA' && typeof event.data.key === 'string') {
+            setIconPersona(event.data.key, typeof event.data.thumb === 'string' ? event.data.thumb : null);
+            return;
+        }
+
         if (event.data.type === 'CT_ICON_ANIMATION' && typeof event.data.name === 'string') {
             setIconAnimation(event.data.name);
             return;
@@ -496,6 +517,40 @@
     }
 
     // --- Icon animation ---
+    function setIconPersona(key, thumb) {
+        if (!PERSONA_KEY_RE.test(key)) {
+            console.warn('[CTBridge] Ignoring persona key:', String(key).slice(0, 40));
+            return;
+        }
+        var assets = personaAssets(key, thumb);
+        var current = personaAssets(iconPersona, iconThumb);
+        iconPersona = key;
+        iconThumb = thumb;
+        // Same files (e.g. the boot announcement of Erica): don't reload the clips.
+        if (assets.still === current.still && assets.idle === current.idle) return;
+        var icon = document.getElementById(ICON_ID);
+        if (!icon) return; // not injected yet: injectUI reads iconPersona
+        icon.style.backgroundImage = 'url("' + assets.still + '")';
+        [[IDLE_VIDEO_ID, assets.idle], [SPEAKING_VIDEO_ID, assets.speaking], [WAVING_VIDEO_ID, assets.waving]].forEach(function (layer) {
+            var v = document.getElementById(layer[0]);
+            if (!v) return;
+            v.setAttribute('src', layer[1]);
+            try { v.load(); } catch (_) {}
+        });
+        // Idle is the always-on base layer; a previous persona's failed clip
+        // may have hidden it.
+        var idleV = document.getElementById(IDLE_VIDEO_ID);
+        if (idleV) {
+            idleV.style.display = 'block';
+            try { idleV.play().catch(function () {}); } catch (_) {}
+        }
+        var speakV = document.getElementById(SPEAKING_VIDEO_ID);
+        if (speakV && speakV.style.display !== 'none') {
+            try { speakV.play().catch(function () {}); } catch (_) {}
+        }
+        console.log('[CTBridge] Icon persona:', key);
+    }
+
     // Three video layers stacked inside the corner icon:
     //   1. IDLE  — always looping in the background at opacity 1
     //   2. SPEAKING — same-size overlay, fades in when Erica is talking
@@ -636,7 +691,7 @@
             outline: 'none',
             padding: '0',
             cursor: 'pointer',
-            background: '#e5e7eb center/cover no-repeat url("' + ICON_STILL_SRC + '")',
+            background: '#e5e7eb center/cover no-repeat url("' + personaAssets(iconPersona, iconThumb).still + '")',
             // Two-part box-shadow: inner ring encodes connection state
             // (green connected / amber connecting / grey offline), outer
             // shadow is the elevation. Starts amber ("connecting").
@@ -684,18 +739,22 @@
                 transition: 'opacity 300ms ease'
             };
             applyStyle(v, style);
-            v.addEventListener('error', function () { v.style.display = 'none'; });
+            v.addEventListener('error', function () {
+                console.warn('[CTBridge] Icon video failed to load:', v.getAttribute('src'));
+                v.style.display = 'none';
+            });
             return v;
         }
 
         // Icon needs to be a positioned container for absolute children.
         mergeStyle(icon, { position: 'fixed', overflow: 'hidden' });
 
-        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, ICON_IDLE_WEBM,
+        var assets = personaAssets(iconPersona, iconThumb);
+        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, assets.idle,
             { autoplay: true, loop: true, z: 10, opacity: 1 });
-        var speakingVideo = makeVideoLayer(SPEAKING_VIDEO_ID, ICON_SPEAKING_WEBM,
+        var speakingVideo = makeVideoLayer(SPEAKING_VIDEO_ID, assets.speaking,
             { autoplay: true, loop: true, z: 20, opacity: 0, display: 'none' });
-        var wavingVideo = makeVideoLayer(WAVING_VIDEO_ID, ICON_WAVING_MP4,
+        var wavingVideo = makeVideoLayer(WAVING_VIDEO_ID, assets.waving,
             { autoplay: false, loop: false, z: 30, opacity: 1, display: 'none' });
 
         icon.appendChild(idleVideo);
@@ -734,7 +793,8 @@
             iconInjected: !!document.getElementById(ICON_ID),
             containerInjected: !!document.getElementById(CONTAINER_ID),
             iframeInjected: !!document.getElementById(IFRAME_ID),
-            iframeSrc: IFRAME_SRC
+            iframeSrc: IFRAME_SRC,
+            iconPersona: iconPersona
         };
     };
     // Programmatic expand/collapse from the console for testing.

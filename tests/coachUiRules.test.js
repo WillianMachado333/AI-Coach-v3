@@ -66,3 +66,17 @@ test('suggestion filtering rejects URLs, emails, and identifiers', () => {
         ['safe one', 'safe two']
     );
 });
+
+test('persona assets key off the profile files, not the voice or the display name', () => {
+    const steve = { companionId: 'Strengths', configuration: { character: 'Steve', openaiVoice: 'verse', thumb: 'companions/Steve-thumb.png', idleVideo: 'companions/idle/Steve.mp4' } };
+    assert.equal(rules.personaAssetKey(steve), 'Steve');
+    // Flattened profile, renamed by the user, absolute thumb URL.
+    assert.equal(rules.personaAssetKey({ character: 'My coach', voice: 'marin', thumb: 'https://web-staging-2c7ff.up.railway.app/companions/Erica-thumb.png?v=2' }), 'Erica');
+    // omar-thumb.png ships lowercase; the videos are Omar.webm.
+    assert.equal(rules.personaAssetKey({ thumb: 'companions/omar-thumb.png' }), 'Omar');
+    assert.equal(rules.personaAssetKey({ thumb: 'https://static.wixstatic.com/media/a1b2_c3~mv2.png', idleVideo: 'companions/idle/Sean.mp4' }), 'Sean');
+    // Nothing file-shaped: no key, so the host icon keeps what it has.
+    for (const profile of [null, {}, { character: 'Steve', voice: 'verse' }, { thumb: '../../etc/passwd' }]) {
+        assert.equal(rules.personaAssetKey(profile), null);
+    }
+});

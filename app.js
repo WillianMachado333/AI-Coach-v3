@@ -1307,6 +1307,7 @@ class VoiceChatBot {
                     profile.character || profile.label || profile.id || openaiVoice || 'Coach';
             }
         }
+        this._announcePersonaToHost();
 
         // Update voice style instructions
         this.voiceStyleInstructions = this.buildVoiceStyleInstructions();
@@ -4106,6 +4107,25 @@ class VoiceChatBot {
         // the newly-selected coach. Renders only if the chat is still empty;
         // becomes a no-op once the conversation has started.
         try { this.renderQuickActions(); } catch (_) { /* non-fatal */ }
+
+        this._announcePersonaToHost();
+    }
+
+    // Tells the host page (bridge.js) which persona is active, so the corner
+    // icon shows that persona instead of always Erica.
+    _announcePersonaToHost() {
+        const keyOf = window.coachUiRules?.personaAssetKey;
+        if (typeof keyOf !== 'function') return;
+        const key = keyOf(this.currentVoiceProfile) || keyOf({ thumb: this.currentVoiceThumbUrl });
+        if (!key || key === this._announcedPersonaKey) return;
+        this._announcedPersonaKey = key;
+        // The still's exact file name: thumbs are not all TitleCase (omar-thumb.png).
+        const thumbFile = (String(this.currentVoiceThumbUrl || '').match(/([A-Za-z]+-thumb\.png)(?:[?#].*)?$/) || [])[1];
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'CT_ICON_PERSONA', key, thumb: thumbFile || null }, '*');
+            }
+        } catch (_) { /* non-fatal */ }
     }
 
     resolveCompanionThumb(profile) {
