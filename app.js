@@ -8291,9 +8291,27 @@ class VoiceChatBot {
                     console.log('[Erica] 📋 Clipboard: no notes about this person yet');
                     return;
                 }
-                const type = this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create';
-                const ok = this.sendMessage({ type, item: { type: 'message', role: 'system', content: [{ type: 'input_text', text }] } });
-                (ok ? console.log : console.warn)(`[Erica] 📋 Clipboard ${ok ? 'injected into' : 'NOT sent to'} the ${this.voiceApiMode} session (${data.lines} lines)`);
+                const item = { type: 'message', role: 'system', content: [{ type: 'input_text', text }] };
+                let ok;
+                if (this.voiceApiMode === 'live') {
+                    // GPT-Live has two layers. The voice layer — the one that
+                    // greets and answers small talk — only takes instructions
+                    // mid-session through session.instructions.append
+                    // (delegation_id null, ≤ 500 tokens per event), so the
+                    // block goes there, split at its rules if long. A
+                    // response.item.create reaches the delegated backend alone
+                    // (measured: with only that, Erica never brought the notes up).
+                    const chunks = window.coachUiRules?.splitForLiveAppend
+                        ? window.coachUiRules.splitForLiveAppend(text)
+                        : [text];
+                    const voiceOk = chunks.every((content) => this.sendMessage({ type: 'session.instructions.append', delegation_id: null, content }));
+                    const backendOk = this.sendMessage({ type: 'response.item.create', item });
+                    ok = voiceOk && backendOk;
+                    (ok ? console.log : console.warn)(`[Erica] 📋 Clipboard ${ok ? 'injected into' : 'NOT fully sent to'} the live session (${data.lines} lines; voice layer ${voiceOk ? 'ok' : 'FAILED'} in ${chunks.length} append(s), backend ${backendOk ? 'ok' : 'FAILED'})`);
+                } else {
+                    ok = this.sendMessage({ type: 'conversation.item.create', item });
+                    (ok ? console.log : console.warn)(`[Erica] 📋 Clipboard ${ok ? 'injected into' : 'NOT sent to'} the ${this.voiceApiMode} session (${data.lines} lines)`);
+                }
                 if (!ok) this._clipboardInjectedFor = null;
             })
             .catch((err) => {
