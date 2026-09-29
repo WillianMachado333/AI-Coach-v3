@@ -1582,15 +1582,56 @@ class VoiceChatBot {
         });
     }
 
+    async _resolveVoiceApiMode() {
+        if (this.voiceApiMode) return this.voiceApiMode;
+        if (!this._voiceApiModePromise) {
+            this._voiceApiModePromise = (async () => {
+                try {
+                    const modeRes = await fetch(this.apiUrl('/api/voice-mode'));
+                    const modeJson = modeRes.ok ? await modeRes.json() : {};
+                    this.voiceApiMode = modeJson.mode === 'live' ? 'live' : 'realtime';
+                } catch (_) {
+                    this.voiceApiMode = 'realtime';
+                }
+                console.log('[Erica] Voice API mode:', this.voiceApiMode);
+                return this.voiceApiMode;
+            })();
+        }
+        return this._voiceApiModePromise;
+    }
+
     async autoConnect() {
         // SECURITY: Never fetch or store long-lived OpenAI API keys in the browser.
         // The server-side proxy holds the OpenAI key and negotiates Realtime.
         try {
-            setTimeout(() => {
+            setTimeout(async () => {
                 // Avoid storms if multiple instances exist or connect is already running.
                 if (this.isConnected || this.isConnecting) return;
                 // When a URL coach is specified, fire the opening line; otherwise preload silently.
                 const skipOpeningLine = !this.getUrlCoach();
+                // GPT-Live bills 15 s for every session it opens, and an idle open tab
+                // gets its session dropped and re-opened every ~4.5 min: a silent
+                // preload costs ~$0.17/h per open tab for nothing. It connects on the
+                // first call click (toggleMicTrack) or typed message (sendTextMessage)
+                // instead. Realtime bills nothing while idle, so it still preloads.
+                if (skipOpeningLine && await this._resolveVoiceApiMode() === 'live') {
+                    if (this.isConnected || this.isConnecting) return;
+                    this._liveStandby = true;
+                    console.log('[Erica] Live: no session on page load — connects on the first call or message');
+                    this._postConnectionState();
+                    // What costs nothing still happens now: the preparation (persona,
+                    // starter pills, bundled history) — and it warms the caches the
+                    // first connect() reads.
+                    const prepIdentifier = this.getUserIdFromURL() || this.getEmailFromURL() || null;
+                    this.fetchEricaPreparation(prepIdentifier).catch((e) =>
+                        console.warn('[Erica] Live standby: preparation prefetch failed —', e?.message || e));
+                    // Same for the host's report cache: ask once now, so the first
+                    // connect doesn't wait out the timeout on pages that never answer.
+                    this.requestReportContextFromParent().then((ctx) => {
+                        if (!ctx) this._reportContextUnanswered = true;
+                    }).catch(() => { });
+                    return;
+                }
                 this.connect({ skipOpeningLine }).catch(() => { });
             }, 500);
         } catch (_) {
@@ -2672,6 +2713,10 @@ class VoiceChatBot {
             console.log('[Erica] 📤 Report cache request skipped (no parent)');
             return null;
         }
+        // Already asked (GPT-Live standby probe) and the host didn't answer:
+        // don't make the first connect wait the timeout again. A late answer
+        // still lands in reportContextCache, which wins above.
+        if (this._reportContextUnanswered && !force) return null;
 
         const waitMs = Number.isFinite(timeoutMs) ? timeoutMs : this.reportContextTimeoutMs;
         return new Promise((resolve) => {
@@ -6035,16 +6080,7 @@ class VoiceChatBot {
             // server env var doesn't change mid-session; reconnects reuse
             // the cached value instead of re-fetching). GPT-Live comparison
             // spike — see configureLiveSession() for the architecture notes.
-            if (!this.voiceApiMode) {
-                try {
-                    const modeRes = await fetch(this.apiUrl('/api/voice-mode'));
-                    const modeJson = modeRes.ok ? await modeRes.json() : {};
-                    this.voiceApiMode = modeJson.mode === 'live' ? 'live' : 'realtime';
-                } catch (_) {
-                    this.voiceApiMode = 'realtime';
-                }
-                console.log('[Erica] Voice API mode:', this.voiceApiMode);
-            }
+            await this._resolveVoiceApiMode();
 
             // Create WebRTC peer connection for audio streaming
             this.pc = new RTCPeerConnection({
@@ -9723,20 +9759,24 @@ class VoiceChatBot {
         this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
     }
 
+    // Broadcast to the parent-page bridge so the corner icon's ring reflects
+    // connection state (green connected / red offline / grey standby: GPT-Live
+    // before its first session, ready but not connected on purpose).
+    _postConnectionState() {
+        const state = this.isConnected ? 'connected' : (this._liveStandby ? 'standby' : 'disconnected');
+        try {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'CT_CONNECTION_STATE', state }, '*');
+            }
+        } catch (_) { /* non-fatal */ }
+    }
+
     updateStatus(connected) {
         // Update Internal State
         this.isConnected = connected;
 
-        // Broadcast to the parent-page bridge so the corner icon's ring
-        // reflects connection state (green connected / red offline).
-        try {
-            if (window.parent && window.parent !== window) {
-                window.parent.postMessage(
-                    { type: 'CT_CONNECTION_STATE', state: connected ? 'connected' : 'disconnected' },
-                    '*'
-                );
-            }
-        } catch (_) { /* non-fatal */ }
+        if (connected) this._liveStandby = false;
+        this._postConnectionState();
 
         // Fire connected/disconnected events to parent app (e.g. mobile app via postMessage)
         // Guard with _lastReportedConnected to avoid duplicate events on redundant calls
