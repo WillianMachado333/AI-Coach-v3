@@ -30,7 +30,6 @@
         app.callMicMuteBtn = document.getElementById('callMicMuteBtn');
         app.callMicOnIcon = document.getElementById('callMicOnIcon');
         app.callMicOffIcon = document.getElementById('callMicOffIcon');
-        app.callEndBtn = document.getElementById('callEndBtn');
 
         // Header actions
         app.backToCoachListBtn = document.getElementById('backToCoachListBtn');
@@ -140,11 +139,10 @@
             };
 
             // Shared with trackComposerHeight()/setCallModePanelOpen() below,
-            // which is why it lives on `app`: the button also has to stay
-            // hidden while the call panel is open (its own z-index jumps to
-            // 55 to sit above everything, and there's no useful "scroll the
-            // text history" action mid-call anyway), not just when the user
-            // is already near the bottom.
+            // which is why it lives on `app`: the button also stays hidden
+            // during a call (there's no useful "scroll the text history"
+            // action mid-call), not just when the user is already near the
+            // bottom.
             app.updateScrollToBottomVisibility = function () {
                 const callPanelOpen = !!app._callPanelOpen;
                 if (callPanelOpen || app.isChatNearBottom()) {
@@ -487,19 +485,6 @@
                 updateCallPanelMicUI(app);
             });
         }
-        // Delegated listener for Stop button to handle replacement/z-index issues
-        document.addEventListener('click', (e) => {
-            const btn = e.target.closest('#callEndBtn');
-            if (btn) {
-                console.log('[Erica Debug] Delegated click on callEndBtn');
-                e.preventDefault();
-                e.stopPropagation();
-                if (typeof app.stopRecording === 'function') {
-                    app.stopRecording();
-                }
-            }
-        });
-
         // Back arrow should re-open the coach picker
         if (app.backToCoachListBtn) {
             app.backToCoachListBtn.addEventListener('click', (e) => {
@@ -1128,15 +1113,12 @@
     //     pb-28 (112px) was calibrated for a composer with no pill row; with
     //     pills visible the composer measured 272px on a phone — a 160px
     //     shortfall.
-    //   - #callModePanel (speaker/mic/stop), which sits `bottom-[86px]` in
-    //     the HTML — also calibrated for a chip-less composer, so it sat
-    //     UNDER the chip row instead of above the whole composer once chips
-    //     started living there.
-    // A single ResizeObserver on the composer bar keeps both correct for ANY
-    // future reason the composer's height changes (attachment previews,
-    // textarea growth, voice-mode shrinking it, etc.), not just today's chip
-    // row — and it runs always, not only while a call is open, since the
-    // chat-padding half of this matters in plain text mode too.
+    //   - #scrollToBottomBtn, which floats just above the composer.
+    // (The call controls used to be a third, separately floating panel; they
+    // now live inside the composer pill, so they move with it for free.)
+    // One observer on the composer bar keeps these correct for ANY reason
+    // the composer's height changes (attachment previews, textarea growth,
+    // the pill row), and it runs in every mode.
     // ResizeObserver looked like the obvious tool here, and shipped first —
     // but verified directly (staging, mobile) that it never fires for this
     // element: attached a throwaway observer on #composerBar and toggled
@@ -1148,8 +1130,8 @@
     // Studio in. MutationObserver watches attribute/child changes instead of
     // layout boxes, which sidesteps the whole class of bug: it observes
     // #composerBar's subtree for the specific things that change its height
-    // (quickActions' hidden class, the textarea's inline style in voice
-    // mode, attachment previews being added/removed) directly, confirmed
+    // (quickActions' hidden class, the textarea growing, attachment
+    // previews being added/removed) directly, confirmed
     // firing in the same manual test that showed ResizeObserver silent.
     let _composerMutationObserver = null;
     function trackComposerHeight(app) {
@@ -1165,27 +1147,14 @@
             // on every audio frame (updateMicLevel) — each of those is a
             // 'style'/'class' mutation this observer is watching for.
             // Without this guard, every one of those frames re-applies the
-            // same bottom/padding value via inline style: wasted layout
-            // work at best, and on engines where composerBar's own measured
-            // height jitters by a pixel from viewport chrome changes (iOS
-            // Safari's dynamic toolbar), it keeps retriggering callModePanel's
-            // bottom transition before it settles — the panel never reaches
-            // its docked position, floating instead. Comparing against each
-            // element's own current inline value (not a shared "last height"
-            // flag) keeps this correct across the panel's hidden/visible
-            // transitions, where the panel's target can change even when the
-            // composer's height hasn't.
+            // same bottom/padding value via inline style — wasted layout
+            // work, and on engines where composerBar's measured height
+            // jitters by a pixel (iOS Safari's dynamic toolbar) it keeps
+            // restarting any transition on the targets before it settles.
             if (chatContainer) {
                 const paddingTarget = `${h + 24}px`;
                 if (chatContainer.style.paddingBottom !== paddingTarget) {
                     chatContainer.style.paddingBottom = paddingTarget;
-                }
-            }
-            const panel = app.callModePanel;
-            if (panel && !panel.classList.contains('hidden')) {
-                const bottomTarget = `${h + 14}px`;
-                if (panel.style.bottom !== bottomTarget) {
-                    panel.style.bottom = bottomTarget;
                 }
             }
             // scrollToBottomBtn had a hardcoded bottom-24 (96px) — fine for a
@@ -1228,50 +1197,21 @@
         // early would keep the scroll button wrongly hidden for that window.
         app._callPanelOpen = !!open;
 
-        panel.classList.toggle('opacity-0', !open);
-        panel.classList.toggle('translate-y-10', !open);
-        panel.classList.toggle('opacity-100', open);
-        panel.classList.toggle('translate-y-0', open);
-
-        // When voice mode is on, the text input becomes secondary — collapse
-        // the composer to a compact control group so audio remains primary.
+        // The controls live inside the composer pill, in the textarea's place
+        // (see #callModePanel in index.html): the swap is purely what's inside
+        // the pill, so the composer's geometry — and everything positioned
+        // from it — doesn't change between modes.
         if (app.inputWrapper) app.inputWrapper.classList.toggle('voice-mode-active', !!open);
-        const ta = document.getElementById('userTextInput');
-        const inputWrap = document.getElementById('inputWrapper');
-        if (ta) {
-            // 32px was a near-exact fit for one line at 13px/1.5 (19.5px)
-            // plus 6+6px padding — 31.5px needed inside a 32px box, under a
-            // pixel of slack. Chromium renders it fine, but WebKit's slightly
-            // different font metrics can round that over the edge, and this
-            // textarea's overflow-y is auto: even a 1px overflow makes it
-            // internally scrollable, which is what was showing as a spinner-
-            // like affordance next to the mic icon in voice mode. 36px gives
-            // real margin instead of an exact-fit calculation, and
-            // overflow-hidden means a future miscalculation clips silently
-            // instead of becoming scrollable — this is a one-line composer,
-            // it was never meant to scroll internally.
-            ta.style.minHeight = open ? '36px' : '48px';
-            ta.style.paddingTop = open ? '6px' : '';
-            ta.style.paddingBottom = open ? '6px' : '';
-            ta.style.fontSize = open ? '13px' : '';
-            ta.style.overflow = open ? 'hidden' : '';
+        panel.classList.toggle('hidden', !open);
+        if (app.micToggleButton) {
+            app.micToggleButton.classList.toggle('call-active', !!open);
+            const label = open ? 'End call' : 'Start voice call';
+            app.micToggleButton.setAttribute('aria-label', label);
+            app.micToggleButton.title = label;
         }
-        if (inputWrap) {
-            inputWrap.style.opacity = '';
-        }
+        trackComposerHeight(app);
 
-        // Critical: actually show/hide the element and enable interaction
         if (open) {
-            panel.classList.remove('hidden');
-            panel.classList.add('flex', 'pointer-events-auto');
-            panel.classList.remove('pointer-events-none');
-            panel.style.zIndex = '55'; // Boost above inputWrapper (z-40)
-            // Recompute AFTER the voice-mode-active class + shrunk textarea
-            // above have applied, and again next frame once the browser has
-            // actually reflowed — the composer's height right now may still
-            // reflect its pre-toggle size.
-            trackComposerHeight(app);
-            requestAnimationFrame(() => trackComposerHeight(app));
             if (typeof messageToApp === 'function') {
                 const thumb = app.currentVoiceThumbUrl || null;
                 const thumbAbsolute = thumb && !thumb.startsWith('http')
@@ -1283,27 +1223,9 @@
                     coachImage: thumbAbsolute
                 });
             }
-        } else {
-            // Delay adding 'hidden' to allow transition to finish
-            setTimeout(() => {
-                if (panel.classList.contains('opacity-0')) {
-                    panel.classList.add('hidden');
-                    panel.classList.remove('flex', 'pointer-events-auto');
-                    panel.classList.add('pointer-events-none');
-                }
-            }, 300);
-            // scrollToBottomBtn can reappear the moment the call panel
-            // starts closing (app._callPanelOpen is already false above) —
-            // it doesn't need to wait for the panel's own fade-out.
-            trackComposerHeight(app);
-            requestAnimationFrame(() => trackComposerHeight(app));
         }
 
-        // Ensure the chat has enough bottom padding so messages don't sit behind the panel
         const chatContainer = document.getElementById('chatContainer');
-        if (chatContainer) {
-            chatContainer.classList.toggle('call-panel-open', !!open);
-        }
 
         if (open) {
             try {
@@ -1471,11 +1393,6 @@
                     } catch (_) { }
                 }, 0);
             }
-        }
-
-        // While in-call panel is open, hide the floating mic FAB to avoid duplicate controls.
-        if (app.micToggleButton) {
-            app.micToggleButton.classList.toggle('hidden', !!open);
         }
 
         // Disable back button and switch coaching style button during voice mode
@@ -1697,7 +1614,7 @@
             // Active Recording State
             btn.classList.add('mic-active'); // Triggers red pulse animation from CSS
 
-            // Keep icon stable; stop button lives in call panel now.
+            // Keep icon stable; in a call this button is End call.
             if (icon) {
                 icon.classList.remove('scale-0', 'opacity-0');
                 icon.classList.add('scale-100', 'opacity-100');
