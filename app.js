@@ -438,7 +438,7 @@ class VoiceChatBot {
             restoreDelayMs: Number.isFinite(restoreDelayMs) ? Math.max(0, restoreDelayMs) : 0
         };
 
-        this.sendMessage({
+        this._sendUserItem({
             type: this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create',
             item: {
                 type: 'message',
@@ -446,7 +446,7 @@ class VoiceChatBot {
                 content: [{ type: 'input_text', text }]
             }
         });
-        this.sendMessage({ type: 'response.create' });
+        this._requestResponse('one-shot');
 
         // Resolve when response.created arrives (used for UI loader)
         const started = await Promise.race([
@@ -1973,9 +1973,7 @@ class VoiceChatBot {
         console.log('[Erica] Requesting regenerated response for:', originalMessageId);
 
         // Trigger a new response creation via the data channel
-        this.sendMessage({
-            type: 'response.create'
-        });
+        this._requestResponse('regenerate');
     }
 
     /**
@@ -3265,7 +3263,7 @@ class VoiceChatBot {
 
         // Send first; the composer clears and the bubble appears only once
         // the message has actually left.
-        if (!this.sendMessage(this._buildUserItemMessage(text, attachments))) {
+        if (!this._sendUserItem(this._buildUserItemMessage(text, attachments))) {
             this._refuseSend(fromComposer, 'Couldn’t send that. Check your connection and try again.');
             return;
         }
@@ -3311,11 +3309,7 @@ class VoiceChatBot {
         // Create a response to get the model's reply
         setTimeout(() => {
             if (this.isConnected) {
-                const responseConfig = {
-                    type: 'response.create'
-                };
-
-                this.sendMessage(responseConfig);
+                this._requestResponse('user message');
             }
 
             // Show loader and disable inputs while waiting for response
@@ -7118,7 +7112,7 @@ class VoiceChatBot {
             return;
         }
         console.log('[Erica] Sending opening line prompt as user message:', this.openingLinePrompt);
-        this.sendMessage({
+        this._sendUserItem({
             type: this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create',
             item: {
                 type: 'message',
@@ -7134,7 +7128,7 @@ class VoiceChatBot {
 
         // Trigger the model to respond (Realtime requires an explicit response.create after adding a user message).
         setTimeout(() => {
-            this.sendMessage({ type: 'response.create' });
+            this._requestResponse('opening line');
         }, 100);
 
         this.openingLineSent = true;
@@ -7706,15 +7700,19 @@ class VoiceChatBot {
     // "Complete a client-actionable function call" in the delegation-and-
     // tools guide for the Live side.
     _sendFunctionResult(callId, result) {
-        const itemType = this.voiceApiMode === 'live' ? 'response.item.create' : 'conversation.item.create';
+        const isLive = this.voiceApiMode === 'live';
         this.sendMessage({
-            type: itemType,
+            type: isLive ? 'response.item.create' : 'conversation.item.create',
             item: {
                 type: 'function_call_output',
                 call_id: callId,
                 output: result
             }
         });
+        if (isLive) {
+            this._afterLiveFunctionOutput(callId);
+            return;
+        }
         // Wait a bit to ensure the function output is processed before
         // asking the model to continue.
         setTimeout(() => {
@@ -7722,6 +7720,149 @@ class VoiceChatBot {
                 this.sendMessage({ type: 'response.create' });
             }
         }, 200);
+    }
+
+    // GPT-Live rejects response.create while a delegated function call is
+    // still waiting for its output (function_call_outputs_required), and
+    // the turn that sent it is lost. get_page_context alone takes ~2.5s when
+    // the host page doesn't answer, so a message sent in that window hit
+    // this. While a call is pending — and until the reply that continues
+    // after its output has finished — user turns and response requests are
+    // held, then sent as their own turn. Sending them together with the
+    // continuation made the model answer both questions as one ("The title
+    // is 12").
+    _livePending() {
+        return this.voiceApiMode === 'live' && this._livePendingCalls instanceof Map && this._livePendingCalls.size > 0;
+    }
+
+    _liveBusy() {
+        return this._livePending() || (this.voiceApiMode === 'live' && !!this._liveAwaitingContinuation);
+    }
+
+    _describeLivePending() {
+        if (!this._livePending()) return `the reply after ${this._liveContinuationFor || 'a tool call'}`;
+        return [...this._livePendingCalls.entries()]
+            .map(([id, call]) => `${call.name} (${id}, ${Date.now() - call.since}ms)`).join(', ');
+    }
+
+    _trackLiveFunctionCall(callId, name, delegationId) {
+        if (!(this._livePendingCalls instanceof Map)) this._livePendingCalls = new Map();
+        if (callId && !this._livePendingCalls.has(callId)) this._livePendingCalls.set(callId, { name, since: Date.now(), delegationId });
+    }
+
+    // User-turn item: sent now, or held while a call is pending.
+    _sendUserItem(message) {
+        if (!this._liveBusy()) return this.sendMessage(message);
+        if (!this._liveHeldItems) this._liveHeldItems = [];
+        this._liveHeldItems.push(message);
+        console.log(`[Erica][Live] ⏸ holding user turn — waiting on ${this._describeLivePending()}`);
+        this._armLivePendingWatchdog();
+        return true;
+    }
+
+    // "Reply now": sent now, held while a call is pending, and coalesced
+    // with a continuation that's already scheduled.
+    _requestResponse(reason) {
+        if (this.voiceApiMode !== 'live') return this.sendMessage({ type: 'response.create' });
+        if (this._liveBusy()) {
+            this._liveResponseWanted = true;
+            console.log(`[Erica][Live] ⏸ holding response.create (${reason}) — waiting on ${this._describeLivePending()}`);
+            this._armLivePendingWatchdog();
+            return true;
+        }
+        if (this._liveContinueTimer) return true;
+        return this.sendMessage({ type: 'response.create' });
+    }
+
+    _afterLiveFunctionOutput(callId) {
+        const call = this._livePendingCalls instanceof Map ? this._livePendingCalls.get(callId) : null;
+        const known = !!call && this._livePendingCalls.delete(callId);
+        if (!known) {
+            // From a previous session (reconnected meanwhile): nothing here is
+            // waiting on it, so don't ask the new session to continue.
+            console.warn('[Erica][Live] output for a call this session never issued:', callId);
+            return;
+        }
+        if (this._livePending()) {
+            console.log(`[Erica][Live] ⏳ output sent for ${callId}; still waiting on ${this._describeLivePending()}`);
+            return;
+        }
+        // Last output is in: let the backend finish this reply first. Held
+        // turns go out when that reply completes (_onLiveResponseEnded).
+        const held = (this._liveHeldItems || []).length;
+        this._liveAwaitingContinuation = true;
+        this._liveContinuationId = null;
+        this._liveContinuationDelegation = call.delegationId || null;
+        this._liveContinuationFor = call.name || callId;
+        if (held || this._liveResponseWanted) {
+            console.log(`[Erica][Live] ⏳ output sent for ${callId}; ${held} held turn(s) go out after this reply`);
+        }
+        // Wait a bit to ensure the function output is processed before
+        // asking the model to continue.
+        clearTimeout(this._liveContinueTimer);
+        this._liveContinueTimer = setTimeout(() => {
+            this._liveContinueTimer = null;
+            if (this.isConnected) this.sendMessage({ type: 'response.create' });
+        }, 200);
+    }
+
+    // Nested Responses lifecycle, used to tell when the continuation after a
+    // tool output has finished. A reply that calls another tool leaves calls
+    // pending, so the next output starts a new continuation.
+    _onLiveResponseEvent(inner, delegationId) {
+        if (!this._liveAwaitingContinuation) return;
+        // The continuation belongs to the same delegation as the tool call; a
+        // new delegation the voice layer opens meanwhile is not it.
+        if (this._liveContinuationDelegation && delegationId && delegationId !== this._liveContinuationDelegation) return;
+        const id = inner.response && inner.response.id;
+        if (inner.type === 'response.created') {
+            if (!this._liveContinuationId && id) this._liveContinuationId = id;
+            return;
+        }
+        if (!['response.completed', 'response.failed', 'response.incomplete', 'response.cancelled'].includes(inner.type)) return;
+        if (!id || id !== this._liveContinuationId) return;
+        this._liveAwaitingContinuation = false;
+        this._liveContinuationId = null;
+        if (!this._livePending()) this._flushLiveHeldTurns(`${inner.type.replace('response.', '')} reply after ${this._liveContinuationFor}`);
+    }
+
+    _flushLiveHeldTurns(reason) {
+        clearTimeout(this._livePendingWatchdog);
+        this._livePendingWatchdog = null;
+        const held = this._liveHeldItems || [];
+        this._liveHeldItems = [];
+        const wanted = this._liveResponseWanted || held.length > 0;
+        this._liveResponseWanted = false;
+        if (!wanted) return;
+        console.log(`[Erica][Live] ▶ flushing ${held.length} held turn(s) and one response.create (${reason})`);
+        held.forEach((message) => this.sendMessage(message));
+        if (this.isConnected) this.sendMessage({ type: 'response.create' });
+    }
+
+    // A tool that never returns would hold every later turn; say so loudly.
+    _armLivePendingWatchdog() {
+        if (this._livePendingWatchdog) return;
+        this._livePendingWatchdog = setTimeout(() => {
+            this._livePendingWatchdog = null;
+            if (!this._liveBusy()) return;
+            console.error(`[Erica][Live] 🟥 still waiting after 30s on ${this._describeLivePending()} — `
+                + `${(this._liveHeldItems || []).length} user turn(s) held`);
+        }, 30000);
+    }
+
+    _resetLiveTurnGate() {
+        const held = (this._liveHeldItems || []).length;
+        if (held) console.warn(`[Erica][Live] new session — dropping ${held} held user turn(s) from the previous one`);
+        this._livePendingCalls = new Map();
+        this._liveHeldItems = [];
+        this._liveResponseWanted = false;
+        this._liveAwaitingContinuation = false;
+        this._liveContinuationId = null;
+        this._liveContinuationDelegation = null;
+        clearTimeout(this._liveContinueTimer);
+        this._liveContinueTimer = null;
+        clearTimeout(this._livePendingWatchdog);
+        this._livePendingWatchdog = null;
     }
 
     // GPT-Live comparison spike — parallel to handleMessage() but for Live's
@@ -7758,6 +7899,7 @@ class VoiceChatBot {
         switch (message.type) {
             case 'session.started':
                 console.log('[Erica][Live] session.started', message.session?.id);
+                this._resetLiveTurnGate();
                 this.configureLiveSession();
                 if (typeof this.hideLoader === 'function') this.hideLoader();
                 if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
@@ -7812,6 +7954,7 @@ class VoiceChatBot {
             case 'response.event': {
                 const inner = message.event;
                 if (!inner) break;
+                this._onLiveResponseEvent(inner, message.delegation_id || null);
 
                 // Delegated (backend) text. Kept in its own accumulator, not
                 // the voice transcript's: in a real call GPT-Live speaks a
@@ -7855,6 +7998,7 @@ class VoiceChatBot {
                             delegation_id: message.delegation_id || null,
                             ts: Date.now()
                         };
+                        this._trackLiveFunctionCall(item.call_id, item.name, message.delegation_id || null);
                         this.executeFunction(item.name, args, item.call_id, message.delegation_id || null);
                     }
                 } else {

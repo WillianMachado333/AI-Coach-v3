@@ -43,7 +43,7 @@ test('an unsendable message is refused before the composer clears', () => {
     const sizeCheck = send.indexOf('_userMessageFits(');
     const firstClear = send.indexOf('clearAttachments()');
     assert.ok(sizeCheck > 0 && sizeCheck < firstClear, 'size check must run before any clear');
-    const realSend = send.indexOf('if (!this.sendMessage(this._buildUserItemMessage(');
+    const realSend = send.indexOf('if (!this._sendUserItem(this._buildUserItemMessage(');
     const bubble = send.indexOf("this.upsertMessage(userMessageId, 'user'");
     assert.ok(realSend > 0 && realSend < bubble, 'the user bubble only appears after the send succeeded');
     assert.match(app, /try \{\s*this\.dataChannel\.send\(messageStr\);\s*\} catch/);
