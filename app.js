@@ -1633,7 +1633,13 @@ class VoiceChatBot {
             isFinal: msg.final || false,
             companionId: msg.companionId || null,
             companionThumb: msg.companionThumb || null,
-            inputType: msg.inputType || null   // 'voice' | 'text' | null
+            inputType: msg.inputType || null,   // 'voice' | 'text' | null
+            // Name and kind only: a photo's image is never stored (history
+            // syncs on every final message; data URLs would bloat it). On
+            // restore the bubble shows an explicit "not kept" placeholder.
+            ...(Array.isArray(msg.attachments) && msg.attachments.length
+                ? { attachments: msg.attachments.map(({ kind, name }) => ({ kind, name })) }
+                : {})
         }));
     }
 
@@ -1900,7 +1906,8 @@ class VoiceChatBot {
                         companionId: msg.companionId || null,
                         companionThumb: msg.companionThumb || null,
                         // inputType was missing here — caused inputType to be null after history merge
-                        inputType: msg.inputType || null
+                        inputType: msg.inputType || null,
+                        attachments: Array.isArray(msg.attachments) ? msg.attachments.map(({ kind, name }) => ({ kind, name })) : undefined
                     });
                 });
         } finally {
@@ -2102,7 +2109,8 @@ class VoiceChatBot {
                     timestamp,
                     {
                         companionId: msg.companionId,
-                        companionThumb: msg.companionThumb
+                        companionThumb: msg.companionThumb,
+                        attachments: Array.isArray(msg.attachments) ? msg.attachments.map(({ kind, name }) => ({ kind, name })) : undefined
                     }
                 );
             });
@@ -2360,6 +2368,7 @@ class VoiceChatBot {
             if (meta.qcChecked) existing.qcChecked = true;
             // if (meta.inputType) existing.inputType = meta.inputType; // old: inputType not preserved on update
             if (meta.inputType) existing.inputType = meta.inputType;
+            if (Array.isArray(meta.attachments) && meta.attachments.length) existing.attachments = meta.attachments;
             message = existing;
             // Removed verbose log - was crowding console
         } else {
@@ -2391,7 +2400,9 @@ class VoiceChatBot {
                 companionId: meta.companionId,
                 companionThumb: meta.companionThumb,
                 qcChecked: !!meta.qcChecked,
-                inputType: meta.inputType || null   // 'voice' | 'text' | null (for bot/system)
+                inputType: meta.inputType || null,   // 'voice' | 'text' | null (for bot/system)
+                // [{ kind, name, src? }] — src (a photo's image) lives in memory only
+                attachments: Array.isArray(meta.attachments) && meta.attachments.length ? meta.attachments : undefined
             };
             this.messages.push(message);
             // Removed verbose log - was crowding console
@@ -3269,7 +3280,14 @@ class VoiceChatBot {
         const userTimestamp = Date.now();
         const userMessageId = `user-text-${userTimestamp}`;
         /*this.upsertMessage(userMessageId, 'user', text, true, userTimestamp);*/
-        this.upsertMessage(userMessageId, 'user', displayText, true, userTimestamp, { inputType: 'text' });
+        this.upsertMessage(userMessageId, 'user', displayText, true, userTimestamp, {
+            inputType: 'text',
+            attachments: attachments.map((attachment) => ({
+                kind: attachment.kind,
+                name: attachment.name,
+                src: attachment.kind === 'image' ? (attachment.dataUrl || null) : null
+            }))
+        });
 
 
         // Fire analytics for asked question (text path)

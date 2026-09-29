@@ -48,3 +48,19 @@ test('an unsendable message is refused before the composer clears', () => {
     assert.ok(realSend > 0 && realSend < bubble, 'the user bubble only appears after the send succeeded');
     assert.match(app, /try \{\s*this\.dataChannel\.send\(messageStr\);\s*\} catch/);
 });
+
+test('saved history keeps attachment names, never a photo\'s image', () => {
+    const app = read('app.js');
+    const history = app.slice(app.indexOf('    getConversationHistory('), app.indexOf('    logConversationHistory('));
+    assert.match(history, /msg\.attachments\.map\(\(\{ kind, name \}\) => \(\{ kind, name \}\)\)/);
+    assert.doesNotMatch(history, /\bsrc\b|dataUrl/);
+});
+
+test('bubble photos and the lightbox close button are 44px tap targets', () => {
+    const css = read('styles.css');
+    const block = (selector) => css.match(new RegExp('^' + selector.replace(/[.]/g, '\\.') + '\\s*\\{([^}]*)\\}', 'm'))[1];
+    assert.match(block('.bubble-photo'), /min-width:\s*44px/);
+    assert.match(block('.bubble-photo'), /min-height:\s*44px/);
+    assert.match(block('.image-lightbox-close'), /width:\s*44px/);
+    assert.match(block('.image-lightbox-close'), /height:\s*44px/);
+});
