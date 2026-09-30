@@ -157,6 +157,7 @@ test('client voice step: shown on the first call only; Skip or the same voice st
         app._urlCoachGiven = method('_urlCoachGiven()').bind(app);
         app._voiceStepNeeded = method('_voiceStepNeeded()').bind(app);
         app._applyCard = method('_applyCard(card)').bind(app);
+        app._noteCoachSwitch = method('_noteCoachSwitch()').bind(app);
         app._switchVoiceTo = method('_switchVoiceTo(card)').bind(app);
         app._waitConnected = async () => true;
         app._finishVoiceStep = method('_finishVoiceStep(card)').bind(app);
@@ -211,6 +212,33 @@ test('client voice step: shown on the first call only; Skip or the same voice st
     await cold.app._finishVoiceStep(jasmine);
     assert.ok(!cold.log.some((l) => l[0] === 'reconnect'));
     assert.equal(cold.app.selectedVoice, 'coral');
+
+    // Willian, iOS (2026-09-30): Skip on a cold first call with the default
+    // coach, then the chip's cards. A switch with nothing to wait for finished
+    // before it was stored as running, stayed "running", and swallowed every
+    // later card: saved on the server, never applied, chip still Erica.
+    const michael = cards.find((c) => c.id === 'Empowering');
+    const ios = make(null, { connected: false });
+    ios.app.selectedCompanionId = null;
+    await ios.app._finishVoiceStep(null);
+    assert.equal(ios.app._voiceSwitchRunning, null, 'no switch left running after a cold Skip');
+    ios.app._voiceStepMode = 'change';
+    ios.app._switchVoiceTo(jasmine); // a card tapped (preview)
+    await ios.app._finishVoiceStep(michael); // "Use this voice"
+    assert.deepEqual([ios.app.selectedCompanionId, ios.app.selectedVoice], ['Empowering', 'cedar'], 'the card is in effect');
+    const chosen = ios.log.filter((l) => l[1] === 'voice_selected').at(-1)[2];
+    assert.equal(chosen.applied, true);
+    assert.equal(ios.log.filter((l) => l[0] === 'call').length, 1, 'the chip opens no call');
+    assert.equal(ios.app._voiceSwitchRunning, null);
+
+    // If a card still doesn't take, it says so (log + event), instead of "Voice → cedar".
+    const stuck = make(null, { connected: false });
+    stuck.app._voiceSwitchRunning = Promise.resolve();
+    const errors = []; const e0 = console.error; console.error = (...a) => errors.push(a.join(' '));
+    await stuck.app._finishVoiceStep(michael);
+    console.error = e0;
+    assert.match(errors.join(' '), /Card NOT applied: chose Michael \(Empowering, cedar\), in effect Supportive \(marin\)/);
+    assert.equal(stuck.log.filter((l) => l[1] === 'voice_selected').at(-1)[2].applied, false);
 });
 
 test('client wiring: the step gates the first call; settings apply before the session opens; a guest\'s coach is not kept on the device', () => {

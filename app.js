@@ -6497,7 +6497,7 @@ class VoiceChatBot {
                     'Your backend can see the page the user is on: when they mention this page, this report or ' +
                     'what they are looking at, delegate — never say you cannot see their screen. ' +
                     'Begin the conversation with a brief, warm greeting introducing yourself.' +
-                    (this._nameHintAllowed() ? ' ' + this._nameHintLine() : '');
+                    (this._nameHintAllowed() ? ' ' + this._nameHintLine() : '') + (this._coachSwitchLine() ? ' ' + this._coachSwitchLine() : '');
                 try {
                     headers['X-Erica-Live-Instructions'] = btoa(unescape(encodeURIComponent(shortLiveInstructions)));
                 } catch (_) { /* header omitted, server default kicks in */ }
@@ -6985,6 +6985,7 @@ class VoiceChatBot {
         // A first conversation, no name chosen yet: the greeting may say, once
         // and only if natural, that the person can call the coach anything.
         if (this._nameHintAllowed()) instructions += '\n\n' + this._nameHintLine();
+        if (this._coachSwitchLine()) instructions += '\n\n' + this._coachSwitchLine();
 
         // In-chat Navigator: the style was chosen for this person; never say so.
         if (this.styleOverride) {
@@ -8991,11 +8992,17 @@ class VoiceChatBot {
         this._voiceSwitchTarget = card;
         if (this._voiceSwitchRunning) return this._voiceSwitchRunning;
         this._voiceSwitchRunning = (async () => {
+            // Yield first. With nothing to wait for (no session open yet, or
+            // the same voice) the loop finishes without awaiting, so its
+            // finally ran BEFORE this promise was stored: a finished switch
+            // stayed "running" and every later card was ignored (Willian,
+            // iOS, 2026-09-30: Skip on the first call, then the chip's cards).
+            await null;
             try {
                 while (this._voiceSwitchTarget) {
                     const target = this._voiceSwitchTarget;
                     const sameFace = target.id === this.selectedCompanionId;
-                    if (!sameFace || target.voice !== this.selectedVoice) this._applyCard(target);
+                    if (!sameFace || target.voice !== this.selectedVoice) { this._noteCoachSwitch(); this._applyCard(target); }
                     // A session still opening may or may not have taken the new
                     // voice: let it open, then compare.
                     if (this.isConnecting && this.isConnected !== true) await this._waitConnected(15000);
@@ -9048,8 +9055,12 @@ class VoiceChatBot {
         const prewarmed = !!(this.isConnected && card.voice === this._sessionVoice && !this._voiceSwitchRunning && changed);
         if (this._voiceSwitchRunning || card.voice !== this._sessionVoice || card.id !== this.selectedCompanionId) await this._switchVoiceTo(card);
         const waitedMs = Math.round(performance.now() - t0);
-        if (changed) console.log(`[Erica] 🎙️ Voice → ${card.voice} (${card.name}); waited ${waitedMs} ms after "Use this voice"${prewarmed ? ' (switched while previewing)' : ''}`);
-        this._logSessionEvent('voice_selected', { card: card.id, voice: card.voice, changed, reconnectMs: changed ? waitedMs : undefined, prewarmed, decideMs, mode: changeMode ? 'change' : 'first_call' });
+        // Say so when the card is not in effect after the switch: a "Voice →"
+        // line with nothing changed is what hid the stuck switch above.
+        const applied = this.selectedCompanionId === card.id && this.selectedVoice === card.voice;
+        if (!applied) console.error(`[Erica] 🎙️ Card NOT applied: chose ${card.name} (${card.id}, ${card.voice}), in effect ${this.selectedCompanionId} (${this.selectedVoice})`);
+        else if (changed) console.log(`[Erica] 🎙️ Voice → ${card.voice} (${card.name}); waited ${waitedMs} ms after "Use this voice"${prewarmed ? ' (switched while previewing)' : ''}`);
+        this._logSessionEvent('voice_selected', { card: card.id, voice: card.voice, changed, applied, sessionVoice: this._sessionVoice || null, reconnectMs: changed ? waitedMs : undefined, prewarmed, decideMs, mode: changeMode ? 'change' : 'first_call' });
         this._updateCoachChip();
         next();
     }
@@ -9067,6 +9078,24 @@ class VoiceChatBot {
         const eff = this.getEffectiveVoiceProfile && this.getEffectiveVoiceProfile();
         const name = (eff && eff.character) || 'Erica';
         return `Only in your very first message, and only if it fits naturally, you may mention that the person can call you whatever they like (for example: "I'm ${name} — call me whatever you like"). Never ask them for a name for you.`;
+    }
+
+    // A card with another face and name, picked mid-conversation: the replies
+    // already in the history (sent to the new session) are signed by the
+    // previous coach, and the new one kept that name ("Hi! I'm Erica" in
+    // Michael's voice). Only switches the person makes, not a restore.
+    _noteCoachSwitch() {
+        const before = (this.getEffectiveVoiceProfile() || {}).character;
+        const talked = Array.isArray(this.messages) && this.messages.some((m) => m && m.role && m.role !== 'user' && m.role !== 'system');
+        if (before && talked) (this._earlierCoachNames || (this._earlierCoachNames = new Set())).add(before);
+    }
+
+    _coachSwitchLine() {
+        const now = (this.getEffectiveVoiceProfile() || {}).character;
+        const before = [...(this._earlierCoachNames || [])].filter((n) => n && n !== now);
+        if (!now || !before.length) return '';
+        const who = before.join(' and ');
+        return `The person switched coaches during this conversation: earlier replies were from ${who}. You are ${now} now — introduce yourself as ${now} and never call yourself ${who}.`;
     }
 
     // The coach in effect: the picked card, else the profile's own id (the
