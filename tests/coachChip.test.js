@@ -229,7 +229,7 @@ test('a card picked while the session is still opening: wait for it, then switch
         const calls = [];
         const app = {
             selectedCompanionId: 'Supportive', selectedVoice: 'marin', isConnected: 'connecting', isConnecting: true, _sessionVoice: null,
-            _applyCard(c) { this.selectedCompanionId = c.id; this.selectedVoice = c.voice; },
+            _applyCard(c) { this.selectedCompanionId = c.id; this.selectedVoice = c.voice; }, _noteCoachSwitch() {},
             _waitConnected: async () => { app.isConnected = true; app.isConnecting = false; app._sessionVoice = openedWith; return true; },
             reconnectWithNewVoice: async (o) => { calls.push(o); app._sessionVoice = app.selectedVoice; return true; },
         };
@@ -238,4 +238,26 @@ test('a card picked while the session is still opening: wait for it, then switch
     };
     assert.deepEqual(await run('cedar'), [], 'the opening session already took cedar');
     assert.deepEqual(await run('marin'), [{ skipOpeningLine: true, quiet: true }], 'it opened with marin: one quiet switch');
+});
+
+test('a card picked mid-conversation: both layers are told who spoke before, so the new coach does not keep the old name; not on a restore, not before anyone spoke', () => {
+    const { app } = fakeApp();
+    app._noteCoachSwitch = method('_noteCoachSwitch()').bind(app);
+    app._coachSwitchLine = method('_coachSwitchLine()').bind(app);
+    app.messages = [{ role: 'user', text: 'hi' }];
+    app._noteCoachSwitch(); // only the person has spoken: nothing signed by Erica yet
+    assert.equal(app._coachSwitchLine(), '');
+    app.messages.push({ role: 'bot', text: "Hi! I'm Erica." });
+    app._noteCoachSwitch();
+    app.currentVoiceProfile = { character: 'Michael', companionId: 'Empowering' };
+    assert.equal(app._coachSwitchLine(), 'The person switched coaches during this conversation: earlier replies were from Erica. You are Michael now — introduce yourself as Michael and never call yourself Erica.');
+    app._noteCoachSwitch(); // Michael → back to Erica
+    app.currentVoiceProfile = { character: 'Erica', companionId: 'Supportive' };
+    assert.equal(app._coachSwitchLine(), 'The person switched coaches during this conversation: earlier replies were from Michael. You are Erica now — introduce yourself as Erica and never call yourself Michael.');
+    // Wiring: the person's switches only (the voice step's switch), into both layers.
+    assert.match(src, /if \(!sameFace \|\| target\.voice !== this\.selectedVoice\) \{ this\._noteCoachSwitch\(\); this\._applyCard\(target\); \}/);
+    const restore = src.slice(src.indexOf('    async _applyStoredCoachSettings() {'), src.indexOf('    _urlCoachGiven() {'));
+    assert.ok(restore.includes('this._applyCard(card)') && !restore.includes('_noteCoachSwitch'), 'a restore at page load is not a switch');
+    assert.match(src, /if \(this\._coachSwitchLine\(\)\) instructions \+= '\\n\\n' \+ this\._coachSwitchLine\(\);/, 'backend');
+    assert.match(src, /\+ \(this\._coachSwitchLine\(\) \? ' ' \+ this\._coachSwitchLine\(\) : ''\);/, 'Live voice layer');
 });
