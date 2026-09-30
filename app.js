@@ -1437,8 +1437,8 @@ class VoiceChatBot {
 
         // console.log('[Erica] Restoring saved session state');
 
-        // Restore selected coach and update UI
-        if (state.selectedCoach) {
+        // Restore selected coach and update UI (signed-in only: a guest's state keeps none)
+        if (state.selectedCoach && (state.selectedCoach.companionId || state.selectedCoach.voice)) {
             // Restore the explicit choice flag from saved state
             // Legacy states (before flag was added) have companionId but no userChoseCoach —
             // if they have a companionId, they DID choose (it was just saved in the old format)
@@ -1469,20 +1469,23 @@ class VoiceChatBot {
             return;
         }
 
+        // A guest's coach choice is never kept on the device (Eric,
+        // 2026-09-29): it lives on the server for the visit instead.
+        const signedIn = !!(this.getUserIdFromURL && this.getUserIdFromURL());
         const state = {
             mode: mode,
-            userChoseCoach: this._userExplicitlySelectedCoach || false,
-            selectedCoach: {
+            userChoseCoach: signedIn ? (this._userExplicitlySelectedCoach || false) : false,
+            selectedCoach: signedIn ? {
                 companionId: this.selectedCompanionId,
                 voice: this.selectedVoice,
                 name: this.currentVoiceProfile?.character || this.currentVoiceProfile?.id || 'Coach',
                 thumb: this.currentVoiceThumbUrl
-            },
+            } : {},
             conversationHistory: this.getConversationHistory(),
             userId: this.getUserIdFromURL()
         };
 
-        if (this.currentVoiceThumbUrl && !this.currentVoiceThumbUrl.startsWith('http')) {
+        if (signedIn && this.currentVoiceThumbUrl && !this.currentVoiceThumbUrl.startsWith('http')) {
             // Ensure absolute URL for live server persistence
             // This handles relative paths like /companions/foo.png or companions/foo.png
             try {
@@ -2857,6 +2860,9 @@ class VoiceChatBot {
     }
 
     toggleMicTrack() {
+        // First voice-mode entry: the person picks how the coach sounds
+        // (image cards). Checked once per page; skipping costs one tap.
+        if (!this.isRecording && !this._voiceStepChecked) { this._voiceStepChecked = true; this._voiceStepGate(); return; }
         // A call is starting (cold or warm): from here, 20 s without a word
         // is a silent call (#32). A hang-up click disarms in stopRecording.
         if (!this.isRecording) this._silentCallArm('click');
@@ -5349,6 +5355,9 @@ class VoiceChatBot {
         // Request report context from parent iframe (for report pages).
         // By the time the user opens Erica, the report is already rendered on the parent page,
         // so the parent can respond immediately to REQUEST_REPORT_CACHE.
+        // The card, voice and style this person already has (server only).
+        try { await this._loadVoiceCards(); await this._applyStoredCoachSettings(); } catch (e) { console.warn('[Erica] 🎙️ Coach settings not applied:', e?.message || e); }
+
         try {
             const reportCtx = await this.requestReportContextFromParent();
             if (reportCtx && reportCtx.text) {
@@ -6434,6 +6443,8 @@ class VoiceChatBot {
                 'Content-Type': 'application/sdp',
                 'X-Erica-Voice': this.selectedVoice || 'marin'
             };
+            // The voice this session will speak with (fixed at creation).
+            this._sessionVoice = this.selectedVoice || 'marin';
             if (isLive) {
                 const persona = this.getEffectiveVoiceProfile() || this.currentVoiceProfile;
                 const name = persona?.character || 'Erica';
@@ -8669,12 +8680,15 @@ class VoiceChatBot {
         }
     }
 
-    _applyInferredStyle(styleId, { turnIndex = null, ready = false } = {}) {
+    _applyInferredStyle(styleId, { turnIndex = null, ready = false, reason = 'navigator' } = {}) {
         const profile = (this.voiceProfilesById && (this.voiceProfilesById[styleId] || this.voiceProfilesById[String(styleId).toLowerCase()]))
             || (Array.isArray(this.voiceProfilesArray) ? this.voiceProfilesArray.find((p) => p && (p.companionId === styleId || p.id === styleId)) : null);
         if (!profile) { console.warn('[Erica] 🧭 Navigator style not in the coach list, default stays:', styleId); return false; }
         const from = (this.styleOverride && this.styleOverride.styleId) || this.selectedCompanionId || (this.currentVoiceProfile && (this.currentVoiceProfile.companionId || this.currentVoiceProfile.id)) || null;
-        if (from === styleId) { this._logSessionEvent('style_applied', { from, to: styleId, reason: 'navigator', turnIndex, ready, changed: false }); return true; }
+        if (from === styleId) {
+            if (reason === 'navigator') { this._logSessionEvent('style_applied', { from, to: styleId, reason, turnIndex, ready, changed: false }); this._saveCoachSettings({ styleRecommended: styleId }, 'navigator'); }
+            return true;
+        }
         // The style's coaching fields only; who the coach is (name, face, voice) stays.
         this.styleOverride = {
             styleId,
@@ -8701,12 +8715,263 @@ class VoiceChatBot {
             if (!voiceLayer) console.warn('[Erica] 🧭 Navigator style NOT sent to the Live voice layer; the backend has it');
         }
         console.log(`[Erica] 🧭 Coaching style → ${styleId} (from ${from || 'default'}, turn ${turnIndex}${voiceLayer === null ? '' : ', voice layer ' + (voiceLayer ? 'ok' : 'FAILED')})`);
-        this._logSessionEvent('style_applied', { from, to: styleId, reason: 'navigator', turnIndex, ready, changed: true, voiceLayer });
+        this._logSessionEvent('style_applied', { from, to: styleId, reason, turnIndex, ready, changed: true, voiceLayer });
+        if (reason === 'navigator') this._saveCoachSettings({ styleRecommended: styleId }, 'navigator');
         return true;
     }
 
     // The page hosting the coach, once per page and visit (the preparation's
     // referer is origin-only across origins). Address only.
+    // --- Coach settings + the first-call voice step (#35 → Eric's onboarding) ---
+    // Stored only on the server (lib/userSettings.js): per userId when signed
+    // in, per CleverTap id for one visit when a guest. Nothing on the device.
+    _coachIdentity() {
+        const userId = this.getUserIdFromURL && this.getUserIdFromURL();
+        const objectId = window.__ttCleverTapId ? String(window.__ttCleverTapId) : null;
+        return { ...(userId ? { userId } : {}), ...(objectId ? { objectId } : {}) };
+    }
+
+    _loadCoachSettings() {
+        if (this._coachSettingsLoad) return this._coachSettingsLoad;
+        this._coachSettingsLoad = (async () => {
+            let ident = this._coachIdentity();
+            // A guest's CleverTap id comes from the host page shortly after
+            // load; later than that, no id means there is none to wait for.
+            const early = typeof performance !== 'undefined' && performance.now() < 4000;
+            for (let i = 0; early && i < 10 && !ident.userId && !ident.objectId; i++) { await this.sleep(150); ident = this._coachIdentity(); }
+            if (!ident.userId && !ident.objectId) return { scope: 'none', settings: null };
+            const res = await fetch(this.apiUrl('/api/user-settings'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ident) });
+            if (!res.ok) { console.warn(`[Erica] 🎙️ Coach settings NOT loaded — HTTP ${res.status}; defaults apply`); return { scope: 'none', settings: null }; }
+            return res.json();
+        })().catch((e) => { console.warn('[Erica] 🎙️ Coach settings NOT loaded — defaults apply:', e?.message || e); return { scope: 'none', settings: null }; });
+        return this._coachSettingsLoad;
+    }
+
+    _saveCoachSettings(set, by) {
+        const cur = (this._coachSettings && this._coachSettings.settings) || {};
+        this._coachSettings = { scope: (this._coachSettings && this._coachSettings.scope) || 'pending', settings: { ...cur, ...set } };
+        const ident = this._coachIdentity();
+        if (!ident.userId && !ident.objectId) { console.warn('[Erica] 🎙️ Coach settings kept for this page only — no identity to store them under'); return Promise.resolve(null); }
+        return fetch(this.apiUrl('/api/user-settings'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...ident, set, by }) })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+            .then((j) => { if (j && j.settings) this._coachSettings = { scope: j.scope, settings: j.settings }; return j; })
+            .catch((e) => { console.warn('[Erica] 🎙️ Coach settings NOT saved — they last only for this page:', e?.message || e); return null; });
+    }
+
+    // Before the session opens: the card (face, name, voice) and the style
+    // this person already has, so a returning person gets no step and no
+    // flash. Waits at most 1.5 s for the settings.
+    async _applyStoredCoachSettings() {
+        if (this._coachSettingsApplied) return;
+        const r = await Promise.race([this._loadCoachSettings(), this.sleep(1500).then(() => null)]);
+        if (!r) { console.warn('[Erica] 🎙️ Coach settings slow — starting with defaults'); return; }
+        this._coachSettings = r;
+        this._coachSettingsApplied = true;
+        const st = r.settings;
+        if (!st) return;
+        const restored = {};
+        if (st.companionId && !this._urlCoachGiven()) {
+            const card = (this._voiceCards || []).find((c) => c.id === st.companionId)
+                || this._cardForCompanion(st.companionId, st.voice);
+            if (card && (card.id !== this.selectedCompanionId || card.voice !== this.selectedVoice)) { this._applyCard(card); restored.card = card.id; }
+        }
+        const style = st.styleOverride || st.styleRecommended;
+        if (style) {
+            this._applyInferredStyle(style, { reason: 'restored' });
+            this._navState = Object.assign(this._navState || { turns: [], userTurns: 0, calls: 0 }, { done: true, locked: !!st.styleOverride });
+            restored.style = style;
+        }
+        if (restored.card || restored.style) {
+            console.log('[Erica] 🎙️ Coach settings restored:', restored, `(${r.scope})`);
+            this._logSessionEvent('coach_restored', { ...restored, voice: this.selectedVoice, scope: r.scope });
+        }
+    }
+
+    _urlCoachGiven() {
+        try { const q = new URLSearchParams(window.location.search); return !!(q.get('coach') || q.get('aic')); } catch (_) { return false; }
+    }
+
+    _cardForCompanion(companionId, voice) {
+        const p = this.voiceProfilesById && this.voiceProfilesById[companionId];
+        return p ? { id: companionId, name: p.character, thumb: p.thumb || null, voice: voice || p.openaiVoice } : null;
+    }
+
+    async _loadVoiceCards() {
+        if (this._voiceCards) return this._voiceCards;
+        try {
+            const res = await fetch(this.apiUrl('voiceCards.json'));
+            const j = await res.json();
+            this._voiceCards = (j.cards || []).filter((c) => c && c.id && c.voice && c.thumb && c.name);
+        } catch (e) {
+            console.warn('[Erica] 🎙️ voiceCards.json not loaded — no voice step:', e?.message || e);
+            this._voiceCards = [];
+        }
+        return this._voiceCards;
+    }
+
+    // A card is a face, a name and a voice. The coaching style does not
+    // follow the face: whatever style was in effect stays.
+    _applyCard(card) {
+        const eff = this.getEffectiveVoiceProfile();
+        const keep = this.styleOverride || (eff ? {
+            styleId: this.selectedCompanionId || eff.companionId || eff.id || null,
+            label: eff.label, coachingStyle: eff.coachingStyle, voiceProfile: eff.voiceProfile,
+            userFacingContext: eff.userFacingContext, agentGuidance: eff.agentGuidance, behavioralGuardrails: eff.behavioralGuardrails,
+        } : null);
+        this.setSelectedVoice(card.voice, card.thumb, card.name, card.id, true);
+        this.styleOverride = keep && keep.styleId !== card.id ? keep : (keep && keep.styleId === card.id ? null : keep);
+    }
+
+    // The cards and this person's settings may not be loaded yet when the
+    // first call is tapped (the session connects lazily): load them (the
+    // settings wait at most 1.5 s), then show the step or start the call.
+    async _voiceStepGate() {
+        try {
+            await this._loadVoiceCards();
+            if (!this._coachSettings) {
+                const r = await Promise.race([this._loadCoachSettings(), this.sleep(1500).then(() => null)]);
+                if (r && !this._coachSettings) this._coachSettings = r;
+            }
+        } catch (e) { console.warn('[Erica] 🎙️ Voice step check failed — starting the call:', e?.message || e); }
+        if (this._voiceStepNeeded()) this._showVoiceStep();
+        else this.toggleMicTrack();
+    }
+
+    _voiceStepNeeded() {
+        if (this._voiceStepDoneThisPage || this._urlCoachGiven()) return false;
+        const st = this._coachSettings && this._coachSettings.settings;
+        if (st && st.voiceStepDone) return false;
+        return Array.isArray(this._voiceCards) && this._voiceCards.length > 0;
+    }
+
+    _showVoiceStep() {
+        const box = document.getElementById('voiceStep');
+        const list = document.getElementById('voiceStepCards');
+        const input = document.getElementById('inputWrapper');
+        if (!box || !list) { this._voiceStepDoneThisPage = true; this.toggleMicTrack(); return; }
+        const cards = this._voiceCards;
+        let selected = cards.find((c) => c.id === this.selectedCompanionId) || cards[0];
+        // What the person has now: Skip returns to it, even after previewing another voice.
+        this._voiceStepOriginal = cards.find((c) => c.id === this.selectedCompanionId && c.voice === this.selectedVoice)
+            || this._cardForCompanion(this.selectedCompanionId || 'Supportive', this.selectedVoice);
+        list.innerHTML = '';
+        for (const card of cards) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'voice-card' + (card === selected ? ' selected' : '');
+            b.setAttribute('data-card', card.id);
+            b.setAttribute('aria-pressed', card === selected ? 'true' : 'false');
+            b.innerHTML = `<img src="${this.apiUrl(card.thumb)}" alt=""><span class="voice-card-name"></span><span class="voice-card-play" aria-hidden="true">▶</span>`;
+            b.querySelector('.voice-card-name').textContent = card.name;
+            b.addEventListener('click', () => {
+                selected = card;
+                list.querySelectorAll('.voice-card').forEach((el) => { const on = el.getAttribute('data-card') === card.id; el.classList.toggle('selected', on); el.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+                this.playCoachPreview({ companionId: card.id, openaiVoice: card.voice, coachName: card.name, text: this._cardPreviewText(card) });
+                this._logSessionEvent('voice_previewed', { card: card.id, voice: card.voice });
+                // A new voice needs a new session (~7 s): start it now, while
+                // the preview plays, so "Use this voice" rarely waits.
+                if (this.isConnected) this._switchVoiceTo(card);
+            });
+            list.appendChild(b);
+            this._prefetchCardPreview(card);
+        }
+        const use = document.getElementById('voiceStepUse');
+        const skip = document.getElementById('voiceStepSkip');
+        const done = (card) => {
+            use.onclick = null; skip.onclick = null;
+            box.classList.add('hidden');
+            if (input) input.classList.remove('hidden');
+            this.stopActivePreview && this.stopActivePreview({ clearPreview: true });
+            this._finishVoiceStep(card);
+        };
+        use.onclick = () => done(selected);
+        skip.onclick = () => done(null);
+        if (input) input.classList.add('hidden');
+        box.classList.remove('hidden');
+        this._voiceStepShownAt = performance.now();
+        this._logSessionEvent('voice_step_viewed', { cards: cards.map((c) => c.id), preselected: selected ? selected.id : null });
+    }
+
+    _cardPreviewText(card) {
+        return `Hi, I'm ${card.name}. I'm glad you're here.`;
+    }
+
+    _prefetchCardPreview(card) {
+        try {
+            const text = this._cardPreviewText(card);
+            const persona = this.resolvePreviewPersona({ companionId: card.id, openaiVoice: card.voice });
+            const instructions = persona ? this.buildVoiceStyleInstructions(persona) : '';
+            const voice = (persona && (persona.openaiVoice || persona.voice)) || card.voice;
+            const key = this._buildPreviewCacheKey({ text, voice, instructions });
+            if (this._getPreviewCacheEntry(key)) return;
+            fetch(this.apiUrl('/api/preview-tts'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, voice, instructions: instructions || '' }) })
+                .then((r) => (r.ok ? r.blob() : null))
+                .then((blob) => { if (blob && !this._getPreviewCacheEntry(key)) this.previewTtsCache.set(key, { url: URL.createObjectURL(blob), ts: Date.now() }); })
+                .catch(() => { /* the click fetches it */ });
+        } catch (_) { /* the click fetches it */ }
+    }
+
+    // Bring the open session to this card's voice; the latest card wins, so
+    // tapping several cards costs at most one switch in flight plus one.
+    _switchVoiceTo(card) {
+        this._voiceSwitchTarget = card;
+        if (this._voiceSwitchRunning) return this._voiceSwitchRunning;
+        this._voiceSwitchRunning = (async () => {
+            try {
+                while (this._voiceSwitchTarget) {
+                    const target = this._voiceSwitchTarget;
+                    const sameFace = target.id === this.selectedCompanionId;
+                    if (!sameFace || target.voice !== this.selectedVoice) this._applyCard(target);
+                    if (!this.isConnected || target.voice === this._sessionVoice) { if (this._voiceSwitchTarget === target) this._voiceSwitchTarget = null; continue; }
+                    // The voice is fixed when a session opens: a new voice needs a new one.
+                    await this.reconnectWithNewVoice({ skipOpeningLine: true });
+                    // reconnectWithNewVoice resolves before the data channel is
+                    // open; the call must not start (or reconnect again) before.
+                    await this._waitConnected(15000);
+                    if (this._voiceSwitchTarget === target) this._voiceSwitchTarget = null;
+                }
+            } catch (e) {
+                console.warn('[Erica] 🎙️ Voice switch failed:', e?.message || e);
+            } finally {
+                this._voiceSwitchRunning = null;
+            }
+        })();
+        return this._voiceSwitchRunning;
+    }
+
+    async _waitConnected(maxMs) {
+        const until = Date.now() + maxMs;
+        while (Date.now() < until) {
+            if (this.isConnected && this.dataChannel && this.dataChannel.readyState === 'open') return true;
+            await this.sleep(100);
+        }
+        console.warn(`[Erica] 🎙️ Session not open ${maxMs} ms after the voice switch`);
+        return false;
+    }
+
+    async _finishVoiceStep(card) {
+        this._voiceStepDoneThisPage = true;
+        const decideMs = this._voiceStepShownAt ? Math.round(performance.now() - this._voiceStepShownAt) : null;
+        const t0 = performance.now();
+        if (!card) {
+            this._saveCoachSettings({ voiceStepDone: true }, 'voice_step');
+            // Skip keeps what they had — even if a preview already switched the session.
+            const back = this._voiceStepOriginal;
+            if (back && (this._voiceSwitchRunning || back.voice !== this._sessionVoice || back.id !== this.selectedCompanionId)) await this._switchVoiceTo(back);
+            this._logSessionEvent('voice_step_skipped', { decideMs, waitedMs: Math.round(performance.now() - t0) });
+            this.toggleMicTrack();
+            return;
+        }
+        const changed = card.id !== (this._voiceStepOriginal && this._voiceStepOriginal.id) || card.voice !== (this._voiceStepOriginal && this._voiceStepOriginal.voice);
+        this._saveCoachSettings({ companionId: card.id, voice: card.voice, voiceStepDone: true }, 'voice_step');
+        const prewarmed = !!(this.isConnected && card.voice === this._sessionVoice && !this._voiceSwitchRunning && changed);
+        if (this._voiceSwitchRunning || card.voice !== this._sessionVoice || card.id !== this.selectedCompanionId) await this._switchVoiceTo(card);
+        const waitedMs = Math.round(performance.now() - t0);
+        if (changed) console.log(`[Erica] 🎙️ Voice → ${card.voice} (${card.name}); waited ${waitedMs} ms after "Use this voice"${prewarmed ? ' (switched while previewing)' : ''}`);
+        this._logSessionEvent('voice_selected', { card: card.id, voice: card.voice, changed, reconnectMs: changed ? waitedMs : undefined, prewarmed, decideMs });
+        this.toggleMicTrack();
+    }
+
     _noteVisitPage(url) {
         let page = null;
         try { const u = new URL(String(url)); page = u.origin + u.pathname; } catch (_) { return; }

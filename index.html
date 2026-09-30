@@ -47,7 +47,7 @@
     </script>
 
     <!-- Custom animations remaining in CSS -->
-    <link rel="stylesheet" href="styles.css?v=20260929i">
+    <link rel="stylesheet" href="styles.css?v=20260930a">
 
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -419,6 +419,15 @@
             <!-- Voice Mode / Text Mode Toggle Area -->
             <div id="attachmentPreview" class="attachment-preview hidden" aria-label="Pending attachments"></div>
             <div id="attachmentStatus" class="attachment-status" role="status" aria-live="polite"></div>
+            <!-- First voice-mode entry: pick how the coach sounds (image cards; app.js _showVoiceStep). -->
+            <div id="voiceStep" class="voice-step hidden" role="group" aria-label="Choose how your coach sounds">
+                <div class="voice-step-title">Choose how your coach sounds</div>
+                <div id="voiceStepCards" class="voice-step-cards"></div>
+                <div class="voice-step-actions">
+                    <button id="voiceStepSkip" type="button" class="voice-step-skip">Skip</button>
+                    <button id="voiceStepUse" type="button" class="voice-step-use">Use this voice</button>
+                </div>
+            </div>
             <div class="flex items-end gap-3 transition-all duration-300" id="inputWrapper">
 
                 <!-- Text Input (Glass Pill) -->
@@ -675,8 +684,8 @@
     <script src="lib/coachUiRules.js?v=20260929w"></script>
     <script src="lib/attachmentRules.js?v=20260929a"></script>
     <script src="lib/liveReasoning.js?v=20260929a"></script>
-    <script src="uiLayout.js?v=20260930b"></script>
-    <script src="app.js?v=20260930b"></script>
+    <script src="uiLayout.js?v=20260930c"></script>
+    <script src="app.js?v=20260930c"></script>
 </body>
 
 </html>

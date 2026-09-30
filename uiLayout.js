@@ -2780,6 +2780,10 @@
                     if ((prevCompanionId || null) !== (companionId || null) && typeof app._logSessionEvent === 'function') {
                         app._logSessionEvent('style_overridden', { from: (app.styleOverride && app.styleOverride.styleId) || prevCompanionId || null, to: companionId || null, via: 'picker' });
                     }
+                    // Kept on the server (account, or this visit for a guest).
+                    if ((prevCompanionId || null) !== (companionId || null) && typeof app._saveCoachSettings === 'function') {
+                        app._saveCoachSettings({ companionId: companionId || null, voice: voice || null, styleOverride: companionId || null }, 'picker');
+                    }
                     // A coach the person picked brings its own style: the
                     // in-chat Navigator stops, and its style is dropped.
                     app.styleOverride = null;

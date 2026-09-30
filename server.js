@@ -29,6 +29,7 @@ const runtimeConfig = require('./lib/runtimeConfig');
 const { LANGUAGE_RULE } = require('./lib/coachUiRules');
 const injectedDataStore = require('./lib/injectedDataStore');
 const coachClipboard = require('./lib/coachClipboard');
+const userSettings = require('./lib/userSettings');
 const sessionTurns = require('./lib/sessionTurns');
 const pipeline = require('./lib/pipeline');
 const navigatorInfer = require('./lib/navigatorInfer');
@@ -2000,6 +2001,43 @@ const server = http.createServer(async (req, res) => {
     //
     //   POST /api/clipboard/block   { sessionId?, userId?, objectId?, caller? } -> { text, lines }
     //   POST /api/clipboard/distill { sessionId, userId?, objectId?, caller?, turns[], cursor, visitAt? } -> { ok, skipped?, diff? }
+    // Coach settings (lib/userSettings.js): the image card / voice, the voice
+    // step, names given to the coach, the coaching style. Signed-in: kept per
+    // userId ('account'). Guest: per CleverTap id for one visit ('visit');
+    // nothing on the device. No identity: 'none'.
+    //   POST /api/user-settings { userId?, objectId?, set?: {…}, by? } -> { scope, settings, changed? }
+    if (req.url.startsWith('/api/user-settings')) {
+        const reply = (status, obj) => {
+            res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify(obj));
+        };
+        if (req.method !== 'POST') return reply(405, { error: 'Method not allowed' });
+        let body = '';
+        let tooBig = false;
+        req.on('data', (chunk) => { body += chunk.toString(); if (body.length > 8 * 1024) { tooBig = true; req.destroy(); } });
+        req.on('end', () => {
+            if (tooBig) return;
+            let p;
+            try { p = body ? JSON.parse(body) : {}; } catch (_) { return reply(400, { error: 'invalid JSON' }); }
+            const idn = signedIdentity.resolve(req, { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null },
+                { endpoint: 'user-settings', audit: auditLog, body: p });
+            if (!idn.ok) return refuseIdentity(res, idn);
+            const ident = { userId: idn.userId, objectId: idn.objectId };
+            if (!userSettings.keyFor(ident)) return reply(200, { scope: 'none', settings: null });
+            try {
+                if (p.set && typeof p.set === 'object') {
+                    const { settings, changed, scope } = userSettings.update(ident, p.set, { by: typeof p.by === 'string' ? p.by : 'picker' });
+                    return reply(200, { scope, settings, changed });
+                }
+                return reply(200, { scope: idn.userId ? 'account' : 'visit', settings: userSettings.read(ident) });
+            } catch (e) {
+                console.error('[SERVER] /api/user-settings error:', e?.message || e);
+                return reply(500, { error: 'settings unavailable' });
+            }
+        });
+        return;
+    }
+
     // In-chat AI Navigator (lib/navigatorInfer.js): the three Navigator tags
     // read from this visit's first exchanges → a coaching style.
     //   POST /api/navigator/infer { sessionId, userId?, objectId?, turns[], turnIndex } -> { tags, confidence, style, autonomy, via, ready, ask }
@@ -3341,6 +3379,10 @@ server.listen(PORT, () => {
     const idStatus = signedIdentity.status();
     if (idStatus.required && !idStatus.secretConfigured) console.error('[SERVER] 🔴 ERICA_REQUIRE_SIGNED_IDENTITY=on but WIX_IDENTITY_SECRET is not set — every signed-in identity will be refused');
     else console.log(`[SERVER] Identity: signed tokens ${idStatus.secretConfigured ? 'verified' : 'NOT verifiable (no WIX_IDENTITY_SECRET)'}; unsigned userId/email ${idStatus.required ? 'REFUSED' : 'accepted (ERICA_REQUIRE_SIGNED_IDENTITY off)'}`);
+
+    // Coach settings: a guest's record lasts one visit (30 min after last use).
+    try { userSettings.sweepExpiredGuests(); } catch (_) { /* logged inside */ }
+    setInterval(() => { try { userSettings.sweepExpiredGuests(); } catch (_) { /* logged inside */ } }, 10 * 60 * 1000).unref();
 
     // Coach clipboard: guest records expire 90 days after the last visit.
     try { coachClipboard.sweepExpiredGuests(); } catch (e) { console.warn('[SERVER] clipboard sweep failed:', e?.message || e); }

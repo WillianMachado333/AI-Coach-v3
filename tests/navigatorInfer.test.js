@@ -165,7 +165,7 @@ function fakeApp(answers) {
     };
     app._navNoteTurn = method('_navNoteTurn(role, text, turnIndexHint)').bind(app);
     app._navInfer = method('_navInfer(st)').bind(app);
-    app._applyInferredStyle = method('_applyInferredStyle(styleId, { turnIndex = null, ready = false } = {})').bind(app);
+    app._applyInferredStyle = method("_applyInferredStyle(styleId, { turnIndex = null, ready = false, reason = 'navigator' } = {})").bind(app);
     app.getEffectiveVoiceProfile = method('getEffectiveVoiceProfile()').bind(app);
     return { app, events, refreshes, sent, calls };
 }
