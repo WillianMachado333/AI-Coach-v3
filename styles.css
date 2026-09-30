@@ -858,15 +858,27 @@ textarea:focus {
     width: 44px;
 }
 
-/* First voice-mode entry: image cards (app.js _showVoiceStep). */
-.voice-step { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 2px; }
+/* First voice-mode entry: image cards (app.js _showVoiceStep). A carousel:
+   4 cards in view on a phone, swipe for the rest. The sheet takes vertical
+   drags itself (drag down closes it), horizontal pans scroll the cards. */
+.voice-step { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 2px; touch-action: pan-x; }
+.voice-step * { touch-action: pan-x; }
 .voice-step.hidden { display: none; }
 .voice-step-title { font-size: 13px; font-weight: 600; color: #374151; text-align: center; }
-.voice-step-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 96px)); justify-content: center; gap: 8px; }
-.voice-card { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 2px; border-radius: 14px; border: 2px solid transparent; background: rgba(255, 255, 255, 0.85); cursor: pointer; }
+.voice-step-cards { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.voice-step-cards::-webkit-scrollbar { display: none; }
+/* Centred when they all fit (wide screens), flush left when they scroll. */
+.voice-step-cards > .voice-card:first-child { margin-left: auto; }
+.voice-step-cards > .voice-card:last-child { margin-right: auto; }
+.voice-card { position: relative; flex: 0 0 calc((100% - 24px) / 4); max-width: 96px; scroll-snap-align: start; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 2px; border-radius: 14px; border: 2px solid transparent; background: rgba(255, 255, 255, 0.85); cursor: pointer; }
 .voice-card img { width: 52px; height: 52px; border-radius: 9999px; object-fit: cover; }
 .voice-card-name { font-size: 12px; color: #111827; }
-.voice-card-play { position: absolute; top: 6px; right: 10px; font-size: 10px; color: #0f766e; }
+.voice-card-play { position: absolute; top: 4px; right: 6px; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 9999px; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15); color: #0f766e; }
+.voice-card-play svg { width: 12px; height: 12px; }
+.voice-card-icon-wave { display: none; }
+.voice-card.playing .voice-card-icon-play { display: none; }
+.voice-card.playing .voice-card-icon-wave { display: block; animation: voice-card-wave 0.7s ease-in-out infinite alternate; }
+@keyframes voice-card-wave { from { opacity: 0.45; } to { opacity: 1; } }
 .voice-card.selected { border-color: #0d9488; background: #f0fdfa; }
 .voice-step-actions { display: flex; justify-content: center; gap: 8px; }
 .voice-step-skip { padding: 6px 12px; border-radius: 10px; font-size: 13px; color: #4b5563; background: transparent; }

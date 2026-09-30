@@ -1,3 +1,9 @@
+// The voice cards' badge: play, and a sound wave while the preview plays
+// (the same stroke language as the mic and send icons).
+const VOICE_CARD_ICONS =
+    '<svg class="voice-card-icon-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>' +
+    '<svg class="voice-card-icon-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>';
+
 class VoiceChatBot {
     constructor() {
         this.apiKey = '';
@@ -8927,44 +8933,120 @@ class VoiceChatBot {
         this._voiceStepOriginal = this._voiceStepOriginalCard();
         let selected = cards.find((c) => c.id === (this._voiceStepOriginal && this._voiceStepOriginal.id)) || cards[0];
         list.innerHTML = '';
-        for (const card of cards) {
+        // A carousel (4 in view on a phone, swipe for the rest): each card's
+        // preview is fetched when it scrolls into view, not all up front.
+        if (this._voiceCardObserver) this._voiceCardObserver.disconnect();
+        this._voiceCardObserver = typeof IntersectionObserver === 'function' ? new IntersectionObserver((entries) => {
+            for (const en of entries) {
+                if (!en.isIntersecting) continue;
+                const card = cards.find((c) => c.id === en.target.getAttribute('data-card'));
+                if (card) this._prefetchCardPreview(card);
+                if (this._voiceCardObserver) this._voiceCardObserver.unobserve(en.target);
+            }
+        }, { root: list, threshold: 0.5 }) : null;
+        cards.forEach((card, i) => {
             const b = document.createElement('button');
             b.type = 'button';
             b.className = 'voice-card' + (card === selected ? ' selected' : '');
             b.setAttribute('data-card', card.id);
             b.setAttribute('aria-pressed', card === selected ? 'true' : 'false');
-            b.innerHTML = `<img src="${this.apiUrl(card.thumb)}" alt=""><span class="voice-card-name"></span><span class="voice-card-play" aria-hidden="true">▶</span>`;
+            b.innerHTML = `<img src="${this.apiUrl(card.thumb)}" alt=""><span class="voice-card-name"></span><span class="voice-card-play" aria-hidden="true">${VOICE_CARD_ICONS}</span>`;
             b.querySelector('.voice-card-name').textContent = card.name;
             b.addEventListener('click', () => {
                 selected = card;
                 list.querySelectorAll('.voice-card').forEach((el) => { const on = el.getAttribute('data-card') === card.id; el.classList.toggle('selected', on); el.setAttribute('aria-pressed', on ? 'true' : 'false'); });
-                this.playCoachPreview({ companionId: card.id, openaiVoice: card.voice, coachName: card.name, text: this._cardPreviewText(card) });
+                this._showPreviewPlaying(b, this.playCoachPreview({ companionId: card.id, openaiVoice: card.voice, coachName: card.name, text: this._cardPreviewText(card) }));
                 this._logSessionEvent('voice_previewed', { card: card.id, voice: card.voice });
                 // A new voice needs a new session (~7 s): start it now, while
                 // the preview plays, so "Use this voice" rarely waits.
                 if (this.isConnected) this._switchVoiceTo(card);
             });
             list.appendChild(b);
-            this._prefetchCardPreview(card);
-        }
+            if (this._voiceCardObserver) this._voiceCardObserver.observe(b);
+            else if (i < 4) this._prefetchCardPreview(card);
+        });
         const use = document.getElementById('voiceStepUse');
         const skip = document.getElementById('voiceStepSkip');
-        const done = (card) => {
-            use.onclick = null; skip.onclick = null;
+        const done = (card, via) => {
+            use.onclick = null; skip.onclick = null; this._voiceStepCancel = null;
+            if (this._voiceCardObserver) { this._voiceCardObserver.disconnect(); this._voiceCardObserver = null; }
             box.classList.add('hidden');
             if (input) input.classList.remove('hidden');
             this.stopActivePreview && this.stopActivePreview({ clearPreview: true });
-            this._finishVoiceStep(card);
+            this._finishVoiceStep(card, via);
         };
         use.onclick = () => done(selected);
-        skip.onclick = () => done(null);
+        skip.onclick = () => done(null, 'button');
+        // Dragging the sheet down is the same as Skip / Cancel.
+        this._voiceStepCancel = () => done(null, 'drag');
+        this._bindVoiceStepDrag(box);
         if (input) input.classList.add('hidden');
         box.classList.remove('hidden');
+        // The coach they have now may be past the first four: bring it into view.
+        const sel = list.querySelector('.voice-card.selected');
+        if (sel) list.scrollLeft = Math.max(0, sel.offsetLeft - list.offsetLeft - (list.clientWidth - sel.offsetWidth) / 2);
         this._voiceStepShownAt = performance.now();
         const title = box.querySelector('.voice-step-title');
         if (title) title.textContent = mode === 'change' ? 'Change how your coach looks and sounds' : 'Choose how your coach sounds';
         if (skip) skip.textContent = mode === 'change' ? 'Cancel' : 'Skip';
         this._logSessionEvent('voice_step_viewed', { cards: cards.map((c) => c.id), preselected: selected ? selected.id : null, mode });
+    }
+
+    // The card's play badge turns into a sound wave while its preview plays.
+    _showPreviewPlaying(el, playing) {
+        const token = (this._previewPlayToken = (this._previewPlayToken || 0) + 1);
+        const list = el.parentElement;
+        if (list) list.querySelectorAll('.voice-card.playing').forEach((c) => c.classList.remove('playing'));
+        el.classList.add('playing');
+        const off = () => { if (token === this._previewPlayToken) el.classList.remove('playing'); };
+        Promise.resolve(playing).then((ok) => {
+            const a = this.previewTtsAudio;
+            if (!ok || !a || a.paused || a.ended) { off(); return; }
+            const stop = () => { off(); ['ended', 'pause', 'error'].forEach((ev) => a.removeEventListener(ev, stop)); };
+            ['ended', 'pause', 'error'].forEach((ev) => a.addEventListener(ev, stop));
+        }, off);
+    }
+
+    // A vertical drag on the sheet past 60 px (or a quick flick down) closes
+    // it like Skip / Cancel. Horizontal pans stay the carousel's (touch-action:
+    // pan-x in the CSS); the axis is decided after the first 10 px.
+    _bindVoiceStepDrag(box) {
+        if (box._dragBound) return;
+        box._dragBound = true;
+        let g = null;
+        const settle = () => { box.style.transition = 'transform 150ms ease, opacity 150ms ease'; box.style.transform = ''; box.style.opacity = ''; g = null; };
+        box.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'mouse' && e.button !== 0) return;
+            g = { id: e.pointerId, x: e.clientX, y: e.clientY, axis: null, trail: [[performance.now(), e.clientY]] };
+        });
+        box.addEventListener('pointermove', (e) => {
+            if (!g || e.pointerId !== g.id) return;
+            const dx = e.clientX - g.x; const dy = e.clientY - g.y;
+            g.trail.push([performance.now(), e.clientY]);
+            if (g.trail.length > 8) g.trail.shift();
+            if (!g.axis) {
+                if (Math.hypot(dx, dy) < 10) return;
+                g.axis = Math.abs(dy) > Math.abs(dx) ? 'y' : 'x';
+                if (g.axis === 'y') { try { box.setPointerCapture(e.pointerId); } catch (_) { /* no capture */ } box.style.transition = 'none'; }
+            }
+            if (g.axis !== 'y') return;
+            const down = Math.max(0, dy);
+            box.style.transform = `translateY(${down}px)`;
+            box.style.opacity = String(Math.max(0.4, 1 - down / 200));
+        });
+        const end = (e) => {
+            if (!g || e.pointerId !== g.id) return;
+            const dy = e.clientY - g.y;
+            // A flick: moving down at > 0.35 px/ms over the last ~100 ms.
+            const now = performance.now();
+            const from = g.trail.find(([t]) => now - t <= 100) || g.trail[g.trail.length - 1];
+            const fast = dy > 24 && (e.clientY - from[1]) / Math.max(16, now - from[0]) > 0.35;
+            const close = e.type === 'pointerup' && g.axis === 'y' && (dy > 60 || fast);
+            settle();
+            if (close && this._voiceStepCancel) this._voiceStepCancel();
+        };
+        box.addEventListener('pointerup', end);
+        box.addEventListener('pointercancel', end);
     }
 
     _cardPreviewText(card) {
@@ -9033,7 +9115,7 @@ class VoiceChatBot {
         return false;
     }
 
-    async _finishVoiceStep(card) {
+    async _finishVoiceStep(card, via) {
         const changeMode = this._voiceStepMode === 'change';
         this._voiceStepMode = null;
         // From the chip: keep or switch, then back to the chat — no call.
@@ -9046,7 +9128,7 @@ class VoiceChatBot {
             // Skip keeps what they had — even if a preview already switched the session.
             const back = this._voiceStepOriginal;
             if (back && (this._voiceSwitchRunning || back.voice !== this._sessionVoice || back.id !== this.selectedCompanionId)) await this._switchVoiceTo(back);
-            this._logSessionEvent('voice_step_skipped', { decideMs, waitedMs: Math.round(performance.now() - t0), mode: changeMode ? 'change' : 'first_call' });
+            this._logSessionEvent('voice_step_skipped', { decideMs, waitedMs: Math.round(performance.now() - t0), mode: changeMode ? 'change' : 'first_call', via: via || 'button' });
             next();
             return;
         }

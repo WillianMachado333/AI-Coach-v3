@@ -261,3 +261,49 @@ test('a card picked mid-conversation: both layers are told who spoke before, so 
     assert.match(src, /if \(this\._coachSwitchLine\(\)\) instructions \+= '\\n\\n' \+ this\._coachSwitchLine\(\);/, 'backend');
     assert.match(src, /\+ \(this\._coachSwitchLine\(\) \? ' ' \+ this\._coachSwitchLine\(\) : ''\);/, 'Live voice layer');
 });
+
+test('voice step sheet: dragging it down past 60 px or flicking it down closes it like Skip / Cancel; short, slow, sideways or cancelled drags do not', () => {
+    const bind = method('_bindVoiceStepDrag(box)');
+    let clock = 0;
+    global.performance = { now: () => clock };
+    const run = (moves, { endType = 'pointerup' } = {}) => {
+        const on = {};
+        const box = { style: {}, addEventListener: (t, f) => { on[t] = f; }, setPointerCapture() {} };
+        let closed = 0;
+        const app = { _voiceStepCancel: () => { closed++; } };
+        bind.call(app, box);
+        clock = 0;
+        on.pointerdown({ pointerId: 1, pointerType: 'touch', button: 0, clientX: 100, clientY: 100 });
+        let last = { x: 100, y: 100 };
+        for (const [dt, dx, dy] of moves) { clock += dt; last = { x: 100 + dx, y: 100 + dy }; on.pointermove({ pointerId: 1, clientX: last.x, clientY: last.y }); }
+        clock += 8;
+        on[endType]({ pointerId: 1, type: endType, clientX: last.x, clientY: last.y });
+        return { closed, box };
+    };
+    const steps = (n, dt, dx, dy) => Array.from({ length: n }, (_, i) => [dt, dx * (i + 1) / n, dy * (i + 1) / n]);
+    assert.equal(run(steps(20, 30, 0, 70)).closed, 1, 'slow drag down 70 px');
+    assert.equal(run(steps(20, 30, 0, 40)).closed, 0, 'slow drag down 40 px');
+    assert.equal(run(steps(6, 8, 0, 48)).closed, 1, 'flick: 48 px in ~50 ms');
+    assert.equal(run(steps(6, 8, 0, 20)).closed, 0, 'a quick twitch under 24 px');
+    assert.equal(run(steps(10, 16, -120, 70)).closed, 0, "sideways first: the carousel's pan, not a close");
+    assert.equal(run(steps(20, 30, 0, 90), { endType: 'pointercancel' }).closed, 0, 'cancelled by the browser');
+    assert.equal(run(steps(20, 30, 0, -90)).closed, 0, 'dragged up');
+    const { box } = run(steps(20, 30, 0, 40));
+    assert.equal(box.style.transform, '', 'springs back when not closed');
+    const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+    assert.match(css, /\.voice-step \{[^}]*touch-action: pan-x;/, 'vertical drags are the sheet\'s, horizontal pans the carousel\'s');
+    assert.match(css, /\.voice-step-cards \{[^}]*overflow-x: auto;[^}]*scroll-snap-type: x mandatory;/);
+    assert.match(css, /\.voice-card \{[^}]*flex: 0 0 calc\(\(100% - 24px\) \/ 4\); max-width: 96px; scroll-snap-align: start;/, '4 in view on a phone');
+});
+
+test('voice step carousel: all 8 coaches, the first four as before; previews fetched as cards come into view; SVG play badge with a playing state', () => {
+    const cards = JSON.parse(fs.readFileSync(path.join(root, 'voiceCards.json'), 'utf8')).cards;
+    assert.deepEqual(cards.map((c) => c.name), ['Erica', 'Jasmine', 'Michael', 'Sean', 'Steve', 'Evan', 'Sarah', 'Emma']);
+    assert.equal(new Set(cards.map((c) => c.id)).size, 8);
+    assert.match(src, /new IntersectionObserver\(\(entries\) => \{[\s\S]{0,400}this\._prefetchCardPreview\(card\);[\s\S]{0,200}\}, \{ root: list, threshold: 0\.5 \}\)/);
+    assert.match(src, /if \(this\._voiceCardObserver\) this\._voiceCardObserver\.observe\(b\);\s*else if \(i < 4\) this\._prefetchCardPreview\(card\);/, 'no observer: the first four only');
+    assert.ok(!/voice-card-play" aria-hidden="true">▶/.test(src), 'no text glyph');
+    assert.match(src, /const VOICE_CARD_ICONS =\s*'<svg class="voice-card-icon-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"/);
+    assert.match(src, /this\._voiceStepCancel = \(\) => done\(null, 'drag'\);/);
+    assert.match(src, /mode: changeMode \? 'change' : 'first_call', via: via \|\| 'button' \}\);/);
+});
