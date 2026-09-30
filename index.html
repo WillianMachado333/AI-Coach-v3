@@ -47,7 +47,7 @@
     </script>
 
     <!-- Custom animations remaining in CSS -->
-    <link rel="stylesheet" href="styles.css?v=20260930c">
+    <link rel="stylesheet" href="styles.css?v=20260930d">
 
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -428,7 +428,16 @@
             <!-- First voice-mode entry: pick how the coach sounds (image cards; app.js _showVoiceStep). -->
             <div id="voiceStep" class="voice-step hidden" role="group" aria-label="Choose how your coach sounds">
                 <div class="voice-step-title">Choose how your coach sounds</div>
-                <div id="voiceStepCards" class="voice-step-cards"></div>
+                <!-- Mouse / trackpad: arrows at the edges (only when there is more that way). Touch swipes. -->
+                <div id="voiceStepRail" class="voice-step-rail">
+                    <button id="voiceStepPrev" type="button" class="voice-step-arrow voice-step-arrow-prev" aria-label="Previous coaches" tabindex="-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+                    </button>
+                    <div id="voiceStepCards" class="voice-step-cards"></div>
+                    <button id="voiceStepNext" type="button" class="voice-step-arrow voice-step-arrow-next" aria-label="More coaches" tabindex="-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+                    </button>
+                </div>
                 <div class="voice-step-actions">
                     <button id="voiceStepSkip" type="button" class="voice-step-skip">Skip</button>
                     <button id="voiceStepUse" type="button" class="voice-step-use">Use this voice</button>
@@ -691,7 +700,7 @@
     <script src="lib/attachmentRules.js?v=20260929a"></script>
     <script src="lib/liveReasoning.js?v=20260929a"></script>
     <script src="uiLayout.js?v=20260930d"></script>
-    <script src="app.js?v=20260930f"></script>
+    <script src="app.js?v=20260930g"></script>
 </body>
 
 </html>

@@ -307,3 +307,86 @@ test('voice step carousel: all 8 coaches, the first four as before; previews fet
     assert.match(src, /this\._voiceStepCancel = \(\) => done\(null, 'drag'\);/);
     assert.match(src, /mode: changeMode \? 'change' : 'first_call', via: via \|\| 'button' \}\);/);
 });
+
+test("voice step carousel with a mouse (the site's ~420 px corner panel): arrows, vertical wheel, mouse drag, ←/→; the edges say where there is more", () => {
+    const bind = method('_bindVoiceCarousel(list)');
+    const update = method('_updateVoiceCarousel(list)');
+    let clock = 1000;
+    global.performance = { now: () => clock };
+    global.getComputedStyle = () => ({ columnGap: '8px' });
+    delete global.ResizeObserver;
+    const make = () => {
+        const on = {}; const calls = [];
+        const cards = Array.from({ length: 8 }, (_, i) => ({ i, offsetWidth: 92, focus() { active = this; }, scrollIntoView(o) { calls.push(['into', i, o.inline]); }, getAttribute: () => 'c' + i }));
+        let active = null;
+        const rail = { cls: new Set(['voice-step-rail']), classList: { contains: (c) => rail.cls.has(c), toggle: (c, v) => (v ? rail.cls.add(c) : rail.cls.delete(c)) } };
+        const list = {
+            parentElement: rail, scrollLeft: 0, scrollWidth: 792, clientWidth: 392, cls: new Set(),
+            classList: { add: (c) => list.cls.add(c), remove: (c) => list.cls.delete(c) },
+            addEventListener: (t, f, o) => { (on[t] = on[t] || []).push(f); },
+            removeEventListener: (t, f) => { on[t] = (on[t] || []).filter((x) => x !== f); },
+            querySelector: () => cards[0], querySelectorAll: () => cards,
+            scrollBy: (o) => calls.push(['by', o.left]), scrollTo: (o) => calls.push(['to', o.left]), setPointerCapture() {},
+        };
+        const btn = {}; ['voiceStepPrev', 'voiceStepNext'].forEach((id) => { btn[id] = { addEventListener: (t, f) => { btn[id].click = f; } }; });
+        global.document = { getElementById: (id) => btn[id] || null, get activeElement() { return active; } };
+        const app = {}; app._updateVoiceCarousel = update.bind(app);
+        bind.call(app, list);
+        const fire = (t, e) => { let prevented = false; let stopped = false; const ev = Object.assign({ preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } }, e); (on[t] || []).forEach((f) => f(ev)); return { prevented, stopped }; };
+        return { list, rail, calls, fire, btn, cards, setActive: (c) => { active = c; } };
+    };
+    // Edges: overflow at the start → only "next" and a right fade (CSS keys off these classes).
+    const a = make();
+    a.list.scrollLeft = 0; a.fire('scroll', {});
+    assert.deepEqual([...a.rail.cls].sort(), ['at-start', 'overflow', 'voice-step-rail']);
+    a.list.scrollLeft = 400; a.fire('scroll', {});
+    assert.deepEqual([...a.rail.cls].sort(), ['at-end', 'overflow', 'voice-step-rail']);
+    a.list.scrollWidth = 392; a.fire('scroll', {});
+    assert.ok(!a.rail.cls.has('overflow'), 'all fit: no arrows, no fade');
+    // Arrows: a page (the cards in view) at a time.
+    const b = make();
+    b.btn.voiceStepNext.click(); b.btn.voiceStepPrev.click();
+    assert.deepEqual(b.calls, [['by', 400], ['by', -400]]);
+    // Wheel: a notch = one card; trackpad deltas add up; horizontal or no overflow = left alone.
+    const w = make();
+    assert.equal(w.fire('wheel', { deltaY: 100, deltaX: 0, deltaMode: 0 }).prevented, true);
+    for (let k = 0; k < 5; k++) { clock += 16; w.fire('wheel', { deltaY: 8, deltaX: 0, deltaMode: 0 }); }
+    assert.deepEqual(w.calls, [['by', 100], ['by', 100]]);
+    assert.equal(w.fire('wheel', { deltaY: 2, deltaX: 30, deltaMode: 0 }).prevented, false, 'a sideways trackpad swipe scrolls natively');
+    w.list.scrollWidth = 392;
+    assert.equal(w.fire('wheel', { deltaY: 100, deltaX: 0, deltaMode: 0 }).prevented, false, 'nothing to scroll: the page keeps the wheel');
+    // Mouse drag: scrolls with snap off, settles on a card, and is not a click.
+    const d = make();
+    d.fire('pointerdown', { pointerId: 3, pointerType: 'mouse', button: 0, clientX: 300 });
+    d.fire('pointermove', { pointerId: 3, clientX: 297 });
+    assert.equal(d.list.scrollLeft, 0, 'under 6 px: still a click');
+    d.fire('pointermove', { pointerId: 3, clientX: 140 });
+    assert.equal(d.list.scrollLeft, 160);
+    assert.ok(d.list.cls.has('mouse-dragging'));
+    d.fire('pointerup', { pointerId: 3 });
+    assert.ok(!d.list.cls.has('mouse-dragging'));
+    assert.deepEqual(d.calls.at(-1), ['to', 200], 'settles on the nearest card');
+    assert.equal(d.fire('click', {}).stopped, true, 'the click that ends a drag is swallowed');
+    assert.equal(d.fire('dragstart', {}).prevented, true, "the browser's image drag would cancel the pointer");
+    const t = make();
+    t.fire('pointerdown', { pointerId: 4, pointerType: 'touch', button: 0, clientX: 300 });
+    t.fire('pointermove', { pointerId: 4, clientX: 100 });
+    assert.equal(t.list.scrollLeft, 0, 'touch is the native swipe, untouched');
+    // Keyboard: → / ← move the focus between cards.
+    const k = make();
+    k.setActive(k.cards[2]);
+    assert.equal(k.fire('keydown', { key: 'ArrowRight' }).prevented, true);
+    assert.equal(k.cards.indexOf(global.document.activeElement), 3);
+    assert.deepEqual(k.calls.at(-1), ['into', 3, 'nearest']);
+    k.setActive(k.cards[0]);
+    assert.equal(k.fire('keydown', { key: 'ArrowLeft' }).prevented, false, 'nothing before the first card');
+    // CSS: arrows and fade for fine pointers only; HTML: the rail wraps the cards.
+    const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+    const fine = css.slice(css.indexOf('@media (hover: hover) and (pointer: fine) {'));
+    assert.match(css, /\.voice-step-arrow \{ display: none;[^}]*width: 44px; height: 44px;/, '44 px targets, hidden by default');
+    assert.match(fine, /\.voice-step-rail\.overflow:not\(\.at-start\) \.voice-step-arrow-prev,\s*\.voice-step-rail\.overflow:not\(\.at-end\) \.voice-step-arrow-next \{ display: flex; \}/);
+    assert.match(fine, /mask-image: linear-gradient\(to right, transparent 0, #000 var\(--fade-l\), #000 calc\(100% - var\(--fade-r\)\), transparent 100%\)/);
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+    assert.match(html, /<div id="voiceStepRail" class="voice-step-rail">\s*<button id="voiceStepPrev"[\s\S]*?<div id="voiceStepCards" class="voice-step-cards"><\/div>\s*<button id="voiceStepNext"/);
+    assert.match(src, /<img src="\$\{this\.apiUrl\(card\.thumb\)\}" alt="" draggable="false">/);
+});

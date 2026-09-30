@@ -8950,7 +8950,7 @@ class VoiceChatBot {
             b.className = 'voice-card' + (card === selected ? ' selected' : '');
             b.setAttribute('data-card', card.id);
             b.setAttribute('aria-pressed', card === selected ? 'true' : 'false');
-            b.innerHTML = `<img src="${this.apiUrl(card.thumb)}" alt=""><span class="voice-card-name"></span><span class="voice-card-play" aria-hidden="true">${VOICE_CARD_ICONS}</span>`;
+            b.innerHTML = `<img src="${this.apiUrl(card.thumb)}" alt="" draggable="false"><span class="voice-card-name"></span><span class="voice-card-play" aria-hidden="true">${VOICE_CARD_ICONS}</span>`;
             b.querySelector('.voice-card-name').textContent = card.name;
             b.addEventListener('click', () => {
                 selected = card;
@@ -8980,16 +8980,102 @@ class VoiceChatBot {
         // Dragging the sheet down is the same as Skip / Cancel.
         this._voiceStepCancel = () => done(null, 'drag');
         this._bindVoiceStepDrag(box);
+        this._bindVoiceCarousel(list);
         if (input) input.classList.add('hidden');
         box.classList.remove('hidden');
         // The coach they have now may be past the first four: bring it into view.
         const sel = list.querySelector('.voice-card.selected');
         if (sel) list.scrollLeft = Math.max(0, sel.offsetLeft - list.offsetLeft - (list.clientWidth - sel.offsetWidth) / 2);
+        this._updateVoiceCarousel(list);
         this._voiceStepShownAt = performance.now();
         const title = box.querySelector('.voice-step-title');
         if (title) title.textContent = mode === 'change' ? 'Change how your coach looks and sounds' : 'Choose how your coach sounds';
         if (skip) skip.textContent = mode === 'change' ? 'Cancel' : 'Skip';
         this._logSessionEvent('voice_step_viewed', { cards: cards.map((c) => c.id), preselected: selected ? selected.id : null, mode });
+    }
+
+    // Mouse and trackpad have no swipe (in the site's ~420 px corner panel the
+    // carousel scrolls like on a phone): arrows at the edges, the vertical
+    // wheel scrolls it sideways, the mouse drags it, ←/→ move between cards.
+    // The arrows and the edge fade show only where there is more (CSS, fine
+    // pointers only); touch is unchanged.
+    _bindVoiceCarousel(list) {
+        if (list._carouselBound) return;
+        list._carouselBound = true;
+        const step = () => { const c = list.querySelector('.voice-card'); return c ? c.offsetWidth + (parseFloat(getComputedStyle(list).columnGap) || 8) : 90; };
+        const page = () => Math.max(1, Math.floor((list.clientWidth + 8) / step())) * step();
+        const prev = document.getElementById('voiceStepPrev');
+        const next = document.getElementById('voiceStepNext');
+        if (prev) prev.addEventListener('click', () => list.scrollBy({ left: -page(), behavior: 'smooth' }));
+        if (next) next.addEventListener('click', () => list.scrollBy({ left: page(), behavior: 'smooth' }));
+        list.addEventListener('scroll', () => this._updateVoiceCarousel(list), { passive: true });
+        if (typeof ResizeObserver === 'function') new ResizeObserver(() => this._updateVoiceCarousel(list)).observe(list);
+        // Vertical wheel → one card sideways per notch. Deltas add up, so a
+        // trackpad's small steps don't each snap back to where they started.
+        let acc = 0; let lastWheel = 0;
+        list.addEventListener('wheel', (e) => {
+            if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || list.scrollWidth - list.clientWidth < 2) return;
+            e.preventDefault();
+            const now = performance.now();
+            if (now - lastWheel > 300) acc = 0;
+            lastWheel = now;
+            acc += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+            if (Math.abs(acc) < 40) return;
+            list.scrollBy({ left: Math.sign(acc) * step(), behavior: 'smooth' });
+            acc = 0;
+        }, { passive: false });
+        // Mouse drag scrolls (snap off while dragging, back on at release); a
+        // drag is not a click on the card it ends on. The browser's own image
+        // drag would cancel the pointer mid-way: off.
+        list.addEventListener('dragstart', (e) => e.preventDefault());
+        let drag = null;
+        list.addEventListener('pointerdown', (e) => {
+            if (e.pointerType !== 'mouse' || e.button !== 0) return;
+            drag = { id: e.pointerId, x: e.clientX, left: list.scrollLeft, moved: false };
+        });
+        list.addEventListener('pointermove', (e) => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const dx = e.clientX - drag.x;
+            if (!drag.moved && Math.abs(dx) < 6) return;
+            if (!drag.moved) { drag.moved = true; list.classList.add('mouse-dragging'); try { list.setPointerCapture(e.pointerId); } catch (_) { /* no capture */ } }
+            list.scrollLeft = drag.left - dx;
+        });
+        const endDrag = (e) => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const moved = drag.moved;
+            drag = null;
+            if (!moved) return;
+            list.classList.remove('mouse-dragging');
+            // Settle on the nearest card, as a swipe would.
+            const s = step();
+            list.scrollTo({ left: Math.round(list.scrollLeft / s) * s, behavior: 'smooth' });
+            const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+            list.addEventListener('click', swallow, { capture: true, once: true });
+            setTimeout(() => list.removeEventListener('click', swallow, { capture: true }), 0);
+        };
+        list.addEventListener('pointerup', endDrag);
+        list.addEventListener('pointercancel', endDrag);
+        // Keyboard: ←/→ move the focus between cards (it scrolls with them).
+        list.addEventListener('keydown', (e) => {
+            if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+            const cards = [...list.querySelectorAll('.voice-card')];
+            const i = cards.indexOf(document.activeElement);
+            if (i < 0) return;
+            const to = cards[i + (e.key === 'ArrowRight' ? 1 : -1)];
+            if (!to) return;
+            e.preventDefault();
+            to.focus({ preventScroll: true });
+            to.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+        });
+    }
+
+    _updateVoiceCarousel(list) {
+        const rail = list.parentElement;
+        if (!rail || !rail.classList.contains('voice-step-rail')) return;
+        const max = list.scrollWidth - list.clientWidth;
+        rail.classList.toggle('overflow', max > 2);
+        rail.classList.toggle('at-start', list.scrollLeft <= 2);
+        rail.classList.toggle('at-end', list.scrollLeft >= max - 2);
     }
 
     // The card's play badge turns into a sound wave while its preview plays.

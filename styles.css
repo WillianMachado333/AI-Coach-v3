@@ -867,6 +867,22 @@ textarea:focus {
 .voice-step-title { font-size: 13px; font-weight: 600; color: #374151; text-align: center; }
 .voice-step-cards { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
 .voice-step-cards::-webkit-scrollbar { display: none; }
+/* Mouse / trackpad (app.js _bindVoiceCarousel): arrows at the edges, only
+   where there is more to see, and a fade on that side. Touch is unchanged. */
+.voice-step-rail { position: relative; }
+.voice-step-arrow { display: none; position: absolute; top: 50%; z-index: 1; width: 44px; height: 44px; margin-top: -22px; align-items: center; justify-content: center; background: transparent; color: #0f766e; cursor: pointer; }
+.voice-step-arrow svg { width: 18px; height: 18px; padding: 5px; box-sizing: content-box; border-radius: 9999px; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2); }
+.voice-step-arrow:hover svg { background: #f0fdfa; }
+.voice-step-arrow-prev { left: -6px; }
+.voice-step-arrow-next { right: -6px; }
+@media (hover: hover) and (pointer: fine) {
+    .voice-step-rail.overflow:not(.at-start) .voice-step-arrow-prev,
+    .voice-step-rail.overflow:not(.at-end) .voice-step-arrow-next { display: flex; }
+    .voice-step-rail.overflow .voice-step-cards { --fade-l: 0px; --fade-r: 0px; -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent 100%); mask-image: linear-gradient(to right, transparent 0, #000 var(--fade-l), #000 calc(100% - var(--fade-r)), transparent 100%); }
+    .voice-step-rail.overflow:not(.at-start) .voice-step-cards { --fade-l: 28px; }
+    .voice-step-rail.overflow:not(.at-end) .voice-step-cards { --fade-r: 28px; }
+    .voice-step-cards.mouse-dragging { scroll-snap-type: none; cursor: grabbing; }
+}
 /* Centred when they all fit (wide screens), flush left when they scroll. */
 .voice-step-cards > .voice-card:first-child { margin-left: auto; }
 .voice-step-cards > .voice-card:last-child { margin-right: auto; }
