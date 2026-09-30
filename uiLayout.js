@@ -297,6 +297,10 @@
                 setMoreMenuOpen(app, next);
             });
         }
+        // Header chip: the coach's face and name; opens the image cards (#35 c).
+        const coachChip = document.getElementById('coachChip');
+        if (coachChip) coachChip.addEventListener('click', (e) => { e.preventDefault(); if (typeof app._openCoachChip === 'function') app._openCoachChip(); });
+
         if (app.menuChangeCoachName) {
             app.menuChangeCoachName.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -354,7 +358,7 @@
                 const trimmed = (app.coachNameInput?.value || '').trim();
                 if (!trimmed || trimmed.length > 9) return;
                 if (typeof app.setCoachDisplayName === 'function') {
-                    app.setCoachDisplayName(trimmed);
+                    app.setCoachDisplayName(trimmed, 'menu');
                 }
                 if (typeof app.closeCoachNameModal === 'function') app.closeCoachNameModal();
             });

@@ -166,7 +166,9 @@ test('client: turns are posted from the final-message hook, bot turns settle, pi
     assert.match(fn, /if \(!message \|\| this\.isRestoringHistory\) return;/);
     assert.match(fn, /setTimeout\(flush, 600\)/);
     assert.equal((src.match(/this\._nextTurnInputType = \{ type: 'pill', until: Date\.now\(\) \+ 2000 \};/g) || []).length, 2, 'both pill call sites');
-    const postFn = src.slice(src.indexOf('    _postTurn(message, st) {'), src.indexOf('    _postTurnRevision(message, st) {'));
+    // Just _postTurn's body (other methods now sit between it and _postTurnRevision).
+    const postStart = src.indexOf('    _postTurn(message, st) {');
+    const postFn = src.slice(postStart, src.indexOf('    _navNoteTurn(role, text, turnIndexHint) {', postStart));
     assert.match(postFn, /kind: isUser \? 'user_turn' : 'bot_turn'/);
     assert.doesNotMatch(postFn, /synthetic|dataUrl|\.src\b/, 'no synthetic flag, no image data');
 });

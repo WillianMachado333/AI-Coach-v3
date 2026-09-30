@@ -147,6 +147,7 @@ test('client voice step: shown on the first call only; Skip or the same voice st
             _voiceStepOriginal: erica,
             styleOverride: { styleId: 'Directive', label: 'Directive, clear, actionable', coachingStyle: { primaryObjective: 'Clarity' } },
             getEffectiveVoiceProfile: () => ({ companionId: 'Supportive' }),
+            _updateCoachChip: () => {},
             _saveCoachSettings: (set, by) => log.push(['save', set, by]),
             _logSessionEvent: (n, m) => log.push(['event', n, m]),
             toggleMicTrack: () => log.push(['call']),
