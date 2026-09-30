@@ -136,7 +136,12 @@ for (const mode of ['redacted', 'raw']) {
             const b = await post(port, { sessionId: sid, kind: 'bot_turn', text: 'Let us practise that.', meta: { messageId: 'b1', voiceMode: 'realtime', inCall: true, responseId: 'resp_1' } });
             assert.equal(b.body.store, mode);
             await post(port, { sessionId: sid, kind: 'turn_revised', meta: { messageId: 'b1', text: 'Let us practise that together.' } });
-            const [user, bot, rev] = lines(dir, sid);
+            // By type, not position: the pipeline logs milestones between turns.
+            const all = lines(dir, sid);
+            const user = all.find((l) => l.type === 'turn' && l.role === 'user');
+            const bot = all.find((l) => l.type === 'turn' && l.role === 'bot');
+            const rev = all.find((l) => l.name === 'turn_revised');
+            assert.ok(all.some((l) => l.name === 'onboarding_milestone' && l.meta.stage === 'coaching_started'));
             if (mode === 'raw') assert.equal(user.text, 'I freeze on salary questions');
             else {
                 assert.deepEqual(Object.keys(user.text).sort(), ['hash', 'length', 'redacted']);

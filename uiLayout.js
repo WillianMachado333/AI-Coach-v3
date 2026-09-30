@@ -2775,6 +2775,11 @@
                         const chosenThumb = (thumbImg && thumbImg.style.display !== 'none') ? thumbImg.src : null;
                         app.setSelectedVoice(voice, chosenThumb, name, companionId);
                     }
+                    // Onboarding pipeline: the person chose a coaching style
+                    // themselves (lib/pipeline.js; Eric's "style overridden").
+                    if ((prevCompanionId || null) !== (companionId || null) && typeof app._logSessionEvent === 'function') {
+                        app._logSessionEvent('style_overridden', { from: prevCompanionId || null, to: companionId || null, via: 'picker' });
+                    }
 
                     // Close Overlay
                     const overlay = document.getElementById('voiceMenuOverlay');

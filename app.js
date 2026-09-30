@@ -5569,6 +5569,10 @@ class VoiceChatBot {
                                         : {}),
                                     // Same page, same visit (#27): a reconnect resumes this session.
                                     ...(this.sessionId && /^s-v/.test(this.sessionId) ? { sessionId: this.sessionId } : {}),
+                                    // Onboarding pipeline context: the page hosting the coach
+                                    // (address only; the server also reads this frame's own
+                                    // URL parameters). lib/pipeline.js keeps a short whitelist.
+                                    context: { hostPage: (() => { try { const r = new URL(document.referrer); return r.origin + r.pathname; } catch (_) { return null; } })() },
                                     ...(prepId && typeof prepId === 'string' && prepId.includes('@')
                                         ? { email: prepId }
                                         : prepId
@@ -8691,6 +8695,19 @@ class VoiceChatBot {
                 body: JSON.stringify({ sessionId: this.sessionId, kind: 'event', name: 'silent_call', meta }),
                 keepalive: true
             }).catch(() => { /* the console line above is the loud part */ });
+        } catch (_) { /* best effort */ }
+    }
+
+    // One event on this visit's Studio timeline. Best effort, never blocks.
+    _logSessionEvent(name, meta) {
+        if (!this.sessionId) return;
+        try {
+            fetch(this.apiUrl('/api/session-log'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId: this.sessionId, kind: 'event', name, meta }),
+                keepalive: true
+            }).catch(() => { /* observability only */ });
         } catch (_) { /* best effort */ }
     }
 

@@ -18,6 +18,11 @@ https.request = function fakeRequest(options, cb) {
     req.write = (c) => { chunks.push(Buffer.from(c)); return true; };
     req.setTimeout = () => req;
     req.destroy = () => req;
+    // Other clients (node-fetch inside the OpenAI SDK) call these on the
+    // failed request; without them the server process crashes.
+    req.abort = () => req;
+    for (const m of ['setHeader', 'removeHeader', 'setNoDelay', 'setSocketKeepAlive', 'flushHeaders']) req[m] = () => {};
+    req.getHeader = () => undefined;
     req.end = (c) => {
         if (c) chunks.push(Buffer.from(c));
         setImmediate(() => {
