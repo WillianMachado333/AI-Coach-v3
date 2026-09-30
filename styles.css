@@ -857,3 +857,17 @@ textarea:focus {
     top: 12px;
     width: 44px;
 }
+
+/* First voice-mode entry: image cards (app.js _showVoiceStep). */
+.voice-step { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 2px; }
+.voice-step.hidden { display: none; }
+.voice-step-title { font-size: 13px; font-weight: 600; color: #374151; text-align: center; }
+.voice-step-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 96px)); justify-content: center; gap: 8px; }
+.voice-card { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 2px; border-radius: 14px; border: 2px solid transparent; background: rgba(255, 255, 255, 0.85); cursor: pointer; }
+.voice-card img { width: 52px; height: 52px; border-radius: 9999px; object-fit: cover; }
+.voice-card-name { font-size: 12px; color: #111827; }
+.voice-card-play { position: absolute; top: 6px; right: 10px; font-size: 10px; color: #0f766e; }
+.voice-card.selected { border-color: #0d9488; background: #f0fdfa; }
+.voice-step-actions { display: flex; justify-content: center; gap: 8px; }
+.voice-step-skip { padding: 6px 12px; border-radius: 10px; font-size: 13px; color: #4b5563; background: transparent; }
+.voice-step-use { padding: 6px 14px; border-radius: 10px; font-size: 13px; color: #fff; background: #0d9488; }

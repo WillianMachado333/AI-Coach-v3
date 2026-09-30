@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "note": "The image cards shown when a person first starts voice mode. Picking a card picks the coach's face, name and voice; the coaching style is separate (the in-chat Navigator). id = the companionId whose face and name the card uses.",
+  "cards": [
+    { "id": "Supportive", "name": "Erica", "thumb": "companions/Erica-thumb.png", "voice": "marin" },
+    { "id": "Guidance", "name": "Jasmine", "thumb": "companions/Jasmine-thumb.png", "voice": "coral" },
+    { "id": "Empowering", "name": "Michael", "thumb": "companions/Michael-thumb.png", "voice": "cedar" },
+    { "id": "Discovery", "name": "Sean", "thumb": "companions/Sean-thumb.png", "voice": "ash" }
+  ]
+}

@@ -54,7 +54,7 @@ test('GPT-Live one-shot: the backend response.created resolves it at once; its c
 
 test('wiring: the response.event case feeds the one-shot; a call start arms the alarm; hang-up disarms; spoken words count as life', () => {
     assert.match(src, /case 'response\.event': \{\s*const inner = message\.event;\s*if \(!inner\) break;\s*\/\/ The opening line \(speakOneShot\) waits for its response to start \(#32\)\.\s*this\._liveOneShotObserve\(inner\);/);
-    assert.match(src, /toggleMicTrack\(\) \{\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(!this\.isRecording\) this\._silentCallArm\('click'\);/, 'armed before the cold-start branch returns');
+    assert.match(src, /toggleMicTrack\(\) \{\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(!this\.isRecording && !this\._voiceStepChecked\) \{ this\._voiceStepChecked = true; this\._voiceStepGate\(\); return; \}\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*if \(!this\.isRecording\) this\._silentCallArm\('click'\);/, 'armed before the cold-start branch returns');
     assert.match(src, /stopRecording\(force = false\) \{\s*this\._silentCallDisarm\(\);/);
     assert.match(src, /this\.resetVoiceInactivityTimer\(\);\s*if \(!this\.isRestoringHistory\) this\._silentCallSawLife\(role, id\);/);
 });
