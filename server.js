@@ -30,6 +30,7 @@ const { LANGUAGE_RULE } = require('./lib/coachUiRules');
 const injectedDataStore = require('./lib/injectedDataStore');
 const coachClipboard = require('./lib/coachClipboard');
 const sessionTurns = require('./lib/sessionTurns');
+const pipeline = require('./lib/pipeline');
 const signedIdentity = require('./lib/signedIdentity');
 const auditLog = require('./lib/audit');
 
@@ -675,11 +676,22 @@ const server = http.createServer(async (req, res) => {
                     // whitelist (no client-set `synthetic`, which would store
                     // user text raw); user text redaction is sessionLog's.
                     case 'user_turn':
-                        sessionLog.logUserTurn(sid, { text: sessionTurns.sanitizeTurnText(p.text), promptHash, meta: sessionTurns.sanitizeTurnMeta(p.meta, 'user_turn') });
+                    case 'bot_turn': {
+                        const text = sessionTurns.sanitizeTurnText(p.text);
+                        const role = p.kind === 'user_turn' ? 'user' : 'bot';
+                        // Which pipeline stage this turn reaches (counted before
+                        // it is appended; lib/pipeline.js).
+                        const tr = pipeline.trackTurn(sid, { type: 'turn', role, text }, (id) => (sessionLog.readSession(id) || {}).entries);
+                        if (role === 'user') sessionLog.logUserTurn(sid, { text, promptHash, meta: sessionTurns.sanitizeTurnMeta(p.meta, 'user_turn') });
+                        else sessionLog.logBotTurn(sid, { text, promptHash, meta: sessionTurns.sanitizeTurnMeta(p.meta, 'bot_turn') });
+                        for (const stage of tr.reached) {
+                            sessionLog.logEvent(sid, { name: 'onboarding_milestone', meta: {
+                                stage, variant: tr.variant || null, meaningful: tr.counter.meaningful, userTurns: tr.counter.userTurns,
+                                msSinceEntry: tr.entryAt ? Date.now() - Date.parse(tr.entryAt) : null,
+                            } });
+                        }
                         break;
-                    case 'bot_turn':
-                        sessionLog.logBotTurn(sid, { text: sessionTurns.sanitizeTurnText(p.text), promptHash, meta: sessionTurns.sanitizeTurnMeta(p.meta, 'bot_turn') });
-                        break;
+                    }
                     case 'turn_revised': {
                         const rev = sessionTurns.sanitizeRevision(p.meta);
                         if (rev) sessionLog.logEvent(sid, { name: 'turn_revised', meta: rev });
@@ -2221,7 +2233,9 @@ const server = http.createServer(async (req, res) => {
                     caller: requestData.caller || null,
                     url: req.headers.referer || null,
                     resumeSessionId: typeof requestData.sessionId === 'string' ? requestData.sessionId : null,
-                    identitySource: idn.source
+                    identitySource: idn.source,
+                    // Onboarding pipeline (lib/pipeline.js): today's flow is inchat@1.
+                    onboarding: { variant: pipeline.VARIANT, context: pipeline.sanitizeContext(requestData.context, { caller: requestData.caller, referer: req.headers.referer }) }
                 });
                 prepSessionId = sessionId;
 
