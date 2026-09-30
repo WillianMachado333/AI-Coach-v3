@@ -171,5 +171,5 @@ test('client: the preparation sends the host page (address only); a picker switc
     const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
     assert.match(app, /context: \{ hostPage: \(\(\) => \{ try \{ const r = new URL\(document\.referrer\); return r\.origin \+ r\.pathname;/);
     const ui = fs.readFileSync(path.join(root, 'uiLayout.js'), 'utf8');
-    assert.match(ui, /app\._logSessionEvent\('style_overridden', \{ from: prevCompanionId \|\| null, to: companionId \|\| null, via: 'picker' \}\)/);
+    assert.match(ui, /app\._logSessionEvent\('style_overridden', \{ from: \(app\.styleOverride && app\.styleOverride\.styleId\) \|\| prevCompanionId \|\| null, to: companionId \|\| null, via: 'picker' \}\)/);
 });

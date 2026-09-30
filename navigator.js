@@ -310,54 +310,18 @@
             this.onComplete(result);
         }
 
-        // --- Compute result: flat lookup table first, weighted scoring as fallback ---
+        // --- Compute result: the shared routing (navigatorRouting.js) ---
+        // One implementation for this form and the in-chat Navigator, so they
+        // can never disagree: the 36-route table first, weights as fallback.
         _computeResult() {
             const tags = {};
-
             this.data.questions.forEach(q => {
                 const value = this.form?.elements[q.id]?.value;
                 if (value) tags[q.id] = value;
             });
-
-            // Try flat lookup table first (guaranteed correct for known combinations)
-            if (this.data.routes) {
-                const key = [tags.mood, tags.readiness, tags.clarity].filter(Boolean).join('|');
-                const route = this.data.routes[key];
-                if (route && route.length >= 2) {
-                    console.log('[Navigator] Route table match:', key, '→', route[0], '/', route[1]);
-                    return {
-                        primary: route[0],
-                        autonomy: route[1],
-                        scores: {},
-                        tags
-                    };
-                }
-            }
-
-            // Fallback: weighted scoring (for new questions/options not in the table)
-            console.log('[Navigator] No route table match, using weighted scoring');
-            const scores = {};
-
-            this.data.questions.forEach(q => {
-                const value = tags[q.id];
-                if (!value || !q.options) return;
-
-                const selected = q.options.find(o => o.value === value);
-                if (selected && selected.weights) {
-                    Object.entries(selected.weights).forEach(([style, weight]) => {
-                        scores[style] = (scores[style] || 0) + weight;
-                    });
-                }
-            });
-
-            const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-
-            return {
-                primary: ranked[0]?.[0] || null,
-                autonomy: ranked[1]?.[0] || null,
-                scores,
-                tags
-            };
+            const r = global.EricaNavigatorRouting.route(this.data, tags);
+            console.log('[Navigator] Route:', r.via, Object.values(r.tags).join('|'), '→', r.primary, '/', r.autonomy);
+            return { primary: r.primary, autonomy: r.autonomy, scores: r.scores, tags: r.tags };
         }
 
         // --- Simple HTML escaping ---
