@@ -31,6 +31,7 @@ const injectedDataStore = require('./lib/injectedDataStore');
 const coachClipboard = require('./lib/coachClipboard');
 const sessionTurns = require('./lib/sessionTurns');
 const pipeline = require('./lib/pipeline');
+const navigatorInfer = require('./lib/navigatorInfer');
 const signedIdentity = require('./lib/signedIdentity');
 const auditLog = require('./lib/audit');
 
@@ -690,6 +691,13 @@ const server = http.createServer(async (req, res) => {
                                 msSinceEntry: tr.entryAt ? Date.now() - Date.parse(tr.entryAt) : null,
                             } });
                         }
+                        break;
+                    }
+                    // The page hosting the coach, from the bridge's page context
+                    // (the referer is origin-only across origins): address only.
+                    case 'visit_context': {
+                        const hostPage = pipeline.pageOnly(p.meta && p.meta.hostPage);
+                        if (hostPage) sessionLog.logEvent(sid, { name: 'visit_context', meta: { hostPage } });
                         break;
                     }
                     case 'turn_revised': {
@@ -1992,6 +2000,44 @@ const server = http.createServer(async (req, res) => {
     //
     //   POST /api/clipboard/block   { sessionId?, userId?, objectId?, caller? } -> { text, lines }
     //   POST /api/clipboard/distill { sessionId, userId?, objectId?, caller?, turns[], cursor, visitAt? } -> { ok, skipped?, diff? }
+    // In-chat AI Navigator (lib/navigatorInfer.js): the three Navigator tags
+    // read from this visit's first exchanges → a coaching style.
+    //   POST /api/navigator/infer { sessionId, userId?, objectId?, turns[], turnIndex } -> { tags, confidence, style, autonomy, via, ready, ask }
+    if (req.url.startsWith('/api/navigator/infer')) {
+        const reply = (status, obj) => {
+            res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify(obj));
+        };
+        if (req.method !== 'POST') return reply(405, { error: 'Method not allowed' });
+        let body = '';
+        let tooBig = false;
+        req.on('data', (chunk) => { body += chunk.toString(); if (body.length > 32 * 1024) { tooBig = true; req.destroy(); } });
+        req.on('end', async () => {
+            if (tooBig) return;
+            let p;
+            try { p = body ? JSON.parse(body) : {}; } catch (_) { return reply(400, { error: 'invalid JSON' }); }
+            const idn = signedIdentity.resolve(req, { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null },
+                { endpoint: 'navigator-infer', audit: auditLog, body: p });
+            if (!idn.ok) return refuseIdentity(res, idn);
+            const sid = typeof p.sessionId === 'string' && /^s-[A-Za-z0-9_-]{4,60}$/.test(p.sessionId) ? p.sessionId : null;
+            if (!sid) return reply(400, { error: 'sessionId required' });
+            if (!navigatorInfer.allowCall(sid)) return reply(429, { error: `at most ${navigatorInfer.CALLS_PER_VISIT_MAX} per visit` });
+            const turnIndex = Number.isInteger(p.turnIndex) ? p.turnIndex : null;
+            try {
+                const r = await navigatorInfer.infer({ client: vectorStore.getClientOrNull(), model: process.env.NAVIGATOR_MODEL || 'gpt-4.1-mini', turns: p.turns });
+                sessionLog.logEvent(sid, { name: 'style_inferred', meta: { tags: r.tags, confidence: r.confidence, style: r.style, autonomy: r.autonomy, via: r.via, ready: r.ready, ask: r.ask ? r.ask.id : null, turnIndex, model: r.model } });
+                if (r.usage) sessionLog.logUsage(sid, { source: 'navigator.infer', model: r.model, responseId: r.responseId, usage: r.usage });
+                console.log(`[navigator] ${sid} turn ${turnIndex}: ${Object.values(r.tags).join('|') || '(none)'} → ${r.style || '-'} (${r.via}${r.ready ? ', ready' : ''})`);
+                return reply(200, { tags: r.tags, confidence: r.confidence, style: r.style, autonomy: r.autonomy, via: r.via, ready: r.ready, ask: r.ask });
+            } catch (e) {
+                console.error(`[navigator] ❌ ${sid} inference failed:`, e?.message || e);
+                sessionLog.logEvent(sid, { name: 'style_inference_failed', meta: { error: String(e?.message || e).slice(0, 200), turnIndex } });
+                return reply(502, { error: 'navigator inference failed' });
+            }
+        });
+        return;
+    }
+
     if (req.url.startsWith('/api/clipboard/block') || req.url.startsWith('/api/clipboard/distill')) {
         const isDistill = req.url.startsWith('/api/clipboard/distill');
         if (req.method !== 'POST') {

@@ -31,6 +31,9 @@ class VoiceChatBot {
         this.selectedVoice = 'marin'; // Default voice (Erica)
         this.selectedCompanionId = null; // Distinguish coaches even if they share the same openaiVoice
         this._userExplicitlySelectedCoach = false; // True only when user clicks a coach or valid ?aic= is used
+        // In-chat Navigator: first read after this many user messages, at most this many reads.
+        this._NAV_FIRST_TURN = 2;
+        this._NAV_MAX_CALLS = 3;
         this.currentVoiceThumbUrl = null; // Keep the resolved thumb even if DOM avatar is removed
         this._activeResponseId = null; // track server-side active response id (Realtime allows 1 at a time)
         this._suppressedResponseIds = new Set(); // response ids that should not appear in chat/history
@@ -1077,10 +1080,14 @@ class VoiceChatBot {
 
     getEffectiveVoiceProfile() {
         if (!this.currentVoiceProfile) return null;
-        if (!this.behaviorOverrides) return this.currentVoiceProfile;
+        if (!this.behaviorOverrides && !this.styleOverride) return this.currentVoiceProfile;
+        // The in-chat Navigator's style (see _applyInferredStyle) replaces the
+        // coaching fields only; who the coach is stays.
+        const style = this.styleOverride ? Object.fromEntries(Object.entries(this.styleOverride).filter(([k, v]) => k !== 'styleId' && v !== undefined && v !== null)) : {};
         return {
             ...this.currentVoiceProfile,
-            ...this.behaviorOverrides
+            ...(this.behaviorOverrides || {}),
+            ...style
         };
     }
 
@@ -2616,6 +2623,7 @@ class VoiceChatBot {
                 return;
             }
             if (data.type === 'PAGE_CONTEXT_RESPONSE' && data.context) {
+                try { if (data.context.url) this._noteVisitPage(data.context.url); } catch (_) { /* observability only */ }
                 // Bridge just replied with a page snapshot. Resolve any
                 // waiter created by _requestPageContextFromBridge.
                 const waiters = Array.isArray(this._pageContextWaiters) ? this._pageContextWaiters.splice(0) : [];
@@ -6924,6 +6932,12 @@ class VoiceChatBot {
         // [3] LANGUAGE (one rule, shared with the Live short instructions)
         instructions += '\n\n' + this._languageRule();
 
+        // In-chat Navigator: the style was chosen for this person; never say so.
+        if (this.styleOverride) {
+            instructions += '\n\nYour coaching approach was chosen for this person from how they described their situation. Never mention coaching styles, questionnaires, or that you adjusted your approach.';
+        }
+        if (this._navigatorAsk) instructions += '\n\n' + this._navigatorAsk;
+
         // --- Fix 3: Persona reinforcement at the END (recency effect) ---
         if (persona) {
             const style = persona.coachingStyle?.primaryObjective || persona.label || '';
@@ -8581,6 +8595,7 @@ class VoiceChatBot {
         }
         st.posted = true;
         st.text = text;
+        try { this._navNoteTurn(isUser ? 'user' : 'bot', text); } catch (e) { console.warn('[Erica] 🧭 Navigator turn note failed:', e?.message || e); }
         fetch(this.apiUrl('/api/session-log'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -8589,6 +8604,115 @@ class VoiceChatBot {
         }).then((r) => {
             if (!r.ok) console.warn(`[Erica] 🗒 ${isUser ? 'user' : 'bot'} turn NOT logged — HTTP ${r.status}`);
         }).catch((err) => console.warn(`[Erica] 🗒 ${isUser ? 'user' : 'bot'} turn NOT logged:`, err?.message || err));
+    }
+
+    // --- In-chat AI Navigator (lib/navigatorInfer.js) --------------------------
+    // No form: after each of this visit's first few messages the server reads
+    // the three Navigator tags from what the person said, routes them through
+    // navigatorRouting.js to a coaching style, and the style's instructions
+    // replace the default one mid-session (_refreshSessionInstructions, safe on
+    // Live since #34). Face, name and voice stay. Never announced. When a tag
+    // is still unclear, the coach asks ONE natural question about it. A coach
+    // picked by the person (picker) locks the style: no more inference.
+    _navNoteTurn(role, text, turnIndexHint) {
+        const st = this._navState || (this._navState = { turns: [], userTurns: 0, calls: 0, inFlight: false, done: false, locked: false, asked: false, askActive: false });
+        st.turns.push({ role: role === 'user' ? 'user' : 'coach', text: String(text || '').slice(0, 800) });
+        if (st.turns.length > 12) st.turns.splice(0, st.turns.length - 12);
+        if (role !== 'user') {
+            // The reply that carried the one question has been given: drop it.
+            if (st.askActive) { st.askActive = false; this._navigatorAsk = null; this._refreshSessionInstructions('navigator question asked', { changed: true }); }
+            return;
+        }
+        st.userTurns++;
+        if (st.locked || st.done || st.inFlight || st.calls >= this._NAV_MAX_CALLS) return;
+        if (st.userTurns < this._NAV_FIRST_TURN) return;
+        this._navInfer(st).catch(() => { /* logged inside */ });
+    }
+
+    async _navInfer(st) {
+        st.inFlight = true;
+        st.calls++;
+        const turnIndex = st.userTurns;
+        const last = st.calls >= this._NAV_MAX_CALLS;
+        try {
+            const idn = this.getUserIdFromURL && this.getUserIdFromURL();
+            const res = await fetch(this.apiUrl('/api/navigator/infer'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sessionId: this.sessionId, turnIndex, turns: st.turns,
+                    ...(idn ? { userId: idn } : {}),
+                    ...(window.__ttCleverTapId ? { objectId: String(window.__ttCleverTapId) } : {}),
+                }),
+            });
+            if (!res.ok) { console.warn(`[Erica] 🧭 Navigator inference failed — HTTP ${res.status}; the default coaching style stays`); return; }
+            const r = await res.json();
+            if (st.locked) return; // the person picked a coach meanwhile
+            console.log('[Erica] 🧭 Navigator:', r.tags, r.confidence, '→', r.style, r.ready ? '(ready)' : '(not ready)');
+            // Apply once: when the tags are clear, or on the last try with what we have.
+            if ((r.ready || last) && r.style) {
+                st.done = true;
+                this._applyInferredStyle(r.style, { turnIndex, ready: !!r.ready });
+            } else if (!r.ready && r.ask && !st.asked && turnIndex >= 2) {
+                st.asked = true;
+                st.askActive = true;
+                this._navigatorAsk = 'Understanding the person: if it fits naturally in your next reply, ask ONE short, warm question '
+                    + `that tells you "${r.ask.title}" (for example: ${r.ask.options.map((o) => `"${o}"`).join(', ')}). `
+                    + 'Ask it in your own words, as part of the conversation. Never mention a questionnaire, options or coaching styles.';
+                this._refreshSessionInstructions('navigator question', { changed: true });
+            }
+            if (last) st.done = true;
+        } catch (e) {
+            console.warn('[Erica] 🧭 Navigator inference error — the default coaching style stays:', e?.message || e);
+        } finally {
+            st.inFlight = false;
+        }
+    }
+
+    _applyInferredStyle(styleId, { turnIndex = null, ready = false } = {}) {
+        const profile = (this.voiceProfilesById && (this.voiceProfilesById[styleId] || this.voiceProfilesById[String(styleId).toLowerCase()]))
+            || (Array.isArray(this.voiceProfilesArray) ? this.voiceProfilesArray.find((p) => p && (p.companionId === styleId || p.id === styleId)) : null);
+        if (!profile) { console.warn('[Erica] 🧭 Navigator style not in the coach list, default stays:', styleId); return false; }
+        const from = (this.styleOverride && this.styleOverride.styleId) || this.selectedCompanionId || (this.currentVoiceProfile && (this.currentVoiceProfile.companionId || this.currentVoiceProfile.id)) || null;
+        if (from === styleId) { this._logSessionEvent('style_applied', { from, to: styleId, reason: 'navigator', turnIndex, ready, changed: false }); return true; }
+        // The style's coaching fields only; who the coach is (name, face, voice) stays.
+        this.styleOverride = {
+            styleId,
+            label: profile.label,
+            coachingStyle: profile.coachingStyle,
+            voiceProfile: profile.voiceProfile,
+            userFacingContext: profile.userFacingContext,
+            agentGuidance: profile.agentGuidance,
+            behavioralGuardrails: profile.behavioralGuardrails,
+        };
+        this._refreshSessionInstructions('navigator style', { changed: true });
+        // Live has two layers: the delegation update above reaches the
+        // backend; the voice layer (greetings, small talk, the call voice)
+        // only learns mid-session through session.instructions.append.
+        let voiceLayer = null;
+        if (this.voiceApiMode === 'live' && this.dataChannel && this.dataChannel.readyState === 'open') {
+            const cs = profile.coachingStyle || {};
+            const vp = profile.voiceProfile || {};
+            const text = `Coaching approach for this person from now on: ${cs.primaryObjective || profile.label || styleId}. ${cs.description || ''}`
+                + (vp.tone ? ` Tone: ${vp.tone}` : '') + (vp.pacing ? ` Pacing: ${vp.pacing}` : '')
+                + ' Keep your name and voice. Never mention coaching styles or that you adjusted your approach.';
+            const chunks = window.coachUiRules?.splitForLiveAppend ? window.coachUiRules.splitForLiveAppend(text) : [text];
+            voiceLayer = chunks.every((content) => this.sendMessage({ type: 'session.instructions.append', delegation_id: null, content }));
+            if (!voiceLayer) console.warn('[Erica] 🧭 Navigator style NOT sent to the Live voice layer; the backend has it');
+        }
+        console.log(`[Erica] 🧭 Coaching style → ${styleId} (from ${from || 'default'}, turn ${turnIndex}${voiceLayer === null ? '' : ', voice layer ' + (voiceLayer ? 'ok' : 'FAILED')})`);
+        this._logSessionEvent('style_applied', { from, to: styleId, reason: 'navigator', turnIndex, ready, changed: true, voiceLayer });
+        return true;
+    }
+
+    // The page hosting the coach, once per page and visit (the preparation's
+    // referer is origin-only across origins). Address only.
+    _noteVisitPage(url) {
+        let page = null;
+        try { const u = new URL(String(url)); page = u.origin + u.pathname; } catch (_) { return; }
+        if (!page || this._visitPageLogged === page) return;
+        this._visitPageLogged = page;
+        this._logSessionEvent('visit_context', { hostPage: page });
     }
 
     _postTurnRevision(message, st) {

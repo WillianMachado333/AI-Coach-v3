@@ -2778,8 +2778,13 @@
                     // Onboarding pipeline: the person chose a coaching style
                     // themselves (lib/pipeline.js; Eric's "style overridden").
                     if ((prevCompanionId || null) !== (companionId || null) && typeof app._logSessionEvent === 'function') {
-                        app._logSessionEvent('style_overridden', { from: prevCompanionId || null, to: companionId || null, via: 'picker' });
+                        app._logSessionEvent('style_overridden', { from: (app.styleOverride && app.styleOverride.styleId) || prevCompanionId || null, to: companionId || null, via: 'picker' });
                     }
+                    // A coach the person picked brings its own style: the
+                    // in-chat Navigator stops, and its style is dropped.
+                    app.styleOverride = null;
+                    app._navigatorAsk = null;
+                    app._navState = Object.assign(app._navState || { turns: [], userTurns: 0, calls: 0 }, { locked: true });
 
                     // Close Overlay
                     const overlay = document.getElementById('voiceMenuOverlay');
