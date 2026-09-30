@@ -784,15 +784,6 @@ class VoiceChatBot {
         }
     }
 
-    getCoachNameStorageKey() {
-        const id =
-            (this.selectedCompanionId) ||
-            (this.currentVoiceProfile && (this.currentVoiceProfile.id || this.currentVoiceProfile.character)) ||
-            this.selectedVoice ||
-            'coach';
-        return `ERICA_COACH_NAME_${String(id).toLowerCase()}`;
-    }
-
     getVoiceSpeedStorageKey() {
         const id =
             (this.selectedCompanionId) ||
@@ -1286,14 +1277,14 @@ class VoiceChatBot {
         this.currentVoiceProfile = profile;
         // console.log('[Erica] Updated voice profile:', profile.character || profile.companionId || 'unknown');
 
-        // Restore custom name from localStorage if previously renamed
-        try {
-            const nameKey = this.getCoachNameStorageKey();
-            const savedName = window.localStorage?.getItem(nameKey);
-            if (savedName) {
-                this.currentVoiceProfile.character = savedName;
-            }
-        } catch (_) { }
+        // The name this person gave this coach (their settings, on the server).
+        // Profiles are rebuilt from every preparation (each connect), so the
+        // name is put back here, not only when it was set.
+        const storedName = this._customNameFor ? this._customNameFor(this._currentCompanionId()) : null;
+        if (storedName) {
+            if (!this.currentVoiceProfile._baseName) this.currentVoiceProfile._baseName = this.currentVoiceProfile.character;
+            this.currentVoiceProfile.character = String(storedName);
+        }
 
         // Load saved voice speed from localStorage if available
         /* try {
@@ -1633,8 +1624,11 @@ class VoiceChatBot {
                     // starter pills, bundled history) — and it warms the caches the
                     // first connect() reads.
                     const prepIdentifier = this.getUserIdFromURL() || this.getEmailFromURL() || null;
-                    this.fetchEricaPreparation(prepIdentifier).catch((e) =>
-                        console.warn('[Erica] Live standby: preparation prefetch failed —', e?.message || e));
+                    this.fetchEricaPreparation(prepIdentifier)
+                        // The card, name and style this person has: shown in the
+                        // header now, not only once a session opens.
+                        .then(() => this._loadVoiceCards()).then(() => this._applyStoredCoachSettings())
+                        .catch((e) => console.warn('[Erica] Live standby: preparation prefetch failed —', e?.message || e));
                     // Same for the host's report cache: ask once now, so the first
                     // connect doesn't wait out the timeout on pages that never answer.
                     this.requestReportContextFromParent().then((ctx) => {
@@ -3014,7 +3008,7 @@ class VoiceChatBot {
         this.toggleAgentDetailsPanel(false);
     }
 
-    setCoachDisplayName(newName) {
+    setCoachDisplayName(newName, via = 'menu') {
         if (!this.currentVoiceProfile) return;
 
         const oldName = this.currentVoiceProfile.character;
@@ -3027,15 +3021,33 @@ class VoiceChatBot {
                 PersonaAfter: newName
             });
 
-            // Persist to localStorage so the name survives coach switches and page reloads
-            try {
-                const storageKey = this.getCoachNameStorageKey();
-                if (String(newName).toLowerCase() === 'coach') {
-                    window.localStorage?.removeItem(storageKey);
+            // The name is kept with this person's settings (server only):
+            // every device when signed in, this visit when a guest.
+            const cid = this._currentCompanionId();
+            if (!this.currentVoiceProfile._baseName) this.currentVoiceProfile._baseName = oldName;
+            const base = this.currentVoiceProfile._baseName;
+            const reset = String(newName).toLowerCase() === 'coach' || String(newName) === String(base);
+            if (reset && String(newName).toLowerCase() === 'coach') this.currentVoiceProfile.character = base;
+            if (cid) this._saveCoachSettings({ customNames: { [cid]: reset ? null : String(newName) } }, via);
+            this._logSessionEvent('coach_renamed', { from: oldName, to: this.currentVoiceProfile.character, companionId: cid, via, reset });
+            this._updateCoachChip();
+            // Live has two layers: tell the voice layer now; after this reply,
+            // outside a call, reopen the session quietly so the name is part of
+            // it from creation (the voice layer's own instructions). While a
+            // session is still opening (isConnected is then the string
+            // 'connecting'), there is no channel yet: the reopen checks whether
+            // it was created with the old name.
+            if (this.voiceApiMode === 'live' && (this.isConnected || this.isConnecting)) {
+                const who = this.currentVoiceProfile.character;
+                if (this.isConnected === true) {
+                    const ok = this.sendMessage({ type: 'session.instructions.append', delegation_id: null,
+                        content: `Your name is now ${who} — the person chose it. Use ${who} from now on, including when you introduce yourself.` });
+                    if (!ok) console.warn('[Erica] 🏷️ New name NOT sent to the Live voice layer');
                 } else {
-                    window.localStorage?.setItem(storageKey, String(newName));
+                    console.log('[Erica] 🏷️ Session still opening — the new name goes in when it is reopened after the next reply');
                 }
-            } catch (_) { }
+                this._renameReconnectPending = true;
+            }
 
             // Update lastCompanions in-memory so renderCoachList shows the new name
             if (Array.isArray(this.lastCompanions)) {
@@ -4075,17 +4087,11 @@ class VoiceChatBot {
         this.updateVoiceProfile(voice);
 
         // Update status label to reflect current voice
-        let storedName = null;
-        try {
-            const key = this.getCoachNameStorageKey();
-            storedName = window.localStorage?.getItem(key) || null;
-            // Fix: Ignore cached "coach" to prevent generic name override
-            if (storedName && storedName.toLowerCase() === 'coach') {
-                storedName = null;
-            }
-        } catch (_) { }
-        if (storedName && this.currentVoiceProfile) {
-            this.currentVoiceProfile.character = String(storedName);
+        // The name this person gave this coach (their settings, on the server).
+        const storedName = this._customNameFor ? this._customNameFor(this._currentCompanionId()) : null;
+        if (this.currentVoiceProfile) {
+            if (!this.currentVoiceProfile._baseName) this.currentVoiceProfile._baseName = this.currentVoiceProfile.character;
+            this.currentVoiceProfile.character = storedName ? String(storedName) : this.currentVoiceProfile._baseName;
         }
         if (this.statusText) {
             const label =
@@ -4213,6 +4219,7 @@ class VoiceChatBot {
         try { this.renderQuickActions(); } catch (_) { /* non-fatal */ }
 
         this._announcePersonaToHost();
+        if (typeof this._updateCoachChip === 'function') this._updateCoachChip();
     }
 
     // Tells the host page (bridge.js) which persona is active, so the corner
@@ -4892,6 +4899,7 @@ class VoiceChatBot {
         // We are switching coaches/voices; on the next session we want the coach to "re-introduce"
         // even if there is existing history in the UI.
         this.openingLineSent = false;
+        if (options.quiet) return this._quietReconnect(options);
 
         // Disconnect current connection
         await this.disconnect();
@@ -4910,6 +4918,35 @@ class VoiceChatBot {
             const errorMessage = error.message || 'Unknown error occurred';
             console.warn('[Erica] Failed to reconnect:', errorMessage);
         }
+    }
+
+    // A new session outside a call (a new name or voice): nothing to see. The
+    // composer stays usable and what is typed meanwhile waits for the new
+    // session. Flagged as connecting until it is open, so a send in between
+    // queues instead of opening a second session alongside (#35 c).
+    async _quietReconnect(options) {
+        this.isConnecting = true;
+        let open = false;
+        try {
+            await this.disconnect();
+            if (this.textInput) this.textInput.disabled = false;
+            if (this.sendTextButton) this.sendTextButton.disabled = false;
+            if (window.uiLayout && typeof window.uiLayout.updateStatusDot === 'function') window.uiLayout.updateStatusDot(this, 'connecting');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await this.establishConnection();
+            open = await this._waitConnected(15000);
+            if (open && !options.skipOpeningLine) await this._maybeSendOpeningLine({ skipIfSent: false });
+        } catch (error) {
+            console.error('[Erica] Quiet reconnect failed:', error?.message || error);
+        } finally {
+            this.isConnecting = false;
+        }
+        if (!open) {
+            const queued = (this._pendingTextMessages || []).length;
+            console.warn(`[Erica] Session NOT reopened after the quiet reconnect${queued ? ` — connecting again for ${queued} queued message(s)` : ''}`);
+            if (queued) this.connect({ skipOpeningLine: true }).then(() => this._sendPendingTextMessage()).catch((e) => console.error('[Erica] Reconnect error:', e));
+        }
+        return open;
     }
 
     // ------------------------------------------------------------------------
@@ -6448,6 +6485,7 @@ class VoiceChatBot {
             if (isLive) {
                 const persona = this.getEffectiveVoiceProfile() || this.currentVoiceProfile;
                 const name = persona?.character || 'Erica';
+                this._sessionCoachName = name; // a rename reopens the session only if this differs
                 const roleLabel = persona?.label || persona?.role || 'coach';
                 const shortLiveInstructions =
                     `You are ${name}, a ${roleLabel} at Talent Transformation, in a live voice conversation. ` +
@@ -6458,7 +6496,8 @@ class VoiceChatBot {
                     'your full coaching instructions and the tools you need. ' +
                     'Your backend can see the page the user is on: when they mention this page, this report or ' +
                     'what they are looking at, delegate — never say you cannot see their screen. ' +
-                    'Begin the conversation with a brief, warm greeting introducing yourself.';
+                    'Begin the conversation with a brief, warm greeting introducing yourself.' +
+                    (this._nameHintAllowed() ? ' ' + this._nameHintLine() : '');
                 try {
                     headers['X-Erica-Live-Instructions'] = btoa(unescape(encodeURIComponent(shortLiveInstructions)));
                 } catch (_) { /* header omitted, server default kicks in */ }
@@ -6942,6 +6981,10 @@ class VoiceChatBot {
 
         // [3] LANGUAGE (one rule, shared with the Live short instructions)
         instructions += '\n\n' + this._languageRule();
+
+        // A first conversation, no name chosen yet: the greeting may say, once
+        // and only if natural, that the person can call the coach anything.
+        if (this._nameHintAllowed()) instructions += '\n\n' + this._nameHintLine();
 
         // In-chat Navigator: the style was chosen for this person; never say so.
         if (this.styleOverride) {
@@ -7567,10 +7610,10 @@ class VoiceChatBot {
 
                     try {
                         // Call existing method to update coach name
-                        this.setCoachDisplayName(newName);
+                        this.setCoachDisplayName(newName, 'tool');
                         result = JSON.stringify({
                             success: true,
-                            message: `Coach name changed to ${newName}`
+                            message: `Coach name changed to ${newName}. Confirm it in one short, warm line and use this name from now on.`
                         });
                         console.log('[Erica] ✅ Coach name changed successfully to:', newName);
                     } catch (error) {
@@ -8629,6 +8672,18 @@ class VoiceChatBot {
         const st = this._navState || (this._navState = { turns: [], userTurns: 0, calls: 0, inFlight: false, done: false, locked: false, asked: false, askActive: false });
         st.turns.push({ role: role === 'user' ? 'user' : 'coach', text: String(text || '').slice(0, 800) });
         if (st.turns.length > 12) st.turns.splice(0, st.turns.length - 12);
+        if (role !== 'user' && this._renameReconnectPending && !this.isRecording) {
+            this._renameReconnectPending = false;
+            setTimeout(() => {
+                if (this.isRecording || this.isConnected !== true) return;
+                const who = (this.getEffectiveVoiceProfile() || {}).character;
+                if (who && who === this._sessionCoachName) { console.log(`[Erica] 🏷️ Session already created as ${who} — no reopen`); return; }
+                const t0 = performance.now();
+                this.reconnectWithNewVoice({ skipOpeningLine: true, quiet: true })
+                    .then((open) => { if (open) console.log(`[Erica] 🏷️ Session reopened with the new name (${Math.round(performance.now() - t0)} ms)`); else console.warn('[Erica] 🏷️ Session NOT reopened with the new name — the voice layer has it only from the append'); })
+                    .catch((e) => console.warn('[Erica] 🏷️ Quiet reconnect after the rename failed:', e?.message || e));
+            }, 800);
+        }
         if (role !== 'user') {
             // The reply that carried the one question has been given: drop it.
             if (st.askActive) { st.askActive = false; this._navigatorAsk = null; this._refreshSessionInstructions('navigator question asked', { changed: true }); }
@@ -8768,7 +8823,8 @@ class VoiceChatBot {
         this._coachSettings = r;
         this._coachSettingsApplied = true;
         const st = r.settings;
-        if (!st) return;
+        this._migrateLegacyNames(r.scope === 'account');
+        if (!st) { this._updateCoachChip(); return; }
         const restored = {};
         if (st.companionId && !this._urlCoachGiven()) {
             const card = (this._voiceCards || []).find((c) => c.id === st.companionId)
@@ -8781,7 +8837,14 @@ class VoiceChatBot {
             this._navState = Object.assign(this._navState || { turns: [], userTurns: 0, calls: 0 }, { done: true, locked: !!st.styleOverride });
             restored.style = style;
         }
-        if (restored.card || restored.style) {
+        const myName = this._customNameFor(this._currentCompanionId());
+        if (myName && this.currentVoiceProfile) {
+            if (!this.currentVoiceProfile._baseName) this.currentVoiceProfile._baseName = this.currentVoiceProfile.character;
+            this.currentVoiceProfile.character = myName;
+            restored.name = myName;
+        }
+        this._updateCoachChip();
+        if (restored.card || restored.style || restored.name) {
             console.log('[Erica] 🎙️ Coach settings restored:', restored, `(${r.scope})`);
             this._logSessionEvent('coach_restored', { ...restored, voice: this.selectedVoice, scope: r.scope });
         }
@@ -8791,8 +8854,16 @@ class VoiceChatBot {
         try { const q = new URLSearchParams(window.location.search); return !!(q.get('coach') || q.get('aic')); } catch (_) { return false; }
     }
 
+    // The default coach has no picked card (selectedCompanionId is null): its
+    // id comes from the profile. Profile ids are keyed lowercase.
+    _voiceStepOriginalCard() {
+        const cid = this._currentCompanionId() || 'Supportive';
+        return (this._voiceCards || []).find((c) => c.id === cid && c.voice === this.selectedVoice)
+            || this._cardForCompanion(cid, this.selectedVoice);
+    }
+
     _cardForCompanion(companionId, voice) {
-        const p = this.voiceProfilesById && this.voiceProfilesById[companionId];
+        const p = this.voiceProfilesById && companionId && this.voiceProfilesById[String(companionId).toLowerCase()];
         return p ? { id: companionId, name: p.character, thumb: p.thumb || null, voice: voice || p.openaiVoice } : null;
     }
 
@@ -8844,16 +8915,16 @@ class VoiceChatBot {
         return Array.isArray(this._voiceCards) && this._voiceCards.length > 0;
     }
 
-    _showVoiceStep() {
+    _showVoiceStep({ mode = 'first_call' } = {}) {
+        this._voiceStepMode = mode;
         const box = document.getElementById('voiceStep');
         const list = document.getElementById('voiceStepCards');
         const input = document.getElementById('inputWrapper');
         if (!box || !list) { this._voiceStepDoneThisPage = true; this.toggleMicTrack(); return; }
         const cards = this._voiceCards;
-        let selected = cards.find((c) => c.id === this.selectedCompanionId) || cards[0];
         // What the person has now: Skip returns to it, even after previewing another voice.
-        this._voiceStepOriginal = cards.find((c) => c.id === this.selectedCompanionId && c.voice === this.selectedVoice)
-            || this._cardForCompanion(this.selectedCompanionId || 'Supportive', this.selectedVoice);
+        this._voiceStepOriginal = this._voiceStepOriginalCard();
+        let selected = cards.find((c) => c.id === (this._voiceStepOriginal && this._voiceStepOriginal.id)) || cards[0];
         list.innerHTML = '';
         for (const card of cards) {
             const b = document.createElement('button');
@@ -8889,7 +8960,10 @@ class VoiceChatBot {
         if (input) input.classList.add('hidden');
         box.classList.remove('hidden');
         this._voiceStepShownAt = performance.now();
-        this._logSessionEvent('voice_step_viewed', { cards: cards.map((c) => c.id), preselected: selected ? selected.id : null });
+        const title = box.querySelector('.voice-step-title');
+        if (title) title.textContent = mode === 'change' ? 'Change how your coach looks and sounds' : 'Choose how your coach sounds';
+        if (skip) skip.textContent = mode === 'change' ? 'Cancel' : 'Skip';
+        this._logSessionEvent('voice_step_viewed', { cards: cards.map((c) => c.id), preselected: selected ? selected.id : null, mode });
     }
 
     _cardPreviewText(card) {
@@ -8922,12 +8996,15 @@ class VoiceChatBot {
                     const target = this._voiceSwitchTarget;
                     const sameFace = target.id === this.selectedCompanionId;
                     if (!sameFace || target.voice !== this.selectedVoice) this._applyCard(target);
-                    if (!this.isConnected || target.voice === this._sessionVoice) { if (this._voiceSwitchTarget === target) this._voiceSwitchTarget = null; continue; }
+                    // A session still opening may or may not have taken the new
+                    // voice: let it open, then compare.
+                    if (this.isConnecting && this.isConnected !== true) await this._waitConnected(15000);
+                    if (this.isConnected !== true || target.voice === this._sessionVoice) { if (this._voiceSwitchTarget === target) this._voiceSwitchTarget = null; continue; }
                     // The voice is fixed when a session opens: a new voice needs a new one.
-                    await this.reconnectWithNewVoice({ skipOpeningLine: true });
-                    // reconnectWithNewVoice resolves before the data channel is
-                    // open; the call must not start (or reconnect again) before.
-                    await this._waitConnected(15000);
+                    // Quiet: resolves once the new session is open (the call must
+                    // not start, or reconnect again, before), and what is typed
+                    // meanwhile waits for it.
+                    await this.reconnectWithNewVoice({ skipOpeningLine: true, quiet: true });
                     if (this._voiceSwitchTarget === target) this._voiceSwitchTarget = null;
                 }
             } catch (e) {
@@ -8950,6 +9027,10 @@ class VoiceChatBot {
     }
 
     async _finishVoiceStep(card) {
+        const changeMode = this._voiceStepMode === 'change';
+        this._voiceStepMode = null;
+        // From the chip: keep or switch, then back to the chat — no call.
+        const next = () => { if (!changeMode) this.toggleMicTrack(); };
         this._voiceStepDoneThisPage = true;
         const decideMs = this._voiceStepShownAt ? Math.round(performance.now() - this._voiceStepShownAt) : null;
         const t0 = performance.now();
@@ -8958,8 +9039,8 @@ class VoiceChatBot {
             // Skip keeps what they had — even if a preview already switched the session.
             const back = this._voiceStepOriginal;
             if (back && (this._voiceSwitchRunning || back.voice !== this._sessionVoice || back.id !== this.selectedCompanionId)) await this._switchVoiceTo(back);
-            this._logSessionEvent('voice_step_skipped', { decideMs, waitedMs: Math.round(performance.now() - t0) });
-            this.toggleMicTrack();
+            this._logSessionEvent('voice_step_skipped', { decideMs, waitedMs: Math.round(performance.now() - t0), mode: changeMode ? 'change' : 'first_call' });
+            next();
             return;
         }
         const changed = card.id !== (this._voiceStepOriginal && this._voiceStepOriginal.id) || card.voice !== (this._voiceStepOriginal && this._voiceStepOriginal.voice);
@@ -8968,8 +9049,78 @@ class VoiceChatBot {
         if (this._voiceSwitchRunning || card.voice !== this._sessionVoice || card.id !== this.selectedCompanionId) await this._switchVoiceTo(card);
         const waitedMs = Math.round(performance.now() - t0);
         if (changed) console.log(`[Erica] 🎙️ Voice → ${card.voice} (${card.name}); waited ${waitedMs} ms after "Use this voice"${prewarmed ? ' (switched while previewing)' : ''}`);
-        this._logSessionEvent('voice_selected', { card: card.id, voice: card.voice, changed, reconnectMs: changed ? waitedMs : undefined, prewarmed, decideMs });
-        this.toggleMicTrack();
+        this._logSessionEvent('voice_selected', { card: card.id, voice: card.voice, changed, reconnectMs: changed ? waitedMs : undefined, prewarmed, decideMs, mode: changeMode ? 'change' : 'first_call' });
+        this._updateCoachChip();
+        next();
+    }
+
+    // --- Header chip + the coach's name (#35 c) ------------------------------
+    // The chip shows who the coach is for this person: the image card's face
+    // and the name (the one they gave it, else the card's). Never the style.
+    _nameHintAllowed() {
+        const cid = this._currentCompanionId();
+        const hasUserTurn = Array.isArray(this.messages) && this.messages.some((m) => m && m.role === 'user');
+        return !this._customNameFor(cid) && !hasUserTurn;
+    }
+
+    _nameHintLine() {
+        const eff = this.getEffectiveVoiceProfile && this.getEffectiveVoiceProfile();
+        const name = (eff && eff.character) || 'Erica';
+        return `Only in your very first message, and only if it fits naturally, you may mention that the person can call you whatever they like (for example: "I'm ${name} — call me whatever you like"). Never ask them for a name for you.`;
+    }
+
+    // The coach in effect: the picked card, else the profile's own id (the
+    // default coach has no selectedCompanionId).
+    _currentCompanionId() {
+        const p = this.currentVoiceProfile;
+        return this.selectedCompanionId || (p && (p.companionId || p.id)) || null;
+    }
+
+    _customNameFor(companionId) {
+        const names = this._coachSettings && this._coachSettings.settings && this._coachSettings.settings.customNames;
+        return (companionId && names && names[companionId]) || null;
+    }
+
+    _updateCoachChip() {
+        const chip = document.getElementById('coachChip');
+        if (!chip) return;
+        const eff = this.getEffectiveVoiceProfile && this.getEffectiveVoiceProfile();
+        const name = (eff && eff.character) || 'Erica';
+        const thumb = this.currentVoiceThumbUrl || (this.resolveCompanionThumb && this.resolveCompanionThumb(this.currentVoiceProfile)) || null;
+        const nameEl = document.getElementById('coachChipName');
+        const img = document.getElementById('coachChipThumb');
+        if (nameEl) nameEl.textContent = name;
+        if (img && thumb) img.src = thumb;
+        chip.setAttribute('aria-label', `${name} — change how your coach looks and sounds`);
+        chip.classList.toggle('in-call', !!this.isRecording);
+    }
+
+    // The chip opens the image cards any time outside a call (inside one, a
+    // new voice would cut the call; it waits until after).
+    _openCoachChip() {
+        if (this.isRecording) { console.log('[Erica] 🎙️ Coach chip: change after the call'); return; }
+        this._loadVoiceCards().then(() => { if (this._voiceCards && this._voiceCards.length) this._showVoiceStep({ mode: 'change' }); });
+    }
+
+    // Old builds kept renames on the device (ERICA_COACH_NAME_<id>). Signed-in:
+    // moved to the account once; guests: removed (nothing on their device).
+    _migrateLegacyNames(signedIn) {
+        try {
+            const moved = {};
+            for (let i = window.localStorage.length - 1; i >= 0; i--) {
+                const k = window.localStorage.key(i);
+                if (!k || !k.startsWith('ERICA_COACH_NAME_')) continue;
+                const v = window.localStorage.getItem(k);
+                const cid = (this.voiceProfilesArray || []).find((p) => String(p.companionId || p.id || '').toLowerCase() === k.slice('ERICA_COACH_NAME_'.length));
+                if (signedIn && v && v.toLowerCase() !== 'coach' && cid) moved[cid.companionId || cid.id] = v;
+                window.localStorage.removeItem(k);
+            }
+            if (signedIn && Object.keys(moved).length) {
+                const have = (this._coachSettings && this._coachSettings.settings && this._coachSettings.settings.customNames) || {};
+                const add = Object.fromEntries(Object.entries(moved).filter(([cid]) => !have[cid]));
+                if (Object.keys(add).length) this._saveCoachSettings({ customNames: add }, 'menu');
+            }
+        } catch (_) { /* no storage */ }
     }
 
     _noteVisitPage(url) {

@@ -18,7 +18,7 @@ test('each new session gets the recent conversation, in both voice APIs', () => 
     assert.match(inject, /this\._historyInjectedFor === this\.pc/, 'once per session');
     // GPT-Live: session.input at creation — its voice layer never sees items added later.
     const connect = app.slice(app.indexOf("const proxyPath = isLive ? '/api/proxy/live' : '/api/proxy/realtime';"));
-    assert.match(connect.slice(0, 2500), /JSON\.stringify\(\{ sdp: body, input: liveHistory \}\)/);
+    assert.match(connect.slice(0, 3000), /JSON\.stringify\(\{ sdp: body, input: liveHistory \}\)/);
     const server = read('server.js');
     const proxy = server.slice(server.indexOf("if (req.url.startsWith('/api/proxy/live'))"));
     assert.match(proxy.slice(0, 5000), /input = liveSessionInput\(parsed\.input\)/);

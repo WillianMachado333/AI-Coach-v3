@@ -871,3 +871,11 @@ textarea:focus {
 .voice-step-actions { display: flex; justify-content: center; gap: 8px; }
 .voice-step-skip { padding: 6px 12px; border-radius: 10px; font-size: 13px; color: #4b5563; background: transparent; }
 .voice-step-use { padding: 6px 14px; border-radius: 10px; font-size: 13px; color: #fff; background: #0d9488; }
+
+/* Header chip: the coach's face and name (app.js _updateCoachChip). Fits the 36 px header. */
+.coach-chip { display: flex; align-items: center; gap: 6px; margin-right: auto; height: 30px; max-width: 60%; padding: 2px 10px 2px 3px; border-radius: 9999px; background: rgba(255, 255, 255, 0.75); border: 1px solid rgba(0, 0, 0, 0.06); font-size: 13px; font-weight: 600; color: #111827; cursor: pointer; }
+.coach-chip img { width: 24px; height: 24px; border-radius: 9999px; object-fit: cover; flex: none; }
+.coach-chip span#coachChipName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coach-chip-caret { font-size: 10px; color: #6b7280; }
+.coach-chip.in-call { cursor: default; opacity: 0.85; }
+.coach-chip.in-call .coach-chip-caret { visibility: hidden; }
