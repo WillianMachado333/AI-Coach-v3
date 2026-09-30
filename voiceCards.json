@@ -1,10 +1,14 @@
 {
-  "version": "1.0",
-  "note": "The image cards shown when a person first starts voice mode. Picking a card picks the coach's face, name and voice; the coaching style is separate (the in-chat Navigator). id = the companionId whose face and name the card uses.",
+  "version": "1.1",
+  "note": "The image cards shown when a person first starts voice mode (a horizontal carousel: 4 visible on a phone, swipe for the rest). Picking a card picks the coach's face, name and voice; the coaching style is separate (the in-chat Navigator). id = the companionId whose face and name the card uses; order = display order.",
   "cards": [
     { "id": "Supportive", "name": "Erica", "thumb": "companions/Erica-thumb.png", "voice": "marin" },
     { "id": "Guidance", "name": "Jasmine", "thumb": "companions/Jasmine-thumb.png", "voice": "coral" },
     { "id": "Empowering", "name": "Michael", "thumb": "companions/Michael-thumb.png", "voice": "cedar" },
-    { "id": "Discovery", "name": "Sean", "thumb": "companions/Sean-thumb.png", "voice": "ash" }
+    { "id": "Discovery", "name": "Sean", "thumb": "companions/Sean-thumb.png", "voice": "ash" },
+    { "id": "Strengths", "name": "Steve", "thumb": "companions/Steve-thumb.png", "voice": "verse" },
+    { "id": "Exploratory", "name": "Evan", "thumb": "companions/Evan-thumb.png", "voice": "echo" },
+    { "id": "Directive", "name": "Sarah", "thumb": "companions/Sarah-thumb.png", "voice": "sage" },
+    { "id": "Nurturing", "name": "Emma", "thumb": "companions/Emma-thumb.png", "voice": "alloy" }
   ]
 }

@@ -160,7 +160,7 @@ test('client voice step: shown on the first call only; Skip or the same voice st
         app._noteCoachSwitch = method('_noteCoachSwitch()').bind(app);
         app._switchVoiceTo = method('_switchVoiceTo(card)').bind(app);
         app._waitConnected = async () => true;
-        app._finishVoiceStep = method('_finishVoiceStep(card)').bind(app);
+        app._finishVoiceStep = method('_finishVoiceStep(card, via)').bind(app);
         return { app, log };
     };
     assert.equal(make(null).app._voiceStepNeeded(), true, 'first call, nothing chosen yet');
