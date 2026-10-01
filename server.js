@@ -17,6 +17,8 @@ const vectorStore = require('./lib/vectorStore');
 const activity = require('./lib/activity');
 // Coach Studio admin — /admin/* login + protected pages (Phase 0 foundation).
 const admin = require('./lib/admin');
+const mcpAuth = require('./lib/mcpAuth');
+const mcpServer = require('./lib/mcpServer');
 // Session logger — persists Erica sessions for the Coach Studio observatory.
 const sessionLog = require('./lib/sessionLog');
 const studioAgent = require('./lib/studioAgent');
@@ -330,10 +332,7 @@ function safePreview(str, maxLen = 220) {
 // Examples:
 //   ERICA_REALTIME_MODEL=gpt-realtime-2.1
 //   REALTIME_MODEL=gpt-realtime-2.1-mini
-const REALTIME_MODEL =
-    process.env.ERICA_REALTIME_MODEL ||
-    process.env.REALTIME_MODEL ||
-    'gpt-realtime';
+const { REALTIME_MODEL } = require('./lib/voiceConfig');
 
 // ---- Voice API selection: Realtime (today's default) vs GPT-Live (spike) ----
 // Comparison build for Willian to A/B by ear — context retention and voice
@@ -341,16 +340,14 @@ const REALTIME_MODEL =
 // code needed: ERICA_VOICE_API=live flips every new connection to GPT-Live.
 // 'realtime' (default) is untouched by this — same proxy, same model
 // selection above.
-const VOICE_API = (process.env.ERICA_VOICE_API || 'realtime').toLowerCase() === 'live'
-    ? 'live'
-    : 'realtime';
+const { VOICE_API } = require('./lib/voiceConfig');
 
 // Backend model GPT-Live delegates reasoning/tool-use to (Responses
 // delegation). Verified against platform.openai.com/docs/models on 2026-09:
 // gpt-5.6-terra balances quality/cost; gpt-5.6-luna is the cost-sensitive
 // option. Defaulting to terra since this build is about quality/naturalness,
 // not cost.
-const LIVE_BACKEND_MODEL = process.env.ERICA_LIVE_BACKEND_MODEL || 'gpt-5.6-terra';
+const { LIVE_BACKEND_MODEL } = require('./lib/voiceConfig');
 
 // Cost metering (/api/session-log kind 'usage'): the client names the model
 // it saw in session.created / session.started; when it could not, the
@@ -644,6 +641,23 @@ const server = http.createServer(async (req, res) => {
             if (!res.headersSent) {
                 res.writeHead(500, { 'Content-Type': 'text/plain' });
                 res.end('Admin error');
+            }
+            return;
+        }
+    }
+
+    // Remote MCP connector for the Coach Studio (#38): the OAuth metadata and
+    // endpoints (lib/mcpAuth.js, sign-in = the Studio's) and POST /mcp
+    // (lib/mcpServer.js, the Studio tool registry over MCP).
+    if (typeof req.url === 'string' && (req.url.startsWith('/.well-known/oauth-') || req.url.startsWith('/oauth/') || req.url === '/mcp' || req.url.startsWith('/mcp?'))) {
+        try {
+            if (await mcpAuth.handle(req, res, { identity: admin.studioIdentity, audit: auditLog })) return;
+            if (await mcpServer.handle(req, res)) return;
+        } catch (e) {
+            console.error('[SERVER] MCP error:', e?.message || e);
+            if (!res.headersSent) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'server_error' }));
             }
             return;
         }

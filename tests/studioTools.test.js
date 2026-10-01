@@ -17,9 +17,13 @@ const agent = require('../lib/studioAgent');
 const agentHistory = require('../lib/agentHistory');
 
 const BEFORE = ['list_recent_sessions', 'read_session', 'read_prompt', 'list_frameworks', 'read_framework', 'list_courses', 'read_course_artifact', 'list_activity_events'];
+// #38 B: the new read tools reach the co-worker too; the writes never do.
+const NEW_READS = ['list_sessions', 'session_detail', 'pipeline_summary', 'cost_summary', 'health', 'read_config', 'read_clipboard'];
+const WRITES = ['preview_injected_data_edit', 'edit_injected_data', 'bookmark_session'];
+const CO_WORKER = BEFORE.concat(NEW_READS);
 
 test('registry: the co-worker\'s 8 tools, each with a scope and MCP annotations; anything about a person is read:people', () => {
-    assert.deepEqual(tools.TOOLS.map((t) => t.name), BEFORE);
+    assert.deepEqual(tools.TOOLS.map((t) => t.name), CO_WORKER.concat(WRITES));
     assert.equal(new Set(tools.TOOLS.map((t) => t.name)).size, tools.TOOLS.length);
     for (const t of tools.TOOLS) {
         assert.ok(tools.SCOPES.includes(t.scope), t.name + ' scope');
@@ -29,12 +33,14 @@ test('registry: the co-worker\'s 8 tools, each with a scope and MCP annotations;
         assert.equal(typeof t.label, 'function');
     }
     const people = tools.TOOLS.filter((t) => t.scope === 'read:people').map((t) => t.name);
-    assert.deepEqual(people, ['list_recent_sessions', 'read_session', 'read_prompt', 'list_activity_events'], 'actors, transcripts, prompts with the person\'s report, their CleverTap events');
-    assert.deepEqual(tools.list(['read:ops']).map((t) => t.name), ['list_frameworks', 'read_framework', 'list_courses', 'read_course_artifact']);
+    assert.deepEqual(people, ['list_recent_sessions', 'read_session', 'read_prompt', 'list_activity_events', 'session_detail', 'read_clipboard'], 'actors, transcripts, prompts with the person\'s report, their CleverTap events, the clipboard');
+    assert.deepEqual(tools.list(['read:ops']).map((t) => t.name), ['list_frameworks', 'read_framework', 'list_courses', 'read_course_artifact', 'list_sessions', 'pipeline_summary', 'cost_summary', 'health', 'read_config']);
+    assert.deepEqual(tools.list(['write:content']).map((t) => t.name), WRITES);
+    assert.deepEqual(tools.TOOLS.filter((t) => !t.readOnly).map((t) => t.name), ['edit_injected_data', 'bookmark_session']);
 });
 
 test('the co-worker publishes the same OpenAI tools and task labels as before, now from the registry', async () => {
-    assert.deepEqual(agent.TOOLS.map((t) => t.name), BEFORE);
+    assert.deepEqual(agent.TOOLS.map((t) => t.name), CO_WORKER, 'the same 8 first, then the new reads; no writes');
     for (const t of agent.TOOLS) {
         assert.deepEqual(Object.keys(t).sort(), ['description', 'name', 'parameters', 'type']);
         assert.equal(t.type, 'function');
@@ -91,7 +97,7 @@ test('the co-worker loop runs registry tools end to end (fake model): a tool cal
     try {
         await agent.runTurnStreamed({ userMessage: 'Which frameworks exist?' }, (e) => { events.push(e); return e.id; });
     } finally { contentStore.listFrameworks = origList; }
-    assert.deepEqual(calls[0].tools.map((t) => t.name), BEFORE);
+    assert.deepEqual(calls[0].tools.map((t) => t.name), CO_WORKER);
     const fed = calls[1].input.find((i) => i.type === 'function_call_output');
     assert.deepEqual([fed.call_id, JSON.parse(fed.output)], ['c1', ['Supportive', 'Directive']]);
     assert.ok(events.some((e) => e.type === 'task' && e.label === 'Listing coaching frameworks' && e.status === 'running'));
