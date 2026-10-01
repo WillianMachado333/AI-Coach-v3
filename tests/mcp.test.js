@@ -37,7 +37,11 @@ const mcpServer = require('../lib/mcpServer');
 
 const CLAUDE_CB = 'https://claude.ai/api/mcp/auth_callback';
 const cimdDoc = { client_id: 'https://chatgpt.com/oauth/client.json', client_name: 'ChatGPT', redirect_uris: ['https://chatgpt.com/connector_platform_oauth_redirect'] };
-const fakeFetch = async (url) => ({ ok: url === cimdDoc.client_id, status: 200, text: async () => JSON.stringify(cimdDoc) });
+// Documents on allowed hosts that list return addresses we must not send a code to.
+const evilDoc = { client_id: 'https://chatgpt.com/oauth/evil.json', client_name: 'ChatGPT', redirect_uris: ['https://evil.example/cb'] };
+const mixedDoc = { client_id: 'https://claude.ai/oauth/mixed.json', client_name: 'Claude', redirect_uris: [CLAUDE_CB, 'https://evil.example/cb'] };
+const DOCS = Object.fromEntries([cimdDoc, evilDoc, mixedDoc].map((d) => [d.client_id, d]));
+const fakeFetch = async (url) => ({ ok: !!DOCS[url], status: DOCS[url] ? 200 : 404, text: async () => JSON.stringify(DOCS[url] || {}) });
 
 let base;
 const server = http.createServer(async (req, res) => {
@@ -130,7 +134,8 @@ test('authorize: not signed in → the Studio login (and back); badge-only → r
     assert.match(await stranger.text(), /not on the Coach Studio allowlist/);
     const ericPage = await (await fetch(base + '/oauth/authorize?' + q, { headers: { cookie: cookie('eric@tt.com') } })).text();
     assert.match(ericPage, /Connect Claude to Coach Studio/);
-    assert.match(ericPage, /it will send you back to <b>claude\.ai<\/b>/);
+    assert.match(ericPage, /data-return-to="claude\.ai"/);
+    assert.match(ericPage, /you go back to <b[^>]*>claude\.ai<\/b>/);
     assert.ok(ericPage.includes('value="write:content"') && !ericPage.includes('value="read:people"'), 'an admin is not offered people scopes');
     assert.ok(/value="read:ops" checked disabled/.test(ericPage), 'read:ops is the default');
     const ownerPage = await (await fetch(base + '/oauth/authorize?' + q, { headers: { cookie: cookie('willian@tt.com') } })).text();
@@ -172,6 +177,34 @@ test('code exchange: PKCE checked, iss in the redirect, the code works once (a r
     assert.equal(gpt.token.scope, 'read:ops');
     const init = await rpc(gpt.token.access_token, 'initialize', { protocolVersion: '2025-06-18' });
     assert.equal(init.body.result.protocolVersion, '2025-06-18');
+});
+
+test('CIMD: the same return addresses as DCR (a document on an allowed host cannot send the code elsewhere); consent names who gets the code by its return address', async () => {
+    const { challenge } = pkce();
+    const ask = (clientId, redirect) => fetch(base + '/oauth/authorize?' + form({ response_type: 'code', client_id: clientId, redirect_uri: redirect, code_challenge: challenge, code_challenge_method: 'S256', state: 'c1' }), { headers: { cookie: cookie('willian@tt.com') }, redirect: 'manual' });
+    // Only an off-list return address: the whole client is refused, no consent page, no redirect.
+    const evil = await ask(evilDoc.client_id, evilDoc.redirect_uris[0]);
+    assert.equal(evil.status, 400);
+    const evilHtml = await evil.text();
+    assert.match(evilHtml, /Unknown app/);
+    assert.ok(!evilHtml.includes('name="tx"'), 'no consent form');
+    assert.equal(evil.headers.get('location'), null, 'nothing sent to evil.example');
+    // A mixed list: the off-list address is dropped, the Claude one still works.
+    const offList = await ask(mixedDoc.client_id, 'https://evil.example/cb');
+    assert.equal(offList.status, 400);
+    assert.match(await offList.text(), /Wrong return address/);
+    const ok = await connect('willian@tt.com', { clientId: mixedDoc.client_id, redirect: CLAUDE_CB });
+    assert.equal(ok.token.token_type, 'Bearer');
+    // A document with no acceptable return address is refused whatever address is asked for.
+    assert.equal((await ask(evilDoc.client_id, CLAUDE_CB)).status, 400);
+    // The consent title comes from where the code goes; a self-given name only beside it.
+    const { client_id: loopId } = await (await fetch(base + '/oauth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_name: 'ChatGPT', redirect_uris: ['http://localhost:6274/cb'] }) })).json();
+    const loop = await (await ask(loopId, 'http://localhost:6274/cb')).text();
+    assert.match(loop, /Connect an app on this computer to Coach Studio <span[^>]*>\(calls itself “ChatGPT”\)/);
+    assert.match(loop, /data-return-to="localhost:6274"/);
+    assert.match(loop, /border-amber-300/, 'a local return address is highlighted');
+    const gpt = await (await ask(cimdDoc.client_id, cimdDoc.redirect_uris[0])).text();
+    assert.match(gpt, /Connect ChatGPT to Coach Studio<\/div>/, 'no "calls itself" when the name matches');
 });
 
 test('/mcp: initialize, notifications, tools by scope (annotations for both clients), results, privacy, Origin, unknown methods', async () => {
