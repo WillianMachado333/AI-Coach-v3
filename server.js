@@ -25,6 +25,9 @@ const attachments = require('./lib/attachments');
 const metrics = require('./lib/metrics');
 const simulator = require('./lib/simulator');
 const agentHistory = require('./lib/agentHistory');
+// The Studio co-worker's history is per person (the signed-in email), not
+// the shared 'admin' subject every session carries.
+function historyKey(sess) { return (sess && (sess.actor || sess.sub)) || 'admin'; }
 const runtimeConfig = require('./lib/runtimeConfig');
 const { LANGUAGE_RULE } = require('./lib/coachUiRules');
 const injectedDataStore = require('./lib/injectedDataStore');
@@ -989,7 +992,7 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
             // Rebuild context from persisted history on disk.
-            const history = agentHistory.rebuildInput(sess.sub);
+            const history = agentHistory.rebuildInput(historyKey(sess));
             let finalText = '';
             const wrappedSend = (evt) => {
                 if (evt && evt.type === 'done' && typeof evt.text === 'string') finalText = evt.text;
@@ -1003,7 +1006,7 @@ const server = http.createServer(async (req, res) => {
                 // Persist the turn AFTER the model completed so a failure
                 // mid-stream doesn't leave a half-answer in the log.
                 if (finalText) {
-                    agentHistory.append(sess.sub, {
+                    agentHistory.append(historyKey(sess), {
                         question: originalUserText,
                         marker: marker || null,
                         answer: finalText,
@@ -1041,7 +1044,7 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
                 const p = body ? JSON.parse(body) : {};
-                const items = agentHistory.readAll(sess.sub, { limit: 4 });
+                const items = agentHistory.readAll(historyKey(sess), { limit: 4 });
                 const last = items[items.length - 1] || null;
                 const suggestions = await studioAgent.suggestFollowups({
                     lastQuestion: last?.question || null,
@@ -1065,7 +1068,7 @@ const server = http.createServer(async (req, res) => {
             res.end(JSON.stringify({ error: 'auth_required' }));
             return;
         }
-        const items = agentHistory.readAll(sess.sub, { limit: 40 });
+        const items = agentHistory.readAll(historyKey(sess), { limit: 40 });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ items }));
         return;
@@ -1269,15 +1272,15 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         try {
-            const items = agentHistory.readAll(sess.sub, { limit: 10000 });
+            const items = agentHistory.readAll(historyKey(sess), { limit: 10000 });
             let removed = 0;
             for (const it of items) {
                 const ids = Array.isArray(it?.attachments) ? it.attachments : [];
                 for (const aid of ids) { if (attachments.remove(aid)) removed++; }
             }
-            if (removed) console.log('[admin] cleared ' + removed + ' attachments for ' + sess.sub);
+            if (removed) console.log('[admin] cleared ' + removed + ' attachments for ' + historyKey(sess));
         } catch (e) { console.warn('[admin] attachment cleanup failed:', e?.message || e); }
-        agentHistory.clear(sess.sub);
+        agentHistory.clear(historyKey(sess));
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
         return;
