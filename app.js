@@ -6649,7 +6649,9 @@ class VoiceChatBot {
                             this._reconnectKind = 'auto';
                             this.connect({ skipOpeningLine: true })
                                 .then(() => {
-                                    console.log('[Erica] Auto-reconnect successful');
+                                    // connect() reports failure by not connecting, not by throwing.
+                                    if (this.isConnected) console.log('[Erica] Auto-reconnect successful');
+                                    else console.warn('[Erica] Auto-reconnect did not reconnect' + (this._liveCut ? ' — the server ended this Live connection (' + this._liveCut.reason + ')' : ''));
                                     this._autoReconnecting = false;
                                     this._reconnectKind = null;
                                 })
@@ -8317,8 +8319,11 @@ class VoiceChatBot {
         const minutes = g ? Math.round((Date.now() - g.startedAt) / 600) / 100 : null;
         const inCall = !!this.isRecording;
         this._liveCut = { reason, by, inCall, at: Date.now() };
-        const why = reason === 'idle' ? `no turn for ${lim.idleMin} min` : `the ${lim.maxMin}-minute limit`;
-        console.warn(`[Erica][Live] ✂️ Live connection ended — ${why} (${by === 'server' ? 'the server said so' : 'this client'}${minutes !== null ? ', ' + minutes + ' min' : ''}). ${inCall ? 'Call ended — tap to resume.' : 'The next message reconnects.'}`);
+        // The server applies its own limits (a request may have shortened them).
+        const why = by === 'server'
+            ? `the server's ${reason === 'idle' ? 'idle' : 'maximum-length'} limit`
+            : (reason === 'idle' ? `no turn for ${lim.idleMin} min` : `the ${lim.maxMin}-minute limit`);
+        console.warn(`[Erica][Live] ✂️ Live connection ended — ${why} (${by === 'server' ? 'the server ended it' : 'this client'}${minutes !== null ? ', ' + minutes + ' min' : ''}). ${inCall ? 'Call ended — tap to resume.' : 'The next message reconnects.'}`);
         if (this.sessionId) {
             fetch(this.apiUrl('/api/session-log'), {
                 method: 'POST',
