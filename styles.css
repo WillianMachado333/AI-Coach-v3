@@ -143,6 +143,32 @@
     color: #b91c1c;
 }
 
+/* #40: a Live call the cost limits ended — quiet, one tap resumes. */
+.call-ended {
+    align-items: center;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 9999px;
+    color: #4b5563;
+    cursor: pointer;
+    display: flex;
+    font-size: 12.5px;
+    gap: 6px;
+    line-height: 1.2;
+    margin: 0 auto 8px;
+    padding: 6px 12px;
+    width: fit-content;
+}
+
+.call-ended:hover {
+    background: #f3f4f6;
+    border-color: #d1d5db;
+}
+
+.call-ended.hidden {
+    display: none;
+}
+
 /* Fade In (used for messages) */
 @keyframes fadeInUp {
     from {

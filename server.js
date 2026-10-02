@@ -21,6 +21,8 @@ const mcpAuth = require('./lib/mcpAuth');
 const mcpServer = require('./lib/mcpServer');
 // Session logger — persists Erica sessions for the Coach Studio observatory.
 const sessionLog = require('./lib/sessionLog');
+// GPT-Live cost guardrails (#40): max duration + idle cut, server backstop.
+const liveGuard = require('./lib/liveGuard');
 const studioAgent = require('./lib/studioAgent');
 const genSessions = require('./lib/genSessions');
 const attachments = require('./lib/attachments');
@@ -575,6 +577,26 @@ function fetchOpenAIKey() {
     });
 }
 
+// The guard hangs up a Live session at OpenAI when a client did not end it
+// (lib/liveGuard.js). The hang-up's status is logged, never the key.
+liveGuard.configure({
+    hangup: async (liveId) => {
+        if (!openAIKey) { try { await fetchOpenAIKey(); } catch (_) { /* reported below */ } }
+        if (!openAIKey) return { status: null, error: 'OpenAI key not available on server' };
+        const r = await fetch(`https://api.openai.com/v1/live/sessions/${encodeURIComponent(liveId)}/hangup`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${openAIKey}` },
+            signal: AbortSignal.timeout(10000),
+        });
+        const body = await r.text().catch(() => '');
+        return { status: r.status, body: body.slice(0, 300) };
+    },
+    logEvent: (sid, name, meta) => {
+        try { sessionLog.logEvent(sid, { name, meta }); } catch (e) { console.error('[liveGuard] event NOT logged:', name, e && e.message); }
+    },
+});
+liveGuard.start();
+
 const mimeTypes = {
     '.html': 'text/html',
     '.js': 'text/javascript',
@@ -690,6 +712,7 @@ const server = http.createServer(async (req, res) => {
                 } else if (typeof p.promptHash === 'string') {
                     promptHash = p.promptHash;
                 }
+                let guardVerdict = null;
                 switch (p.kind) {
                     // Real turns (#30): one per final message. The meta is a
                     // whitelist (no client-set `synthetic`, which would store
@@ -698,6 +721,7 @@ const server = http.createServer(async (req, res) => {
                     case 'bot_turn': {
                         const text = sessionTurns.sanitizeTurnText(p.text);
                         const role = p.kind === 'user_turn' ? 'user' : 'bot';
+                        liveGuard.noteTurn(sid);
                         // Which pipeline stage this turn reaches (counted before
                         // it is appended; lib/pipeline.js).
                         const tr = pipeline.trackTurn(sid, { type: 'turn', role, text }, (id) => (sessionLog.readSession(id) || {}).entries);
@@ -734,6 +758,8 @@ const server = http.createServer(async (req, res) => {
                             modelSource: p.model ? 'client' : 'server-config',
                             backendModel: p.backendModel || (p.voiceMode === 'live' ? LIVE_BACKEND_MODEL : null)
                         }));
+                        // Recorded first (the money is spent), then: past a limit?
+                        guardVerdict = liveGuard.onUsage(p);
                         break;
                     case 'event':
                     default:
@@ -764,9 +790,11 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
                 // Turn posts learn how user text was stored ('raw' | 'redacted'),
                 // so a run can prove which mode it exercised.
+                // A usage snapshot past a Live limit answers { cut: true }: the
+                // client ends the connection (#40 tripwire).
                 res.end(JSON.stringify(p.kind === 'user_turn' || p.kind === 'bot_turn'
                     ? { ok: true, promptHash, store: sessionLog.storeMode() }
-                    : { ok: true, promptHash }));
+                    : { ok: true, promptHash, ...(guardVerdict && guardVerdict.cut ? { cut: true, reason: guardVerdict.reason } : {}) }));
             } catch (e) {
                 console.error('[SERVER] /api/session-log error:', e?.message || e);
                 res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -3240,6 +3268,20 @@ const server = http.createServer(async (req, res) => {
                 }
             }
 
+            // #40: the visit this connection belongs to, and whether the client
+            // reconnected on its own. Right after a cut only a reconnect the
+            // person asked for opens a new session.
+            const guardSid = String(req.headers['x-erica-session'] || '').slice(0, 120) || null;
+            const autoReconnect = req.headers['x-erica-reconnect'] === 'auto';
+            const priorCut = autoReconnect ? liveGuard.refuseAutoReconnect(guardSid) : null;
+            if (priorCut) {
+                console.warn(`[SERVER] /api/proxy/live - automatic reconnect refused for ${guardSid}: cut (${priorCut.reason}) ${Math.round((Date.now() - priorCut.at) / 1000)} s ago`);
+                res.writeHead(409, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                res.end(JSON.stringify({ error: 'live_session_cut', cut: true, reason: priorCut.reason }));
+                return;
+            }
+            if (!autoReconnect) liveGuard.clearCut(guardSid);
+
             const voice = req.headers['x-erica-voice'] || 'marin';
             let shortInstructions = 'You are a voice coaching assistant. Delegate substantive reasoning, ' +
                 'knowledge lookups, and tool use to your backend. Keep spoken replies natural, warm, and ' +
@@ -3291,6 +3333,15 @@ const server = http.createServer(async (req, res) => {
 
                 const responseText = await openaiRes.text();
                 if (input.length) console.log('[SERVER] /api/proxy/live - session.input:', input.length, 'prior messages');
+                if (openaiRes.ok) {
+                    let liveId = null;
+                    try { liveId = (JSON.parse(responseText).session || {}).id || null; } catch (_) { /* reported below */ }
+                    if (liveId) {
+                        liveGuard.register({ liveId, sessionId: guardSid, maxHeader: req.headers['x-erica-live-max-min'], idleHeader: req.headers['x-erica-live-idle-min'], auto: autoReconnect });
+                    } else {
+                        console.error('[SERVER] /api/proxy/live - ⚠️ the Live session has no id: the server cannot hang it up at the limit (#40); the client guard still applies');
+                    }
+                }
                 if (openaiRes.status !== 200 && openaiRes.status !== 201) {
                     console.error('[SERVER] /api/proxy/live - OpenAI API error:', {
                         status: openaiRes.status,
@@ -3301,7 +3352,7 @@ const server = http.createServer(async (req, res) => {
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*',
                     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Content-Type, X-Erica-Voice, X-Erica-Live-Instructions'
+                    'Access-Control-Allow-Headers': 'Content-Type, X-Erica-Voice, X-Erica-Live-Instructions, X-Erica-Session, X-Erica-Reconnect'
                 });
                 res.end(responseText);
             } catch (error) {
@@ -3319,11 +3370,16 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         // Model names ride along so usage snapshots can be priced even when
         // the session events did not name them (cost metering, lib/usageCost.js).
+        const guardCfg = liveGuard.config();
         res.end(JSON.stringify({
             mode: VOICE_API,
             model: REALTIME_MODEL,
             liveModel: 'gpt-live-1',
-            backendModel: LIVE_BACKEND_MODEL
+            backendModel: LIVE_BACKEND_MODEL,
+            // #40: when a Live connection ends (the client cuts at these; the
+            // server backs it up one minute later).
+            liveMaxSessionMin: guardCfg.maxMin,
+            liveIdleCutMin: guardCfg.idleMin
         }));
         return;
     }
@@ -3333,7 +3389,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Methods': 'POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, X-Erica-Voice'
+            'Access-Control-Allow-Headers': 'Content-Type, X-Erica-Voice, X-Erica-Live-Instructions, X-Erica-Session, X-Erica-Reconnect'
         });
         res.end();
         return;
