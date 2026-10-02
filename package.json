@@ -12,7 +12,9 @@
     "gen:sessions": "node scripts/gen-synthetic-sessions.js"
   },
   "dependencies": {
+    "@ricky0123/vad-web": "0.0.31",
     "dotenv": "^17.3.1",
+    "onnxruntime-web": "1.30.0",
     "openai": "^4.104.0"
   }
 }
