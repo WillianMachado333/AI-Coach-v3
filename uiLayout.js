@@ -71,6 +71,7 @@
         app.attachmentInput = document.getElementById('attachmentInput');
         app.attachmentPreview = document.getElementById('attachmentPreview');
         app.attachmentStatus = document.getElementById('attachmentStatus');
+        app.callEndedNotice = document.getElementById('callEndedNotice');
         app.pendingAttachments = Array.isArray(app.pendingAttachments) ? app.pendingAttachments : [];
 
         // Mic Controls
@@ -270,6 +271,13 @@
         }
 
         setupAttachments(app);
+
+        // #40: a Live call the cost limits ended; one tap starts it again.
+        if (app.callEndedNotice) {
+            app.callEndedNotice.addEventListener('click', () => {
+                if (typeof app._resumeAfterCut === 'function') app._resumeAfterCut();
+            });
+        }
 
         if (app.dictationButton) {
             setupDictation(app);
@@ -1656,6 +1664,8 @@
         if (statusOrConnected === true || statusOrConnected === 'connected') state = 'connected';
         else if (statusOrConnected === 'connecting') state = 'connecting';
         else if (statusOrConnected === 'onhold') state = 'onhold';
+        // Live standby (#40 cut, or page load): nothing open, connects on demand.
+        else if (statusOrConnected === 'standby') state = 'standby';
         else state = 'disconnected';
 
         // Connection loader overlay — show when connecting/disconnected, hide when connected/onhold
@@ -1679,6 +1689,8 @@
                 app.connectionStatusDot.classList.add('bg-yellow-500', 'animate-pulse');
             } else if (state === 'onhold') {
                 app.connectionStatusDot.classList.add('bg-orange-400', 'animate-pulse');
+            } else if (state === 'standby') {
+                app.connectionStatusDot.classList.add('bg-gray-300');
             } else {
                 app.connectionStatusDot.classList.add('bg-gray-300');
             }
@@ -1695,6 +1707,10 @@
                 app.connectionStatusText.classList.remove('text-green-600', 'text-gray-500', 'text-orange-500');
                 app.connectionStatusText.classList.add('text-yellow-600', 'opacity-100');
                 app.connectionStatusText.classList.remove('opacity-0');
+            } else if (state === 'standby') {
+                // As on page load: no status word, the grey dot says "not open".
+                app.connectionStatusText.classList.remove('text-green-600', 'text-yellow-600', 'text-orange-500', 'opacity-100');
+                app.connectionStatusText.classList.add('opacity-0');
             } else if (state === 'onhold') {
                 app.connectionStatusText.textContent = 'On Hold';
                 app.connectionStatusText.classList.remove('text-teal-600', 'text-green-600', 'text-yellow-600', 'text-gray-500');
@@ -3153,8 +3169,27 @@
         }
     }
 
+    // #40: "Call ended — tap to resume", docked above the composer controls.
+    function showCallEnded(app, reason) {
+        const el = app.callEndedNotice || document.getElementById('callEndedNotice');
+        if (!el) return;
+        const lim = app._liveLimits || { maxMin: 30, idleMin: 10 };
+        el.title = reason === 'idle'
+            ? `Ended after ${lim.idleMin} quiet minute${lim.idleMin === 1 ? '' : 's'}, so an open call costs nothing. Your conversation continues where it was.`
+            : `Calls end after ${lim.maxMin} minute${lim.maxMin === 1 ? '' : 's'}. Your conversation continues where it was.`;
+        el.dataset.reason = reason || '';
+        el.classList.remove('hidden');
+    }
+
+    function hideCallEnded(app) {
+        const el = app.callEndedNotice || document.getElementById('callEndedNotice');
+        if (el) el.classList.add('hidden');
+    }
+
     // Export helpers
     global.uiLayout = {
+        showCallEnded,
+        hideCallEnded,
         initLayout,
         updateTextButtonVisibility,
         updateMicToggleVisibility,

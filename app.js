@@ -1597,6 +1597,11 @@ class VoiceChatBot {
                     const modeRes = await fetch(this.apiUrl('/api/voice-mode'));
                     const modeJson = modeRes.ok ? await modeRes.json() : {};
                     this.voiceApiMode = modeJson.mode === 'live' ? 'live' : 'realtime';
+                    // #40: when a Live connection ends (the server backs these up).
+                    this._liveLimits = {
+                        maxMin: Number(modeJson.liveMaxSessionMin) > 0 ? Number(modeJson.liveMaxSessionMin) : 30,
+                        idleMin: Number(modeJson.liveIdleCutMin) > 0 ? Number(modeJson.liveIdleCutMin) : 10,
+                    };
                 } catch (_) {
                     this.voiceApiMode = 'realtime';
                 }
@@ -4762,6 +4767,7 @@ class VoiceChatBot {
     // same track to the new sender. Stopping them left the reconnected call
     // "on" but deaf: no outbound RTP, no transcript, no reply.
     _teardownWebRTCOnly({ keepMic = false } = {}) {
+        this._liveGuardStop();
         try { if (this.dataChannel) { this.dataChannel.close(); this.dataChannel = null; } } catch (_) {}
         try { if (this.pc) { this.pc.close(); this.pc = null; } } catch (_) {}
         this.audioSender = null;
@@ -4795,6 +4801,7 @@ class VoiceChatBot {
     }
 
     async disconnect() {
+        this._liveGuardStop();
         // Stop recording if active
         if (this.isRecording) {
             this.stopRecording();
@@ -5490,6 +5497,11 @@ class VoiceChatBot {
                 await this._maybeSendOpeningLine();
             }
         } catch (error) {
+            if (error && error.liveCut) {
+                // The server ended this visit's Live connection (#40): show the
+                // cut, once connect() has finished unwinding.
+                setTimeout(() => this._cutLive(error.liveCut, 'server'), 0);
+            }
             console.error('Connection error:', error);
             const errorMessage = error.message || 'Unknown error occurred';
             console.warn('[Erica] Failed to connect:', errorMessage);
@@ -6512,6 +6524,19 @@ class VoiceChatBot {
             // GPT-Live's voice layer only knows prior turns given at creation
             // (session.input); items added later reach the backend alone. So
             // a restored conversation rides along with the SDP.
+            // #40: the visit this connection belongs to (the server's guard
+            // notes its turns) and whether the client reconnected on its own —
+            // right after a cut the server refuses that, and only the person's
+            // tap or message opens a new session.
+            const reconnectKind = this._reconnectKind === 'auto' ? 'auto' : 'user';
+            this._reconnectKind = null;
+            if (isLive) {
+                if (this.sessionId) headers['X-Erica-Session'] = this.sessionId;
+                headers['X-Erica-Reconnect'] = reconnectKind;
+                if (reconnectKind === 'user') this._clearLiveCut();
+            }
+            this._liveConnectKind = reconnectKind;
+
             let body = this.pc.localDescription.sdp;
             const liveHistory = isLive ? this._historyItems() : [];
             if (liveHistory.length) {
@@ -6526,6 +6551,17 @@ class VoiceChatBot {
             });
 
             if (!response.ok) {
+                // #40: the server ended this visit's Live connection moments ago
+                // and refuses to reopen it on its own: not an error to retry.
+                if (isLive && response.status === 409) {
+                    let refusal = {};
+                    try { refusal = await response.json(); } catch (_) { /* not the guard's answer */ }
+                    if (refusal && refusal.cut) {
+                        const cutErr = new Error('Live connection ended by the server (' + (refusal.reason || 'limit') + ')');
+                        cutErr.liveCut = refusal.reason || 'max';
+                        throw cutErr;
+                    }
+                }
                 let errorText = '';
                 try {
                     errorText = await response.text();
@@ -6550,9 +6586,16 @@ class VoiceChatBot {
 
             // Realtime returns the SDP answer as the raw response body.
             // GPT-Live's /v1/live/sessions returns JSON: { session, transport: { sdp } }.
-            const answerSdp = isLive
-                ? (await response.json()).transport?.sdp
-                : await response.text();
+            let answerSdp;
+            if (isLive) {
+                const liveJson = await response.json();
+                // Its id rides on the usage snapshots so the server's guard
+                // can match them to the session it may have to hang up (#40).
+                this._liveSessionId = (liveJson.session && liveJson.session.id) || null;
+                answerSdp = liveJson.transport?.sdp;
+            } else {
+                answerSdp = await response.text();
+            }
             if (!answerSdp) {
                 throw new Error('No SDP answer in the session response.');
             }
@@ -6576,13 +6619,15 @@ class VoiceChatBot {
                     // Voice controls are enabled - user can change voice when not recording
                     // Connection established - no message needed
                     this.startSessionInactivityTimer();
+                    if (this.voiceApiMode === 'live') this._liveGuardStart(this._liveConnectKind);
 
                 } else if (this.pc.connectionState === 'disconnected' || this.pc.connectionState === 'failed') {
                     this.isConnected = false;
 
                     // Auto-reconnect silently instead of showing "Disconnected"
-                    // Show "Connecting..." while we attempt to restore the session
-                    if (!this.isConnecting && !this._autoReconnecting) {
+                    // Show "Connecting..." while we attempt to restore the session.
+                    // Not after a cost cut (#40): that waits for the person's tap.
+                    if (!this.isConnecting && !this._autoReconnecting && !this._liveCut) {
                         this._autoReconnecting = true;
                         console.log('[Erica] WebRTC dropped — auto-reconnecting silently...');
                         if (window.uiLayout && typeof window.uiLayout.updateStatusDot === 'function') {
@@ -6601,14 +6646,17 @@ class VoiceChatBot {
 
                         // Small delay to let the connection fully close
                         setTimeout(() => {
+                            this._reconnectKind = 'auto';
                             this.connect({ skipOpeningLine: true })
                                 .then(() => {
                                     console.log('[Erica] Auto-reconnect successful');
                                     this._autoReconnecting = false;
+                                    this._reconnectKind = null;
                                 })
                                 .catch(err => {
                                     console.warn('[Erica] Auto-reconnect failed:', err?.message || err);
                                     this._autoReconnecting = false;
+                                    this._reconnectKind = null;
                                     // Only now show disconnected if reconnect failed
                                     this.updateStatus(false);
                                     if (this.callButton) this.callButton.disabled = true;
@@ -6626,6 +6674,9 @@ class VoiceChatBot {
             await new Promise(resolve => setTimeout(resolve, 1000));
 
         } catch (error) {
+            // A cost cut (#40) is the server's decision, not an OpenAI failure:
+            // it must not count toward the maintenance redirect below.
+            if (error && error.liveCut) throw error;
             console.error('Connection error:', error);
 
             // Track consecutive OpenAI connection failures
@@ -8221,6 +8272,89 @@ class VoiceChatBot {
         this.setCallAudioEnabled(true);
     }
 
+    // ---- GPT-Live cost guardrails (#40) -------------------------------------
+    // GPT-Live bills the connection by the second while audio flows, whether
+    // anyone speaks or not (2026-09-29: ~1,760 billed minutes from test tabs
+    // left running). A Live connection ends at the server's limits
+    // (/api/voice-mode: 30 min, or 10 min with no turn). This client cuts
+    // first; lib/liveGuard.js hangs it up a minute later if it did not,
+    // answers a late usage snapshot with { cut: true } and refuses the
+    // automatic reconnect after a cut. Resuming is one tap, and the
+    // conversation rides along with the new session (session.input).
+    _liveGuardStart(kind = 'user') {
+        this._liveGuardStop();
+        const now = Date.now();
+        // A reconnect the client made on its own keeps the quiet time it had:
+        // an idle tab reopening a dropped session must still reach the limit.
+        if (kind !== 'auto' || !this._liveLastTurnAt) this._liveLastTurnAt = now;
+        this._liveGuard = { startedAt: now, kind, timer: setInterval(() => this._liveGuardCheck(), 15000) };
+    }
+
+    _liveGuardStop() {
+        if (this._liveGuard && this._liveGuard.timer) clearInterval(this._liveGuard.timer);
+        this._liveGuard = null;
+    }
+
+    _liveGuardNoteTurn() {
+        this._liveLastTurnAt = Date.now();
+    }
+
+    _liveGuardCheck(now = Date.now()) {
+        const g = this._liveGuard;
+        if (!g || this.voiceApiMode !== 'live' || !this.isConnected) return null;
+        const lim = this._liveLimits || { maxMin: 30, idleMin: 10 };
+        let reason = null;
+        if (now - g.startedAt >= lim.maxMin * 60000) reason = 'max';
+        else if (now - (this._liveLastTurnAt || g.startedAt) >= lim.idleMin * 60000) reason = 'idle';
+        if (reason) this._cutLive(reason, 'client');
+        return reason;
+    }
+
+    async _cutLive(reason, by = 'client') {
+        if (this._liveCut) return;
+        const g = this._liveGuard;
+        const lim = this._liveLimits || { maxMin: 30, idleMin: 10 };
+        const minutes = g ? Math.round((Date.now() - g.startedAt) / 600) / 100 : null;
+        const inCall = !!this.isRecording;
+        this._liveCut = { reason, by, inCall, at: Date.now() };
+        const why = reason === 'idle' ? `no turn for ${lim.idleMin} min` : `the ${lim.maxMin}-minute limit`;
+        console.warn(`[Erica][Live] ✂️ Live connection ended — ${why} (${by === 'server' ? 'the server said so' : 'this client'}${minutes !== null ? ', ' + minutes + ' min' : ''}). ${inCall ? 'Call ended — tap to resume.' : 'The next message reconnects.'}`);
+        if (this.sessionId) {
+            fetch(this.apiUrl('/api/session-log'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                keepalive: true,
+                body: JSON.stringify({ sessionId: this.sessionId, kind: 'event', name: 'live_session_cut', meta: { reason, by, minutes, inCall, liveSessionId: this._liveSessionId || null } }),
+            }).then((r) => { if (!r.ok) console.warn('[Erica][Live] cut NOT logged — HTTP', r.status); })
+                .catch((e) => console.warn('[Erica][Live] cut NOT logged:', e?.message || e));
+        }
+        try { await this.disconnect(); } catch (e) { console.warn('[Erica][Live] disconnect after the cut failed:', e?.message || e); }
+        // Standby, as on page load: the composer and the call button work and
+        // connect on demand; nothing is open, nothing is billed.
+        this._liveStandby = true;
+        if (this.textInput) this.textInput.disabled = false;
+        if (this.callButton) this.callButton.disabled = false;
+        if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
+        if (typeof this.updateTextButtonVisibility === 'function') this.updateTextButtonVisibility();
+        const ui = window.uiLayout;
+        if (ui && typeof ui.updateStatusDot === 'function') ui.updateStatusDot(this, 'standby');
+        this._postConnectionState();
+        if (inCall && ui && typeof ui.showCallEnded === 'function') ui.showCallEnded(this, reason);
+    }
+
+    _clearLiveCut() {
+        this._liveCut = null;
+        const ui = window.uiLayout;
+        if (ui && typeof ui.hideCallEnded === 'function') ui.hideCallEnded(this);
+    }
+
+    // "Call ended — tap to resume": the same as pressing the call button.
+    _resumeAfterCut() {
+        console.log('[Erica][Live] resuming after the cut — the conversation rides along with the new session');
+        this._clearLiveCut();
+        this.toggleMicTrack();
+    }
+
     // ---- Usage metering: what this session costs at OpenAI ----------------
     // Every usage figure the APIs report is POSTed to /api/session-log as
     // kind 'usage' with the API's own field names and priced server-side
@@ -8305,13 +8439,22 @@ class VoiceChatBot {
             else body.model = m.realtimeModel || info.model || null;
         }
         if (!body.backendModel && voiceMode === 'live') body.backendModel = m.backendModel || info.backendModel || null;
+        if (voiceMode === 'live' && this._liveSessionId) body.liveSessionId = this._liveSessionId;
+        const connectionAtPost = m.connectionId;
         fetch(this.apiUrl('/api/session-log'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
             keepalive: true,
-        }).then((res) => {
-            if (!res.ok) console.warn('[Erica][usage] snapshot rejected by server:', res.status, snapshot.source);
+        }).then(async (res) => {
+            if (!res.ok) { console.warn('[Erica][usage] snapshot rejected by server:', res.status, snapshot.source); return; }
+            if (voiceMode !== 'live') return;
+            // #40 tripwire: this connection is past a limit — end it, unless
+            // it is already over (a reply about an older connection).
+            const verdict = await res.json().catch(() => null);
+            if (verdict && verdict.cut && connectionAtPost && this._usageMeter && this._usageMeter.connectionId === connectionAtPost) {
+                this._cutLive(verdict.reason || 'max', 'server');
+            }
         }).catch((e) => {
             console.warn('[Erica][usage] snapshot POST failed:', e && e.message ? e.message : e, snapshot.source);
         });
@@ -8579,6 +8722,7 @@ class VoiceChatBot {
     _logTurnFor(message) {
         if (!message || this.isRestoringHistory) return;
         if (message.role !== 'user' && message.role !== 'bot') return;
+        this._liveGuardNoteTurn();
         if (!this._turnLog) this._turnLog = new Map(); // messageId -> { posted, text, timer }
         let st = this._turnLog.get(message.id);
         if (!st) {
