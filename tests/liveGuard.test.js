@@ -327,6 +327,14 @@ test('HTTP: limits published; the session id registered; a late snapshot hangs i
         const lines = fs.readFileSync(path.join(tmp, 'srv-sessions', sid + '.ndjson'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
         assert.ok(lines.some((l) => l.type === 'usage' && l.usage && l.usage.seconds === 2));
         assert.ok(lines.some((l) => l.type === 'event' && l.name === 'live_session_cut' && l.meta.by === 'server' && l.meta.hangup === 200));
+        // The snapshot that triggered the cut is the cut, not an overrun after it (staging, 2026-10-02).
+        assert.ok(!lines.some((l) => l.type === 'event' && l.name === 'live_session_overrun'));
+        assert.doesNotMatch(srv.out(), /usage still arriving/);
+        const after = JSON.parse((await snap(17)).body);
+        assert.equal(after.cut, true);
+        await new Promise((r) => setTimeout(r, 200));
+        const lines2 = fs.readFileSync(path.join(tmp, 'srv-sessions', sid + '.ndjson'), 'utf8').trim().split(String.fromCharCode(10)).map((l) => JSON.parse(l));
+        assert.equal(lines2.filter((l) => l.type === 'event' && l.name === 'live_session_overrun').length, 1, 'a later one is');
         // Right after: the client's own reconnect is refused; the person's tap opens a new one.
         const auto = await open('auto');
         assert.equal(auto.status, 409);
