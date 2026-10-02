@@ -23,6 +23,8 @@ const mcpServer = require('./lib/mcpServer');
 const sessionLog = require('./lib/sessionLog');
 // GPT-Live cost guardrails (#40): max duration + idle cut, server backstop.
 const liveGuard = require('./lib/liveGuard');
+// The speech gate's on-device VAD files (#40 step 2), served under /vad/.
+const vadAssets = require('./lib/vadAssets');
 const studioAgent = require('./lib/studioAgent');
 const genSessions = require('./lib/genSessions');
 const attachments = require('./lib/attachments');
@@ -3379,7 +3381,15 @@ const server = http.createServer(async (req, res) => {
             // #40: when a Live connection ends (the client cuts at these; the
             // server backs it up one minute later).
             liveMaxSessionMin: guardCfg.maxMin,
-            liveIdleCutMin: guardCfg.idleMin
+            liveIdleCutMin: guardCfg.idleMin,
+            // #40 step 2: in a GPT-Live call the mic reaches OpenAI only while
+            // someone speaks or Erica is busy (on-device VAD). ERICA_SPEECH_GATE=off
+            // turns it off; without its files it is off, and says so.
+            speechGate: {
+                enabled: String(process.env.ERICA_SPEECH_GATE || 'on').toLowerCase() !== 'off' && vadAssets.available(),
+                assets: vadAssets.BASE,
+                model: 'v5'
+            }
         }));
         return;
     }
@@ -3394,6 +3404,8 @@ const server = http.createServer(async (req, res) => {
         res.end();
         return;
     }
+
+    if (await vadAssets.handle(req, res)) return;
 
     // Serve static files — only what the browser needs (lib/staticPath.js).
     const filePath = resolvePublicPath(req.url, __dirname);

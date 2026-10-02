@@ -410,6 +410,8 @@ class VoiceChatBot {
     async speakOneShot({ promptText, suppressFromUI = false, ensureSpeaker = false, leaveSpeakerOn = false, restoreDelayMs = 0 }) {
         const text = (promptText || '').trim();
         if (!text) return false;
+        // Live speaks only while audio flows in: the speech gate carries her (#40).
+        { const coach = this._gateCoach(); if (coach) coach.expectSpeech(Date.now()); }
 
         if (this._oneShot && this._oneShot.active) {
             await this.cancelIfActiveResponse();
@@ -1602,6 +1604,8 @@ class VoiceChatBot {
                         maxMin: Number(modeJson.liveMaxSessionMin) > 0 ? Number(modeJson.liveMaxSessionMin) : 30,
                         idleMin: Number(modeJson.liveIdleCutMin) > 0 ? Number(modeJson.liveIdleCutMin) : 10,
                     };
+                    // #40 step 2: the on-device speech gate for GPT-Live calls.
+                    this._speechGateCfg = modeJson.speechGate && typeof modeJson.speechGate === 'object' ? modeJson.speechGate : null;
                 } catch (_) {
                     this.voiceApiMode = 'realtime';
                 }
@@ -4768,6 +4772,7 @@ class VoiceChatBot {
     // "on" but deaf: no outbound RTP, no transcript, no reply.
     _teardownWebRTCOnly({ keepMic = false } = {}) {
         this._liveGuardStop();
+        if (!keepMic) this._speechGateStop('teardown');
         try { if (this.dataChannel) { this.dataChannel.close(); this.dataChannel = null; } } catch (_) {}
         try { if (this.pc) { this.pc.close(); this.pc = null; } } catch (_) {}
         this.audioSender = null;
@@ -5054,6 +5059,7 @@ class VoiceChatBot {
 
     stopRecording(force = false) {
         this._silentCallDisarm();
+        this._speechGateStop('hangup');
         console.log('[Erica Debug] stopRecording ENTRY. isRecording:', this.isRecording, 'timestamp:', this.recordingStartTimestamp, 'Force:', force);
         if (!this.isRecording && !force) {
             console.warn('[Erica Debug] stopRecording checking failed: isRecording is false');
@@ -6207,6 +6213,8 @@ class VoiceChatBot {
                     if (this.isRecording) {
                         console.log(`[Erica] reconnect: mic re-attached to the new connection (track ${track.readyState}, ${track.enabled ? 'enabled' : 'muted'})`);
                     }
+                    // The speech gate decides what this new sender carries (#40).
+                    this._speechGateReattach();
                 } else if (this.isRecording) {
                     console.warn('[Erica] reconnect: call is on but there is no live mic track to attach');
                 }
@@ -8274,6 +8282,231 @@ class VoiceChatBot {
         this.setCallAudioEnabled(true);
     }
 
+    // ---- The speech gate (#40 step 2) ----------------------------------------
+    // In a GPT-Live call the mic reaches OpenAI only while someone speaks or
+    // Erica is busy; lib/speechGate.js holds the rules and the measurements
+    // behind them. Silero VAD runs on this device (AudioWorklet +
+    // onnxruntime-web, files from /vad/): audio never leaves it until speech
+    // is detected. Live hears the mic through a 300 ms delay line, so the
+    // words that opened the gate still reach it. A closed gate sends a 1 s
+    // silent blip every 150 s (Live drops a session ~267 s after its last
+    // audio). Anything failing here leaves the call streaming as before —
+    // loudly (speech_gate_unavailable).
+    _gateCoach() {
+        if (!this._coachActivity && typeof window !== 'undefined' && window.speechGate) this._coachActivity = window.speechGate.createCoachActivity();
+        return this._coachActivity || null;
+    }
+
+    _loadVadAssets(base) {
+        if (this._vadLoad) return this._vadLoad;
+        const add = (src) => new Promise((resolve, reject) => {
+            const el = document.createElement('script');
+            el.src = src; el.async = true;
+            el.onload = resolve;
+            el.onerror = () => reject(new Error('could not load ' + src));
+            document.head.appendChild(el);
+        });
+        const t0 = Date.now();
+        this._vadLoad = (async () => {
+            if (!window.ort) await add(base + 'ort.min.js');
+            window.ort.env.wasm.wasmPaths = base;
+            window.ort.env.wasm.numThreads = 1; // no cross-origin isolation in the embed
+            if (!window.vad) await add(base + 'bundle.min.js');
+            return { loadMs: Date.now() - t0 };
+        })();
+        this._vadLoad.catch(() => { this._vadLoad = null; });
+        return this._vadLoad;
+    }
+
+    async _speechGateStart() {
+        const cfg = this._speechGateCfg;
+        if (this.voiceApiMode !== 'live' || !cfg || !cfg.enabled || !this.isRecording || !this.localStream || this._gate) return;
+        const lib = window.speechGate;
+        if (!lib || typeof window.AudioWorkletNode !== 'function') {
+            this._speechGateUnavailable('setup', !lib ? 'lib/speechGate.js not loaded' : 'no AudioWorklet in this browser');
+            return;
+        }
+        const stream = this.localStream;
+        // Tuning from the server's config, within sane bounds (defaults in lib/speechGate.js).
+        const tune = {};
+        const within = (k, lo, hi) => { const n = Number(cfg[k]); if (Number.isFinite(n) && n >= lo && n <= hi) tune[k] = n; };
+        within('preRollMs', 100, 900); within('openThreshold', 0.2, 0.9); within('openAfterMs', 32, 400); within('hangoverMs', 300, 4000);
+        within('blipEveryMs', 5000, 250000); within('blipMs', 200, 3000);
+        const g = { state: 'starting', gate: lib.createSpeechGate(tune), startedAt: Date.now(), lastFrameAt: null, frames: 0, sent: undefined };
+        this._gate = g;
+        try {
+            const base = /^https?:\/\//i.test(cfg.assets) ? cfg.assets : new URL(this.apiUrl(cfg.assets), window.location.href).href;
+            const { loadMs } = await this._loadVadAssets(base);
+            if (this._gate !== g || this.localStream !== stream) return; // hung up meanwhile
+            const ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+            g.ctx = ctx;
+            if (ctx.state === 'suspended') await ctx.resume().catch(() => {});
+            const src = ctx.createMediaStreamSource(stream);
+            const delay = ctx.createDelay(1);
+            delay.delayTime.value = g.gate.config.preRollMs / 1000;
+            const out = ctx.createMediaStreamDestination();
+            src.connect(delay);
+            delay.connect(out);
+            g.track = out.stream.getAudioTracks()[0];
+            // The keep-alive: silence from a running source. A destination with
+            // nothing connected produces no frames — no RTP, and Live expired
+            // the session (staging, 2026-10-02).
+            const blipOut = ctx.createMediaStreamDestination();
+            const zero = ctx.createGain();
+            zero.gain.value = 0;
+            g.osc = ctx.createOscillator();
+            g.osc.connect(zero);
+            zero.connect(blipOut);
+            g.osc.start();
+            g.blipTrack = blipOut.stream.getAudioTracks()[0];
+            // Erica's level, measured here: the UI's meter stops when her speaker is muted.
+            g.remote = { analyser: ctx.createAnalyser(), stream: null, src: null, buf: new Float32Array(512) };
+            g.remote.analyser.fftSize = 512;
+            g.vad = await window.vad.MicVAD.new({
+                model: 'v5', baseAssetPath: base, onnxWASMBasePath: base, audioContext: ctx,
+                getStream: async () => stream, pauseStream: async () => {}, resumeStream: async (st) => st,
+                positiveSpeechThreshold: g.gate.config.openThreshold, negativeSpeechThreshold: g.gate.config.closeThreshold,
+                startOnLoad: true,
+                onFrameProcessed: (probs) => this._speechGateFrame(g, probs ? probs.isSpeech : 0),
+                onSpeechStart: () => {}, onSpeechRealStart: () => {}, onSpeechEnd: () => {}, onVADMisfire: () => {},
+            });
+            if (this._gate !== g) { try { g.vad.destroy(); } catch (_) {} return; }
+            g.state = 'on';
+            g.readyAt = Date.now();
+            // Decide at once: closed, unless Erica is busy (her greeting).
+            const coach = this._gateCoach();
+            const first = g.gate.frame({ prob: 0, at: g.readyAt, frameMs: 0, coachBusy: coach ? coach.busy(g.readyAt) : false });
+            if (first) this._speechGateOnEvent(g, first);
+            else this._speechGateApply(g, false);
+            this._speechGateBlip(g, 'a new Live session expires within ~30 s if no audio reaches it');
+            g.tick = setInterval(() => this._speechGateTick(g), 250);
+            // A closed tab still reports what this call streamed (keepalive POST).
+            if (!this._gatePagehideHooked) {
+                this._gatePagehideHooked = true;
+                try { window.addEventListener('pagehide', () => this._speechGateStop('pagehide')); } catch (_) { /* non-browser */ }
+            }
+            console.log(`[Erica][gate] 🎙️ speech gate on — Silero v5 on this device, ${g.gate.config.preRollMs} ms pre-roll; files ${loadMs} ms, ready ${g.readyAt - g.startedAt} ms after the call started`);
+            this._postGateEvent('speech_gate_on', { loadMs, readyMs: g.readyAt - g.startedAt, model: 'silero_vad_v5', preRollMs: g.gate.config.preRollMs, openThreshold: g.gate.config.openThreshold, openAfterMs: g.gate.config.openAfterMs, hangoverMs: g.gate.config.hangoverMs, blipEveryMs: g.gate.config.blipEveryMs, blipMs: g.gate.config.blipMs, sampleRate: ctx.sampleRate });
+        } catch (e) {
+            if (this._gate === g) this._speechGateUnavailable('start', e && e.message ? e.message : String(e));
+        }
+    }
+
+    _speechGateFrame(g, prob) {
+        if (this._gate !== g || g.state !== 'on') return;
+        const now = Date.now();
+        g.lastFrameAt = now;
+        g.frames++;
+        const coach = this._gateCoach();
+        if (coach && g.remote) {
+            const remoteStream = this.remoteAudio && this.remoteAudio.srcObject;
+            if (remoteStream && remoteStream !== g.remote.stream) {
+                try { if (g.remote.src) g.remote.src.disconnect(); } catch (_) {}
+                try { g.remote.src = g.ctx.createMediaStreamSource(remoteStream); g.remote.src.connect(g.remote.analyser); g.remote.stream = remoteStream; } catch (_) { g.remote.stream = remoteStream; }
+            }
+            if (g.remote.src) {
+                g.remote.analyser.getFloatTimeDomainData(g.remote.buf);
+                let sum = 0;
+                for (let i = 0; i < g.remote.buf.length; i++) sum += g.remote.buf[i] * g.remote.buf[i];
+                if (Math.min(1, Math.sqrt(sum / g.remote.buf.length) * 5) > 0.04) coach.audible(now);
+            }
+        }
+        const ev = g.gate.frame({ prob, at: now, frameMs: 32, coachBusy: coach ? coach.busy(now) : false });
+        if (ev) this._speechGateOnEvent(g, ev);
+    }
+
+    _speechGateOnEvent(g, ev) {
+        this._speechGateApply(g, ev.action === 'open');
+        if (ev.action === 'open') {
+            console.log(`[Erica][gate] 🎙️ open — ${ev.reason === 'speech' ? 'speech (p=' + ev.prob + ')' : 'Erica busy'} after ${(ev.closedMs / 1000).toFixed(1)} s gated`);
+            this._postGateEvent('gate_open', { reason: ev.reason, prob: ev.prob, closedMs: ev.closedMs });
+        } else {
+            console.log(`[Erica][gate] 🔇 closed after ${(ev.openMs / 1000).toFixed(1)} s streaming (max p=${ev.maxProb})`);
+            this._postGateEvent('gate_close', { openMs: ev.openMs, maxProb: ev.maxProb });
+        }
+    }
+
+    _speechGateApply(g, open) {
+        const sender = this.audioSender;
+        if (!sender || !g.track) return;
+        const want = open ? g.track : null;
+        if (g.sent === want) return;
+        g.sent = want;
+        sender.replaceTrack(want).catch((e) => console.warn('[Erica][gate] ⚠️ sender track not switched:', e && e.message));
+    }
+
+    _speechGateTick(g) {
+        if (this._gate !== g || g.state !== 'on') return;
+        const now = Date.now();
+        // VAD frames stopped (suspended audio, a crashed worklet): stream.
+        if (now - (g.lastFrameAt || g.readyAt) > 2000) {
+            this._speechGateUnavailable('frames', `no VAD frame for ${Math.round((now - (g.lastFrameAt || g.readyAt)) / 1000)} s (audio context ${g.ctx ? g.ctx.state : '?'})`);
+            return;
+        }
+        if (g.gate.blipDue(now)) this._speechGateBlip(g, 'Live drops a session ~267 s after its last audio');
+    }
+
+    // 1 s of silence from a closed gate: keeps the Live session alive. No-op
+    // while open (audio flows) or mid-blip.
+    _speechGateBlip(g, why) {
+        if (this._gate !== g || !this.audioSender || g.sent !== null || !g.blipTrack) return;
+        g.gate.noteBlip(Date.now());
+        g.sent = g.blipTrack;
+        this.audioSender.replaceTrack(g.blipTrack).catch(() => {});
+        console.log(`[Erica][gate] keep-alive blip — ${why}`);
+        setTimeout(() => {
+            if (this._gate === g && g.sent === g.blipTrack && this.audioSender) { g.sent = null; this.audioSender.replaceTrack(null).catch(() => {}); }
+        }, g.gate.config.blipMs);
+    }
+
+    // A reconnect mid-call made a new sender (with the plain mic): gate it
+    // again. Its new Live session gets audio once it has started (below).
+    _speechGateReattach() {
+        const g = this._gate;
+        if (!g || g.state !== 'on') return;
+        g.sent = undefined;
+        this._speechGateApply(g, g.gate.state === 'open');
+    }
+
+    _speechGateUnavailable(stage, error) {
+        console.warn(`[Erica][gate] ⚠️ speech gate unavailable (${stage}: ${error}) — this call streams everything, billed as before the gate`);
+        this._postGateEvent('speech_gate_unavailable', { stage, error: String(error).slice(0, 200) });
+        const g = this._gate;
+        this._speechGateStop('unavailable', { quiet: true });
+        // Back to the plain mic, as before the gate.
+        const track = this.localStream && this.localStream.getAudioTracks()[0];
+        if (g && track && this.audioSender && this.isRecording) this.audioSender.replaceTrack(track).catch(() => {});
+    }
+
+    _speechGateStop(reason, { quiet = false } = {}) {
+        const g = this._gate;
+        if (!g) return;
+        this._gate = null;
+        if (g.tick) clearInterval(g.tick);
+        if (g.state === 'on' && !quiet) {
+            const t = g.gate.totals(Date.now());
+            console.log(`[Erica][gate] summary — streamed ${(t.openMs / 1000).toFixed(1)} s, gated ${(t.closedMs / 1000).toFixed(1)} s, ${t.opens} opens (${t.opensBySpeech} speech, ${t.opensByCoach} Erica), ${t.blips} blips`);
+            this._postGateEvent('speech_gate_summary', { reason, streamingMs: t.openMs, gatedMs: t.closedMs, opens: t.opens, opensBySpeech: t.opensBySpeech, opensByCoach: t.opensByCoach, blips: t.blips, frames: g.frames });
+        }
+        g.state = 'off';
+        try { if (g.vad) g.vad.pause(); } catch (_) {}
+        try { if (g.ctx) g.ctx.close(); } catch (_) {}
+        try { if (g.track) g.track.stop(); } catch (_) {}
+        try { if (g.blipTrack) g.blipTrack.stop(); } catch (_) {}
+        try { if (g.osc) g.osc.stop(); } catch (_) {}
+    }
+
+    _postGateEvent(name, meta) {
+        if (!this.sessionId) return;
+        fetch(this.apiUrl('/api/session-log'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            keepalive: true,
+            body: JSON.stringify({ sessionId: this.sessionId, kind: 'event', name, meta }),
+        }).then((r) => { if (!r.ok) console.warn('[Erica][gate]', name, 'NOT logged — HTTP', r.status); })
+            .catch((e) => console.warn('[Erica][gate]', name, 'NOT logged:', e && e.message));
+    }
+
     // ---- GPT-Live cost guardrails (#40) -------------------------------------
     // GPT-Live bills the connection by the second while audio flows, whether
     // anyone speaks or not (2026-09-29: ~1,760 billed minutes from test tabs
@@ -9603,6 +9836,9 @@ class VoiceChatBot {
                 console.log('[Erica][Live] session.started', message.session?.id);
                 this._captureLiveSessionModels(message.session);
                 this._resetLiveTurnGate();
+                // A Live session that gets no audio expires within ~30 s (#40):
+                // a closed speech gate gives it some now, not before it exists.
+                if (this._gate && this._gate.state === 'on') this._speechGateBlip(this._gate, 'a new Live session expires within ~30 s if no audio reaches it');
                 this.configureLiveSession();
                 if (typeof this.hideLoader === 'function') this.hideLoader();
                 if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
@@ -9620,6 +9856,14 @@ class VoiceChatBot {
                 // Cumulative seconds + context-window ratio, ~once a minute.
                 this._recordLiveSeconds(message, 'session.usage.updated');
                 break;
+
+            // Live's end of a user turn (it sends no speech_started/stopped):
+            // Erica is busy until she has answered (the speech gate, #40).
+            case 'session.delegation.created': {
+                const coach = this._gateCoach();
+                if (coach) coach.delegation(Date.now());
+                break;
+            }
 
             case 'session.closed':
                 console.log('[Erica][Live] session.closed — final usage:', message.usage, 'reason:', message.reason);
@@ -9686,6 +9930,8 @@ class VoiceChatBot {
                 if (!inner) break;
                 // The opening line (speakOneShot) waits for its response to start (#32).
                 this._liveOneShotObserve(inner);
+                // The backend is still working on the turn: the speech gate stays open (#40).
+                { const coach = this._gateCoach(); if (coach) coach.backend(Date.now()); }
                 // Erica's reasoning (#24): collected per delegation for the
                 // Studio; never rendered, never printed.
                 const reasoning = this._liveReasoningLog().observe(inner, message.delegation_id || null);
@@ -10805,6 +11051,10 @@ class VoiceChatBot {
                 // If not connected, connect now (which will use the stream we just got)
                 await this.connect();
             }
+
+            // GPT-Live: from here the mic reaches OpenAI only while someone
+            // speaks or Erica is busy (#40 step 2). Not awaited: the call is up.
+            this._speechGateStart();
 
         } catch (error) {
             console.error('Error starting recording:', error);
