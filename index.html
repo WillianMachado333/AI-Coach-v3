@@ -47,7 +47,7 @@
     </script>
 
     <!-- Custom animations remaining in CSS -->
-    <link rel="stylesheet" href="styles.css?v=20261002a">
+    <link rel="stylesheet" href="styles.css?v=20261003a">
 
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -71,12 +71,14 @@
     <header style="z-index: 60;"
         class="fixed top-0 left-0 right-0 bg-white/40 transition-all duration-300">
         <div class="w-full px-2 py-1 h-9 flex items-center justify-end relative">
-            <!-- The coach for this person: face + name (never the style). Opens the image cards. -->
-            <button id="coachChip" type="button" class="coach-chip" aria-label="Erica — change how your coach looks and sounds">
+            <!-- The coach for this person: face + name (never the style). Opens the
+                 coaches right under it (app.js _openCoachDropdown). -->
+            <button id="coachChip" type="button" class="coach-chip" aria-label="Erica — change how your coach looks and sounds" aria-haspopup="listbox" aria-expanded="false" aria-controls="coachDropdown">
                 <img id="coachChipThumb" src="companions/Erica-thumb.png" alt="">
                 <span id="coachChipName">Erica</span>
                 <span class="coach-chip-caret" aria-hidden="true">▾</span>
             </button>
+            <div id="coachDropdown" class="coach-dd hidden" role="listbox" aria-label="Choose your coach" tabindex="-1"></div>
             <button id="backToCoachListBtn" class="hidden"
                 type="button" aria-label="Back to coach list"></button>
 
@@ -707,7 +709,7 @@
     <script src="lib/liveReasoning.js?v=20260929a"></script>
     <script src="lib/speechGate.js?v=20261002a"></script>
     <script src="uiLayout.js?v=20261002a"></script>
-    <script src="app.js?v=20261002b"></script>
+    <script src="app.js?v=20261003a"></script>
 </body>
 
 </html>

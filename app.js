@@ -9464,7 +9464,7 @@ class VoiceChatBot {
     _showPreviewPlaying(el, playing) {
         const token = (this._previewPlayToken = (this._previewPlayToken || 0) + 1);
         const list = el.parentElement;
-        if (list) list.querySelectorAll('.voice-card.playing').forEach((c) => c.classList.remove('playing'));
+        if (list) list.querySelectorAll('.playing').forEach((c) => c.classList.remove('playing'));
         el.classList.add('playing');
         const off = () => { if (token === this._previewPlayToken) el.classList.remove('playing'); };
         Promise.resolve(playing).then((ok) => {
@@ -9601,6 +9601,9 @@ class VoiceChatBot {
             return;
         }
         const changed = card.id !== (this._voiceStepOriginal && this._voiceStepOriginal.id) || card.voice !== (this._voiceStepOriginal && this._voiceStepOriginal.voice);
+        // A later pick (two rows in a row) replaces this one: its switch ends on
+        // the newer coach, which is not a failure to report.
+        const pick = (this._voicePickSeq = (this._voicePickSeq || 0) + 1);
         this._saveCoachSettings({ companionId: card.id, voice: card.voice, voiceStepDone: true }, 'voice_step');
         const prewarmed = !!(this.isConnected && card.voice === this._sessionVoice && !this._voiceSwitchRunning && changed);
         if (this._voiceSwitchRunning || card.voice !== this._sessionVoice || card.id !== this.selectedCompanionId) await this._switchVoiceTo(card);
@@ -9608,9 +9611,11 @@ class VoiceChatBot {
         // Say so when the card is not in effect after the switch: a "Voice →"
         // line with nothing changed is what hid the stuck switch above.
         const applied = this.selectedCompanionId === card.id && this.selectedVoice === card.voice;
-        if (!applied) console.error(`[Erica] 🎙️ Card NOT applied: chose ${card.name} (${card.id}, ${card.voice}), in effect ${this.selectedCompanionId} (${this.selectedVoice})`);
+        const superseded = pick !== this._voicePickSeq;
+        if (superseded) console.log(`[Erica] 🎙️ ${card.name} replaced by a later pick before its switch finished`);
+        else if (!applied) console.error(`[Erica] 🎙️ Card NOT applied: chose ${card.name} (${card.id}, ${card.voice}), in effect ${this.selectedCompanionId} (${this.selectedVoice})`);
         else if (changed) console.log(`[Erica] 🎙️ Voice → ${card.voice} (${card.name}); waited ${waitedMs} ms after "Use this voice"${prewarmed ? ' (switched while previewing)' : ''}`);
-        this._logSessionEvent('voice_selected', { card: card.id, voice: card.voice, changed, applied, sessionVoice: this._sessionVoice || null, reconnectMs: changed ? waitedMs : undefined, prewarmed, decideMs, mode: changeMode ? 'change' : 'first_call' });
+        this._logSessionEvent('voice_selected', { card: card.id, voice: card.voice, changed, applied, sessionVoice: this._sessionVoice || null, reconnectMs: changed ? waitedMs : undefined, prewarmed, decideMs, mode: changeMode ? 'change' : 'first_call', via: via || 'cards', ...(superseded ? { superseded: true } : {}) });
         this._updateCoachChip();
         next();
     }
@@ -9674,11 +9679,155 @@ class VoiceChatBot {
         chip.classList.toggle('in-call', !!this.isRecording);
     }
 
-    // The chip opens the image cards any time outside a call (inside one, a
-    // new voice would cut the call; it waits until after).
+    // The chip opens the coaches any time outside a call (inside one, a new
+    // voice would cut the call; it waits until after) — right under the chip:
+    // the picker appears where it was tapped (Eric on a phone, 2026-10-03:
+    // the cards at the bottom sat under his thumb). The first call's step
+    // stays at the bottom, by the call button.
     _openCoachChip() {
         if (this.isRecording) { console.log('[Erica] 🎙️ Coach chip: change after the call'); return; }
-        this._loadVoiceCards().then(() => { if (this._voiceCards && this._voiceCards.length) this._showVoiceStep({ mode: 'change' }); });
+        if (this._coachDropdownOpen) { this._closeCoachDropdown('chip'); return; }
+        this._loadVoiceCards().then(() => { if (this._voiceCards && this._voiceCards.length) this._openCoachDropdown(); });
+    }
+
+    // --- The chip's list of coaches ------------------------------------------
+    // A row picks the coach (the cards' apply path: _finishVoiceStep, the
+    // face, the name and the voice, the switch, the settings, voice_selected
+    // with via 'dropdown') and closes; ▶ only plays the preview. Tap outside,
+    // Esc or a drag up closes without a change. ↑/↓/Enter from the keyboard.
+    _openCoachDropdown() {
+        const dd = document.getElementById('coachDropdown');
+        const chip = document.getElementById('coachChip');
+        if (!dd || !chip) { this._showVoiceStep({ mode: 'change' }); return; }
+        const cards = this._voiceCards;
+        this._voiceStepMode = 'change';
+        this._voiceStepOriginal = this._voiceStepOriginalCard();
+        const current = cards.find((c) => c.id === (this._voiceStepOriginal && this._voiceStepOriginal.id)) || null;
+        dd.innerHTML = '';
+        if (this._coachDropdownObserver) this._coachDropdownObserver.disconnect();
+        this._coachDropdownObserver = typeof IntersectionObserver === 'function' ? new IntersectionObserver((entries) => {
+            for (const en of entries) {
+                if (!en.isIntersecting) continue;
+                const card = cards.find((c) => c.id === en.target.getAttribute('data-card'));
+                if (card) this._prefetchCardPreview(card);
+                if (this._coachDropdownObserver) this._coachDropdownObserver.unobserve(en.target);
+            }
+        }, { root: dd, threshold: 0.5 }) : null;
+        cards.forEach((card) => {
+            const row = document.createElement('div');
+            row.className = 'coach-dd-row' + (card === current ? ' current' : '');
+            row.id = 'coach-dd-' + card.id;
+            row.setAttribute('role', 'option');
+            row.setAttribute('aria-selected', card === current ? 'true' : 'false');
+            row.setAttribute('data-card', card.id);
+            row.innerHTML = `<img src="${this.apiUrl(card.thumb)}" alt="" draggable="false"><span class="coach-dd-name"></span>`
+                + '<svg class="coach-dd-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>'
+                + `<button type="button" class="coach-dd-play" tabindex="-1">${VOICE_CARD_ICONS}</button>`;
+            row.querySelector('.coach-dd-name').textContent = card.name;
+            const play = row.querySelector('.coach-dd-play');
+            play.setAttribute('aria-label', `Hear ${card.name}`);
+            play.addEventListener('click', (e) => { e.stopPropagation(); this._previewDropdownCard(card, row); });
+            row.addEventListener('click', () => this._pickDropdownCard(card));
+            dd.appendChild(row);
+            if (this._coachDropdownObserver) this._coachDropdownObserver.observe(row);
+        });
+        this._bindCoachDropdown(dd, chip);
+        dd.classList.remove('hidden');
+        // Only a list taller than its room scrolls; otherwise a drag up is free to close it.
+        dd.style.touchAction = dd.scrollHeight > dd.clientHeight + 1 ? 'pan-y' : 'none';
+        chip.setAttribute('aria-expanded', 'true');
+        this._coachDropdownOpen = true;
+        this._setCoachDropdownActive(Math.max(0, cards.indexOf(current)));
+        try { dd.focus({ preventScroll: true }); } catch (_) { /* no focus */ }
+        this._voiceStepShownAt = performance.now();
+        this._logSessionEvent('voice_step_viewed', { cards: cards.map((c) => c.id), preselected: current ? current.id : null, mode: 'change', via: 'dropdown' });
+    }
+
+    _setCoachDropdownActive(i) {
+        const dd = document.getElementById('coachDropdown');
+        if (!dd) return;
+        const rows = [...dd.querySelectorAll('.coach-dd-row')];
+        if (!rows.length) return;
+        const at = Math.max(0, Math.min(rows.length - 1, i));
+        this._coachDropdownActive = at;
+        rows.forEach((r, k) => r.classList.toggle('active', k === at));
+        dd.setAttribute('aria-activedescendant', rows[at].id);
+        rows[at].scrollIntoView({ block: 'nearest' });
+    }
+
+    _bindCoachDropdown(dd, chip) {
+        if (dd._bound) return;
+        dd._bound = true;
+        // Outside: a tap anywhere but the list and the chip (the chip toggles).
+        document.addEventListener('pointerdown', (e) => {
+            if (!this._coachDropdownOpen) return;
+            if (dd.contains(e.target) || chip.contains(e.target)) return;
+            this._closeCoachDropdown('outside');
+        }, true);
+        dd.addEventListener('keydown', (e) => {
+            if (!this._coachDropdownOpen) return;
+            const n = dd.querySelectorAll('.coach-dd-row').length;
+            if (e.key === 'ArrowDown') { e.preventDefault(); this._setCoachDropdownActive((this._coachDropdownActive + 1) % n); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); this._setCoachDropdownActive((this._coachDropdownActive - 1 + n) % n); }
+            else if (e.key === 'Home') { e.preventDefault(); this._setCoachDropdownActive(0); }
+            else if (e.key === 'End') { e.preventDefault(); this._setCoachDropdownActive(n - 1); }
+            else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const card = (this._voiceCards || [])[this._coachDropdownActive]; if (card) this._pickDropdownCard(card); }
+            else if (e.key === 'Escape') { e.preventDefault(); this._closeCoachDropdown('escape'); }
+            else if (e.key === 'Tab') this._closeCoachDropdown('tab');
+        });
+        // A drag up (touch) closes it — the list's own way out, like the
+        // bottom sheet's drag down. A list that scrolls only closes from its end.
+        let drag = null;
+        dd.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'mouse') return;
+            drag = { id: e.pointerId, x: e.clientX, y: e.clientY, atEnd: dd.scrollTop + dd.clientHeight >= dd.scrollHeight - 1 };
+        });
+        const end = (e) => {
+            if (!drag || e.pointerId !== drag.id) return;
+            const dx = e.clientX - drag.x; const dy = e.clientY - drag.y;
+            const up = e.type === 'pointerup' && drag.atEnd && dy < -40 && Math.abs(dy) > Math.abs(dx) * 1.5;
+            drag = null;
+            if (!up) return;
+            // The release is not a tap on the row it ends on.
+            const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+            dd.addEventListener('click', swallow, { capture: true, once: true });
+            setTimeout(() => dd.removeEventListener('click', swallow, { capture: true }), 0);
+            this._closeCoachDropdown('drag');
+        };
+        dd.addEventListener('pointerup', end);
+        dd.addEventListener('pointercancel', end);
+    }
+
+    _previewDropdownCard(card, row) {
+        this._showPreviewPlaying(row, this.playCoachPreview({ companionId: card.id, openaiVoice: card.voice, coachName: card.name, text: this._cardPreviewText(card) }));
+        this._logSessionEvent('voice_previewed', { card: card.id, voice: card.voice, via: 'dropdown' });
+    }
+
+    _pickDropdownCard(card) {
+        this._closeCoachDropdown(null);
+        // Always a change from the chip — never the first call's step (which
+        // starts the call): set here, not only when the list opened.
+        this._voiceStepMode = 'change';
+        const done = this._finishVoiceStep(card, 'dropdown');
+        // The face and name show at once; the voice follows with the new session.
+        setTimeout(() => this._updateCoachChip(), 0);
+        return done;
+    }
+
+    // via: why it closed without a pick (outside, escape, drag, chip, tab);
+    // null when a row was picked.
+    _closeCoachDropdown(via) {
+        if (!this._coachDropdownOpen) return;
+        this._coachDropdownOpen = false;
+        const dd = document.getElementById('coachDropdown');
+        const chip = document.getElementById('coachChip');
+        const hadFocus = dd && dd.contains(document.activeElement);
+        if (dd) { dd.classList.add('hidden'); dd.removeAttribute('aria-activedescendant'); }
+        if (chip) chip.setAttribute('aria-expanded', 'false');
+        if (this._coachDropdownObserver) { this._coachDropdownObserver.disconnect(); this._coachDropdownObserver = null; }
+        this.stopActivePreview && this.stopActivePreview({ clearPreview: true });
+        if (hadFocus && chip) { try { chip.focus({ preventScroll: true }); } catch (_) { /* no focus */ } }
+        if (via) { this._voiceStepMode = 'change'; this._finishVoiceStep(null, via); }
     }
 
     // Old builds kept renames on the device (ERICA_COACH_NAME_<id>). Signed-in:
