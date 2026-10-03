@@ -932,4 +932,22 @@ textarea:focus {
 .coach-chip span#coachChipName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .coach-chip-caret { font-size: 10px; color: #6b7280; }
 .coach-chip.in-call { cursor: default; opacity: 0.85; }
+
+/* The chip's list of coaches, right under it (Eric on a phone, 2026-10-03:
+   the cards at the bottom sat under his thumb, away from the chip he
+   tapped). Over the chat, never pushing it; scrolls inside past 60%. */
+.coach-dd { position: absolute; top: 36px; left: 6px; z-index: 5; width: 248px; max-width: calc(100vw - 12px); max-height: 60vh; max-height: 60dvh; overflow-y: auto; overscroll-behavior: contain; padding: 4px; border-radius: 14px; background: #fff; border: 1px solid rgba(0, 0, 0, 0.08); box-shadow: 0 12px 32px -10px rgba(15, 23, 42, 0.32); outline: none; }
+.coach-dd.hidden { display: none; }
+.coach-dd-row { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 6px; border-radius: 10px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.coach-dd-row img { width: 32px; height: 32px; border-radius: 9999px; object-fit: cover; flex: none; }
+.coach-dd-name { flex: 1; min-width: 0; font-size: 14px; color: #111827; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coach-dd-row.current .coach-dd-name { font-weight: 600; }
+.coach-dd-check { width: 16px; height: 16px; flex: none; color: #0d9488; visibility: hidden; }
+.coach-dd-row.current .coach-dd-check { visibility: visible; }
+.coach-dd-row.active { background: #f0fdfa; }
+@media (hover: hover) { .coach-dd-row:hover { background: #f0fdfa; } }
+.coach-dd-play { width: 32px; height: 32px; flex: none; display: flex; align-items: center; justify-content: center; border-radius: 9999px; background: #fff; border: 1px solid rgba(0, 0, 0, 0.08); color: #0f766e; cursor: pointer; }
+.coach-dd-play svg { width: 13px; height: 13px; }
+.coach-dd-row.playing .voice-card-icon-play { display: none; }
+.coach-dd-row.playing .voice-card-icon-wave { display: block; animation: voice-card-wave 0.7s ease-in-out infinite alternate; }
 .coach-chip.in-call .coach-chip-caret { visibility: hidden; }
