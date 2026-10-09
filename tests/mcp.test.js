@@ -221,17 +221,17 @@ test('/mcp: initialize, notifications, tools by scope (annotations for both clie
     assert.equal(info.title, 'Coach Studio');
     assert.equal(info.websiteUrl, base + '/admin');
     assert.match(info.description, /Coach Studio/);
-    assert.deepEqual(info.icons.map((i) => [i.src, i.mimeType, i.sizes]), [
-        [base + '/studio-assets/coach-studio-48.png', 'image/png', ['48x48']],
-        [base + '/studio-assets/coach-studio-96.png', 'image/png', ['96x96']],
-        [base + '/studio-assets/coach-studio-192.png', 'image/png', ['192x192']],
-        [base + '/favicon.svg', 'image/svg+xml', ['any']],
-    ]);
-    process.env.MCP_SERVER_ICONS = 'off';
+    assert.equal(info.icons, undefined, 'icons are off by default (claude-ai-mcp#474)');
+    process.env.MCP_SERVER_ICONS = 'on';
     try {
-        const off = (await rpc(owner, 'initialize', { protocolVersion: '2025-11-25' })).body.result.serverInfo;
-        assert.equal(off.icons, undefined, 'MCP_SERVER_ICONS=off drops them');
-        assert.equal(off.title, 'Coach Studio');
+        const on = (await rpc(owner, 'initialize', { protocolVersion: '2025-11-25' })).body.result.serverInfo;
+        assert.deepEqual(on.icons.map((i) => [i.src, i.mimeType, i.sizes]), [
+            [base + '/studio-assets/coach-studio-48.png', 'image/png', ['48x48']],
+            [base + '/studio-assets/coach-studio-96.png', 'image/png', ['96x96']],
+            [base + '/studio-assets/coach-studio-192.png', 'image/png', ['192x192']],
+            [base + '/favicon.svg', 'image/svg+xml', ['any']],
+        ]);
+        assert.equal(on.title, 'Coach Studio');
     } finally { delete process.env.MCP_SERVER_ICONS; }
     // With the icons in, the handshake still completes: initialized, then tools/list.
     const note = await fetch(base + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + owner }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) });
@@ -272,6 +272,7 @@ test('/mcp: initialize, notifications, tools by scope (annotations for both clie
 // a custom domain): the icon URLs follow it, https, never a hard-coded host.
 test('serverInfo icons follow the public origin: https on Railway, PUBLIC_ORIGIN when set', () => {
     const saved = { p: process.env.PUBLIC_ORIGIN, r: process.env.RAILWAY_PUBLIC_DOMAIN };
+    process.env.MCP_SERVER_ICONS = 'on';
     try {
         delete process.env.PUBLIC_ORIGIN;
         process.env.RAILWAY_PUBLIC_DOMAIN = 'web-staging-2c7ff.up.railway.app';
@@ -282,7 +283,8 @@ test('serverInfo icons follow the public origin: https on Railway, PUBLIC_ORIGIN
         for (const i of mcpServer.serverInfo('2025-11-25').icons) assert.equal(new URL(i.src).origin, 'https://coach.talenttransformation.com', i.src);
         assert.equal(mcpServer.serverInfo('2025-03-26').icons, undefined);
     } finally {
-        process.env.PUBLIC_ORIGIN = saved.p;
+        delete process.env.MCP_SERVER_ICONS;
+        if (saved.p === undefined) delete process.env.PUBLIC_ORIGIN; else process.env.PUBLIC_ORIGIN = saved.p;
         if (saved.r === undefined) delete process.env.RAILWAY_PUBLIC_DOMAIN; else process.env.RAILWAY_PUBLIC_DOMAIN = saved.r;
     }
 });
