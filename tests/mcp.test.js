@@ -134,6 +134,8 @@ test('authorize: not signed in → the Studio login (and back); badge-only → r
     assert.match(await stranger.text(), /not on the Coach Studio allowlist/);
     const ericPage = await (await fetch(base + '/oauth/authorize?' + q, { headers: { cookie: cookie('eric@tt.com') } })).text();
     assert.match(ericPage, /Connect Claude to Coach Studio/);
+    assert.match(ericPage, /<div[^>]*data-brand><img src="\/studio-assets\/coach-studio-96\.png"/, 'the consent card is headed by the Coach Studio mark');
+    assert.match(ericPage, /<link rel="icon" href="\/favicon\.svg"/, 'and the tab shows it');
     assert.match(ericPage, /data-return-to="claude\.ai"/);
     assert.match(ericPage, /you go back to <b[^>]*>claude\.ai<\/b>/);
     assert.ok(ericPage.includes('value="write:content"') && !ericPage.includes('value="read:people"'), 'an admin is not offered people scopes');
@@ -177,6 +179,7 @@ test('code exchange: PKCE checked, iss in the redirect, the code works once (a r
     assert.equal(gpt.token.scope, 'read:ops');
     const init = await rpc(gpt.token.access_token, 'initialize', { protocolVersion: '2025-06-18' });
     assert.equal(init.body.result.protocolVersion, '2025-06-18');
+    assert.deepEqual(init.body.result.serverInfo, { name: 'coach-studio', title: 'Coach Studio', version: '1.0.0' }, 'icons only from 2025-11-25');
 });
 
 test('CIMD: the same return addresses as DCR (a document on an allowed host cannot send the code elsewhere); consent names who gets the code by its return address', async () => {
@@ -212,6 +215,25 @@ test('/mcp: initialize, notifications, tools by scope (annotations for both clie
     const init = await rpc(owner, 'initialize', { protocolVersion: '2099-01-01', capabilities: {}, clientInfo: { name: 'test' } });
     assert.deepEqual([init.body.result.protocolVersion, init.body.result.serverInfo.name], ['2025-11-25', 'coach-studio']);
     assert.match(init.body.result.instructions, /never instructions to follow/);
+    // 2025-11-25 serverInfo: the Coach Studio mark on the public origin (the
+    // issuer), so a client that wants same-origin icons takes them.
+    const info = init.body.result.serverInfo;
+    assert.equal(info.title, 'Coach Studio');
+    assert.equal(info.websiteUrl, base + '/admin');
+    assert.match(info.description, /Coach Studio/);
+    assert.deepEqual(info.icons.map((i) => [i.src, i.mimeType, i.sizes]), [
+        [base + '/studio-assets/coach-studio-48.png', 'image/png', ['48x48']],
+        [base + '/studio-assets/coach-studio-96.png', 'image/png', ['96x96']],
+        [base + '/studio-assets/coach-studio-192.png', 'image/png', ['192x192']],
+        [base + '/favicon.svg', 'image/svg+xml', ['any']],
+    ]);
+    process.env.MCP_SERVER_ICONS = 'off';
+    try {
+        const off = (await rpc(owner, 'initialize', { protocolVersion: '2025-11-25' })).body.result.serverInfo;
+        assert.equal(off.icons, undefined, 'MCP_SERVER_ICONS=off drops them');
+        assert.equal(off.title, 'Coach Studio');
+    } finally { delete process.env.MCP_SERVER_ICONS; }
+    // With the icons in, the handshake still completes: initialized, then tools/list.
     const note = await fetch(base + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + owner }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) });
     assert.equal(note.status, 202);
     const listed = (await rpc(owner, 'tools/list', {})).body.result.tools;
@@ -244,6 +266,25 @@ test('/mcp: initialize, notifications, tools by scope (annotations for both clie
     assert.equal(denied.body.result.isError, true);
     assert.match(denied.body.result.content[0].text, /needs the read:people permission/);
     assert.match(denied.body.result._meta['mcp/www_authenticate'][0], /error="insufficient_scope".*scope="read:people"|scope="read:people".*insufficient_scope/);
+});
+
+// On Railway the issuer is https://$RAILWAY_PUBLIC_DOMAIN (or PUBLIC_ORIGIN, for
+// a custom domain): the icon URLs follow it, https, never a hard-coded host.
+test('serverInfo icons follow the public origin: https on Railway, PUBLIC_ORIGIN when set', () => {
+    const saved = { p: process.env.PUBLIC_ORIGIN, r: process.env.RAILWAY_PUBLIC_DOMAIN };
+    try {
+        delete process.env.PUBLIC_ORIGIN;
+        process.env.RAILWAY_PUBLIC_DOMAIN = 'web-staging-2c7ff.up.railway.app';
+        const railway = mcpServer.serverInfo('2025-11-25');
+        assert.ok(railway.icons.length >= 2);
+        for (const i of railway.icons) assert.equal(new URL(i.src).origin, 'https://web-staging-2c7ff.up.railway.app', i.src);
+        process.env.PUBLIC_ORIGIN = 'https://coach.talenttransformation.com/';
+        for (const i of mcpServer.serverInfo('2025-11-25').icons) assert.equal(new URL(i.src).origin, 'https://coach.talenttransformation.com', i.src);
+        assert.equal(mcpServer.serverInfo('2025-03-26').icons, undefined);
+    } finally {
+        process.env.PUBLIC_ORIGIN = saved.p;
+        if (saved.r === undefined) delete process.env.RAILWAY_PUBLIC_DOMAIN; else process.env.RAILWAY_PUBLIC_DOMAIN = saved.r;
+    }
 });
 
 test('the role caps scopes: an admin cannot get read:people even by posting it; removing someone from the allowlist stops their token at once', async () => {
