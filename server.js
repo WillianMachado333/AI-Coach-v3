@@ -54,9 +54,10 @@ function refuseIdentity(res, idn) {
 // (the Wix side of #28). Sent whenever the secret is configured.
 const wixAuthHeader = () => (process.env.ERICA_WIX_API_SECRET ? { Authorization: 'Bearer ' + process.env.ERICA_WIX_API_SECRET } : {});
 const { createHealthPayload } = require('./lib/health');
-const { resolvePublicPath, looksLikeProbe } = require('./lib/staticPath');
+const { resolvePublicPath, publicRelativePath, looksLikeProbe } = require('./lib/staticPath');
+const brandIcons = require('./lib/brandIcons');
 const { liveSessionInput } = require('./lib/liveSessionInput');
-const { revalidationHeaders, isNotModified } = require('./lib/staticCache');
+const { revalidationHeaders, iconHeaders, isNotModified } = require('./lib/staticCache');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -609,6 +610,7 @@ const mimeTypes = {
     '.gif': 'image/gif',
     '.svg': 'image/svg+xml',
     '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
     '.wav': 'audio/wav',
     '.mp4': 'video/mp4',
     '.woff': 'application/font-woff',
@@ -3435,9 +3437,13 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         // .html/.js/.css revalidate on every load (lib/staticCache.js); the
-        // Wix embed kept stale versions after deploys without this.
+        // Wix embed kept stale versions after deploys without this. The brand
+        // icons are cached for a day.
         fs.stat(filePath, (statError, stat) => {
-            const cache = revalidationHeaders(extname, content, statError ? null : stat.mtime);
+            const mtime = statError ? null : stat.mtime;
+            const cache = brandIcons.isBrandIcon(publicRelativePath(req.url))
+                ? iconHeaders(content, mtime)
+                : revalidationHeaders(extname, content, mtime);
             if (isNotModified(req.headers, cache)) {
                 res.writeHead(304, { ...cache, 'Access-Control-Allow-Origin': '*' });
                 res.end();
