@@ -341,6 +341,118 @@ test('writes: Injected Data needs a preview of the exact change (then the client
     assert.ok(calls.some((c) => c.status === 'insufficient_scope'));
 });
 
+// Readiness review, reproduced: ChatGPT / Claude change one field by sending
+// only that field. The apply wrote that partial row (the other fields wiped,
+// a safety rule left enabled=false) while the preview showed the merged row.
+const PK = { 'safety-rules': 'rule_id', 'canonical-quizzes': 'quiz_id', 'canonical-courses': 'course_id' };
+function injectedClient(t) {
+    const call = async (name, args) => toolText(await rpc(t, 'tools/call', { name, arguments: args }));
+    const preview = (args) => call('preview_injected_data_edit', args);
+    const apply = async (args, applyArgs = args) => {
+        const pv = await preview(args);
+        assert.ok(pv.preview_id, 'preview refused: ' + JSON.stringify(pv));
+        const done = await call('edit_injected_data', { ...applyArgs, preview_id: pv.preview_id });
+        assert.equal(done.applied, true, 'apply refused: ' + JSON.stringify(done));
+        return { pv, done };
+    };
+    const readBack = async (kind, id) => (await call('read_config', { what: 'injected' })).kinds[kind].rows.find((r) => r[PK[kind]] === id) || null;
+    return { call, preview, apply, readBack };
+}
+
+test('Injected Data over MCP: changing one field keeps the rest of the row (a safety rule stays on); the preview is exactly what is written; key order does not matter; a new row needs every required field', async () => {
+    mcpServer._internal.resetRate();
+    const { call, preview, apply, readBack } = injectedClient((await connect('willian@tt.com', { scopes: ['write:content'] })).token.access_token);
+    const rule = { rule_id: 'self-harm', trigger_hint: 'wants to hurt themselves', prescribed_response: 'Share the 988 line and stop coaching.', enabled: true };
+    await apply({ kind: 'safety-rules', op: 'upsert', row: rule });
+    assert.deepEqual(await readBack('safety-rules', 'self-harm'), rule);
+
+    // One field of a safety rule.
+    const one = { kind: 'safety-rules', op: 'upsert', row: { rule_id: 'self-harm', prescribed_response: 'Share 988 and the campus line, then stop coaching.' } };
+    const { pv, done } = await apply(one);
+    const expected = { ...rule, prescribed_response: 'Share 988 and the campus line, then stop coaching.' };
+    assert.deepEqual(await readBack('safety-rules', 'self-harm'), expected, 'trigger_hint kept, still enabled');
+    assert.deepEqual(pv.before, rule);
+    assert.deepEqual(pv.after, expected, 'the preview shows the whole row as it will be written');
+    assert.deepEqual(done.after, pv.after, 'what was written is what was previewed');
+    assert.deepEqual(pv.changed, ['prescribed_response']);
+    const au = audits().find((e) => e.action === 'injected.safety-rules.update');
+    assert.deepEqual([au.actor, au.via, au.target], ['willian@tt.com', 'mcp', 'safety-rules/self-harm']);
+    assert.deepEqual([au.meta.before, au.meta.after, au.meta.changed], [rule, expected, ['prescribed_response']]);
+
+    // Only the switch: off, then on again; the text stays.
+    await apply({ kind: 'safety-rules', op: 'upsert', row: { rule_id: 'self-harm', enabled: false } });
+    assert.deepEqual(await readBack('safety-rules', 'self-harm'), { ...expected, enabled: false });
+    await apply({ kind: 'safety-rules', op: 'upsert', row: { enabled: 'true', rule_id: 'self-harm' } });
+    assert.deepEqual(await readBack('safety-rules', 'self-harm'), expected);
+
+    // One field of a canonical-list row.
+    const quiz = { quiz_id: 'grit', name: 'Grit Quiz', url: 'https://tt.com/grit', one_line: 'How you keep going' };
+    await apply({ kind: 'canonical-quizzes', op: 'upsert', row: quiz });
+    const q = await apply({ kind: 'canonical-quizzes', op: 'upsert', row: { quiz_id: 'grit', url: 'https://tt.com/quiz/grit' } });
+    assert.deepEqual(q.pv.after, { ...quiz, url: 'https://tt.com/quiz/grit' });
+    assert.deepEqual(await readBack('canonical-quizzes', 'grit'), { ...quiz, url: 'https://tt.com/quiz/grit' }, 'name and one_line kept');
+    const qa = audits().find((e) => e.action === 'injected.canonical-quizzes.update');
+    assert.deepEqual([qa.meta.before, qa.meta.after.url, qa.meta.changed], [quiz, 'https://tt.com/quiz/grit', ['url']]);
+
+    // The preview binds the row that will be written, not how the JSON was spelled.
+    await apply({ kind: 'canonical-quizzes', op: 'upsert', row: { quiz_id: 'grit', one_line: 'Perseverance' } },
+        { op: 'upsert', row: { one_line: 'Perseverance', quiz_id: 'grit' }, kind: 'canonical-quizzes' });
+    assert.equal((await readBack('canonical-quizzes', 'grit')).one_line, 'Perseverance');
+    const pvx = await preview({ kind: 'canonical-quizzes', op: 'upsert', row: { quiz_id: 'grit', name: 'Grit' } });
+    assert.match((await call('edit_injected_data', { kind: 'canonical-quizzes', op: 'upsert', row: { quiz_id: 'grit', name: 'Grit!' }, preview_id: pvx.preview_id })).error, /not the one that was previewed/);
+    assert.equal((await readBack('canonical-quizzes', 'grit')).name, 'Grit Quiz');
+
+    // A new row needs every required field: refused at the preview, nothing written.
+    const noText = await preview({ kind: 'safety-rules', op: 'upsert', row: { rule_id: 'new-rule', trigger_hint: 'says they are unsafe' } });
+    assert.equal(noText.preview_id, undefined);
+    assert.match(noText.error, /new rule needs prescribed_response, enabled/i);
+    assert.match(noText.error, /rule_id, trigger_hint, prescribed_response, enabled/, 'and names the fields to send');
+    const noName = await preview({ kind: 'canonical-quizzes', op: 'upsert', row: { quiz_id: 'nameless', url: 'https://tt.com/x' } });
+    assert.match(noName.error, /new quiz needs name/i);
+    assert.equal(await readBack('safety-rules', 'new-rule'), null);
+    assert.equal(await readBack('canonical-quizzes', 'nameless'), null);
+    // An edit cannot blank a required field, and a misspelt field is not silently dropped.
+    assert.match((await preview({ kind: 'safety-rules', op: 'upsert', row: { rule_id: 'self-harm', trigger_hint: '  ' } })).error, /trigger_hint cannot be empty/);
+    assert.match((await preview({ kind: 'canonical-quizzes', op: 'upsert', row: { quiz_id: 'grit', title: 'Grit' } })).error, /unknown field: title .*quiz_id, name, url, one_line/);
+    assert.deepEqual(await readBack('safety-rules', 'self-harm'), expected);
+});
+
+test('Injected Data in the Studio: the same merge (a form that leaves a field out keeps it; an unticked switch is off); a change made after a preview voids it', async () => {
+    mcpServer._internal.resetRate();
+    const { preview, call, readBack } = injectedClient((await connect('willian@tt.com', { scopes: ['write:content'] })).token.access_token);
+    const post = async (kind, fields) => {
+        const r = await fetch(base + '/admin/injected-data/' + kind + '/upsert', { method: 'POST', headers: { ...FORM, cookie: cookie('eric@tt.com') }, body: form(fields), redirect: 'manual' });
+        assert.equal(r.status, 302);
+        return decodeURIComponent(new URL(r.headers.get('location'), base).searchParams.get('msg') || '');
+    };
+    // The browser form, switch unticked: the checkbox is absent, has_enabled says it was shown.
+    assert.equal(await post('safety-rules', { rule_id: 'crisis', trigger_hint: 'in crisis', prescribed_response: 'Give the crisis line.', has_enabled: '1' }), 'Saved crisis.');
+    assert.equal((await readBack('safety-rules', 'crisis')).enabled, false);
+    assert.equal(await post('safety-rules', { has_enabled: '1', rule_id: 'crisis', trigger_hint: 'in crisis', prescribed_response: 'Give the crisis line.', enabled: '1' }), 'Saved crisis.');
+    // A post that leaves fields out keeps them (switch included).
+    assert.equal(await post('safety-rules', { rule_id: 'crisis', prescribed_response: 'Give the crisis line now.' }), 'Saved crisis.');
+    assert.deepEqual(await readBack('safety-rules', 'crisis'), { rule_id: 'crisis', trigger_hint: 'in crisis', prescribed_response: 'Give the crisis line now.', enabled: true });
+    const au = audits().find((e) => e.action === 'injected.safety-rules.update' && e.target === 'safety-rules/crisis');
+    assert.deepEqual([au.actor, au.via, au.meta.before.prescribed_response, au.meta.after.prescribed_response, au.meta.changed], ['eric@tt.com', 'studio', 'Give the crisis line.', 'Give the crisis line now.', ['prescribed_response']]);
+    const page = await (await fetch(base + '/admin/injected-data/safety-rules', { headers: { cookie: cookie('eric@tt.com') } })).text();
+    const forms = page.match(/<form method="POST" action="\/admin\/injected-data\/safety-rules\/upsert"[^>]*>\s*(<input type="hidden" name="has_enabled" value="1">)?/g) || [];
+    assert.equal(forms.length, 3, 'two rule rows and the new-rule form');
+    assert.ok(forms.every((f) => f.includes('has_enabled')), 'each says it carries the switch');
+    assert.ok(!(await (await fetch(base + '/admin/injected-data/canonical-quizzes', { headers: { cookie: cookie('eric@tt.com') } })).text()).includes('has_enabled'), 'lists without a switch do not');
+    // A new row from the Studio needs the required fields too.
+    assert.match(await post('safety-rules', { rule_id: 'half', trigger_hint: 'x', has_enabled: '1' }), /^Save failed: .*new rule needs prescribed_response/i);
+    assert.equal(await readBack('safety-rules', 'half'), null);
+    // Only the switch, as the row form sends it when just that was unticked.
+    assert.equal(await post('safety-rules', { rule_id: 'crisis', has_enabled: '1' }), 'Saved crisis.');
+    assert.deepEqual(await readBack('safety-rules', 'crisis'), { rule_id: 'crisis', trigger_hint: 'in crisis', prescribed_response: 'Give the crisis line now.', enabled: false });
+    // Preview over MCP, then someone changes that same field in the Studio: the
+    // person approved a change against a row that is no longer there.
+    const pv = await preview({ kind: 'safety-rules', op: 'upsert', row: { rule_id: 'crisis', trigger_hint: 'in crisis or unsafe' } });
+    assert.equal(await post('safety-rules', { rule_id: 'crisis', trigger_hint: 'someone in crisis' }), 'Saved crisis.');
+    assert.match((await call('edit_injected_data', { kind: 'safety-rules', op: 'upsert', row: { rule_id: 'crisis', trigger_hint: 'in crisis or unsafe' }, preview_id: pv.preview_id })).error, /not the one that was previewed/);
+    assert.equal((await readBack('safety-rules', 'crisis')).trigger_hint, 'someone in crisis', 'the Studio edit is not overwritten');
+});
+
 test('refresh rotates; reusing an old refresh token revokes the whole connection; revoking in the Studio stops the next call; no allowlist = MCP off', async () => {
     const c = await connect('willian@tt.com');
     const r1 = await (await fetch(base + '/oauth/token', { method: 'POST', headers: FORM, body: form({ grant_type: 'refresh_token', refresh_token: c.token.refresh_token, client_id: c.clientId }) })).json();
