@@ -189,7 +189,7 @@ test('quiet reconnect (new name or voice outside a call): the composer stays usa
     assert.match(bad.warned.join('\n'), /Session NOT reopened after the quiet reconnect — connecting again for 1 queued message\(s\)/);
     assert.deepEqual(bad.log.slice(-2), ['connect', 'flush']);
     // A send checks isConnecting before opening a session.
-    assert.match(src, /this\._pendingTextMessages\.push\(pending\);[\s\S]{0,1200}if \(!this\.isConnecting\) \{\s*this\.connect\(\{ skipOpeningLine: true \}\)/);
+    assert.match(src, /this\._pendingTextMessages\.push\(pending\);[\s\S]{0,1200}if \(!this\.isConnecting && !this\._autoReconnecting\) \{\s*this\.connect\(\{ skipOpeningLine: true \}\)/);
     // Both callers are quiet.
     assert.match(src, /this\.reconnectWithNewVoice\(\{ skipOpeningLine: true, quiet: true \}\)\s*\.then\(\(open\) =>/, 'the rename');
     assert.match(src, /await this\.reconnectWithNewVoice\(\{ skipOpeningLine: true, quiet: true \}\);/, 'the voice switch');

@@ -817,16 +817,16 @@ test("a call whose automatic reconnects all fail spaces them out (1.5 s, then 5 
 // A failed connect left isConnected at the truthy 'connecting', which the
 // reconnect's 1.5 s timer read as connected: no attempt, no standby, and the
 // call stayed on with the mic held and no session.
-test('a message typed during a call reconnect whose own connect fails (a 500, or the 12 s timeout) leaves the call reconnecting: never frozen with the mic held and no session', async () => {
+test("a message typed during a call reconnect waits for the call's own session: no connect of its own; a failed automatic create (a 500, or the 12 s timeout) leaves the call reconnecting, never frozen", async () => {
     for (const [label, verdict] of [['500', { status: 500, body: {} }], ['create timeout', 'hang']]) {
         const h = harness();
         h.app.toggleMicTrack();
         await h.advance(3000);
         const mic = h.app.localStream;
-        let typed = false;
+        let failed = false;
         h.live.policy = (create) => {
-            if (create.kind !== 'user' || h.live.creates.length < 2 || typed) return undefined;
-            typed = true;
+            if (create.kind !== 'auto' || failed) return undefined;
+            failed = true;
             return verdict;
         };
         h.live.failPc('disconnected');
@@ -834,8 +834,8 @@ test('a message typed during a call reconnect whose own connect fails (a 500, or
         h.app.sendTextMessage('hello?');
         await h.advance(40000);
         const kinds = h.live.creates.map((c) => c.kind);
-        assert.deepEqual(kinds.slice(0, 2), ['user', 'user'], label);
-        assert.ok(kinds.slice(2).includes('auto'), `${label}: the call tries again on its own (${kinds})`);
+        assert.deepEqual(kinds.filter((k) => k === 'user'), ['user'], `${label}: the typed message started no connect of its own (${kinds})`);
+        assert.ok(kinds.filter((k) => k === 'auto').length >= 2, `${label}: the call tries again on its own (${kinds})`);
         assert.ok(h.app.pc && h.app.isConnected === true, `${label}: connected again`);
         assert.equal(h.app.isRecording, true, label);
         assert.equal(h.app.localStream, mic, `${label}: the same mic`);
@@ -845,6 +845,38 @@ test('a message typed during a call reconnect whose own connect fails (a 500, or
         assert.equal(sent.reduce((a, b) => a + b, 0), 1, `${label}: the typed message reaches the reconnected call once (${sent})`);
         assert.equal(sent[sent.length - 1], 1, label);
     }
+});
+
+// Typed messages used to start connects of their own during a call
+// reconnect: offline, each failed at once and counted toward the
+// maintenance.html redirect, and each reset the call's reconnect budget.
+test('a call offline for 30 s with three messages typed during the reconnect: no maintenance.html, no connect of their own, the cap ends it visibly with the mic released', async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    const online = h.ctx.fetch;
+    const dropAt = h.clock.now();
+    h.ctx.fetch = (url, init) => {
+        if (String(url).includes('/api/proxy/live') && h.clock.now() < dropAt + 30000) {
+            h.live.creates.push({ kind: 'offline:' + ((init.headers || {})['X-Erica-Reconnect'] || 'user'), at: h.clock.now(), input: [] });
+            return Promise.reject(new TypeError('Failed to fetch'));
+        }
+        return online(url, init);
+    };
+    h.live.failPc('failed');
+    for (const [wait, text] of [[3000, 'hello?'], [6000, 'are you there?'], [7000, 'hello??']]) {
+        await h.advance(wait);
+        h.app.sendTextMessage(text);
+    }
+    await h.advance(40000);
+    const kinds = h.live.creates.map((c) => c.kind);
+    assert.deepEqual(h.navigations, [], `the page stays (${kinds})`);
+    assert.deepEqual(kinds.filter((k) => /user/.test(k)), ['user'], `no typed message started a connect (${kinds})`);
+    assert.equal(kinds.filter((k) => /auto/.test(k)).length, 3, `the cap bounds the attempts (${kinds})`);
+    assert.equal(h.app.callEndedNotice.dataset.reason, 'dropped');
+    assert.equal(h.app.localStream, null, 'the mic is released');
+    assert.equal(h.app._openaiFailCount || 0, 0);
+    assert.ok(h.failedNote(), 'the waiting messages show the failed note with Try again');
 });
 
 // The call button checked "not connected" before "recording": a hang-up tap
@@ -984,4 +1016,51 @@ test('right after a hang-up, a chat message sent while her last utterance is sti
     await h.advance(200);
     assert.equal(h.indicator().visible, false);
     assert.equal(h.failedNote(), null);
+});
+
+// After a hang-up the session goes on in chat, and the voice layer may say a
+// filler ("Let me check that.") for a typed message. Counted as the answer, a
+// session that then died lost the message with no sign (Varsha's class).
+for (const end of ['expired', 'pc failed']) {
+    test(`after a hang-up, a voice-layer filler for a chat message does not answer it: ${end} before the backend answers leaves a visible failure with Try again, never a silent standby`, async () => {
+        const h = harness();
+        h.app.toggleMicTrack();
+        await h.advance(3000);
+        h.live.say('So that is my view.');
+        await h.advance(3000);
+        h.app.toggleMicTrack(); // hang up; the session goes on in chat
+        await h.advance(1000);
+        h.app.sendTextMessage('Q typed in chat');
+        await h.advance(800);
+        h.live.say('Let me check that.');
+        await h.advance(2500);
+        if (end === 'expired') h.live.closeSession('expired'); else h.live.failPc('failed');
+        await h.advance(10000);
+        assert.ok(h.failedNote(), 'the failure shows');
+        assert.equal(h.events('turn_failed').length, 1);
+        assert.equal(h.events('turn_failed')[0].meta.partial, true, 'a reply had started');
+        h.failedNote().querySelector('button').click();
+        await h.advance(3000);
+        const sent = h.live.pcs.map((p) => wire(p.dc.sent).filter((x) => x === 'item:user:Q typed in chat').length);
+        assert.equal(sent[sent.length - 1], 1, `Try again sends it once on the new session (${sent})`);
+        h.live.reply('Answer to Q');
+        await h.advance(200);
+        assert.equal(h.failedNote(), null);
+        assert.equal(h.indicator().visible, false);
+    });
+}
+
+test('after a hang-up, a voice-layer reply with no backend answer ends the turn quietly at 60 s: no false failure', async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    h.app.toggleMicTrack();
+    await h.advance(1000);
+    h.app.sendTextMessage('thanks, bye');
+    await h.advance(800);
+    h.live.say('You are welcome, good luck!');
+    await h.advance(2 * MIN);
+    assert.equal(h.failedNote(), null, 'no failed note');
+    assert.equal(h.events('turn_failed').length, 0);
+    assert.equal(h.indicator().visible, false);
 });

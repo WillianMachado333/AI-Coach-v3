@@ -3448,8 +3448,11 @@ class VoiceChatBot {
             }
             this.isOnHold = false;
 
-            // Only trigger connect if not already connecting
-            if (!this.isConnecting) {
+            // Only trigger connect if not already connecting. While a call
+            // reconnects on its own the message waits for that session: a
+            // connect of its own would reset the call's reconnect budget,
+            // and offline its failures count toward maintenance.html.
+            if (!this.isConnecting && !this._autoReconnecting) {
                 this.connect({ skipOpeningLine: true })
                     .then(() => {
                         this._sendPendingTextMessage();
@@ -10583,12 +10586,12 @@ class VoiceChatBot {
                 this._liveBotTranscript = (this._liveBotTranscript || '') + message.delta;
                 {
                     const shown = this._nonSpeechFiltered(this._liveBotTranscript, 'coach');
-                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, false, Date.now(), { turnKey: this._liveBotTurnKey });
+                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, false, Date.now(), { turnKey: this._liveBotTurnKey, voiceLayer: true });
                 }
                 clearTimeout(this._liveBotFinalizeTimer);
                 this._liveBotFinalizeTimer = setTimeout(() => {
                     const shown = this._nonSpeechFiltered(this._liveBotTranscript, 'coach', true);
-                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, true, Date.now(), { turnKey: this._liveBotTurnKey });
+                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, true, Date.now(), { turnKey: this._liveBotTurnKey, voiceLayer: true });
                     this._liveBotItemId = null;
                     this._liveBotTurnKey = null;
                     this._liveBotTurnSplit = false;
@@ -12058,8 +12061,13 @@ class VoiceChatBot {
         // when this reply began (meta.replyStartedAt, its response.created);
         // a message sent after that keeps them (lib/turnWatch.js). A voice
         // utterance that ran on past a typed message is a new reply from
-        // there (meta.turnKey, _liveSplitUtteranceTurn).
-        if (String(text || '').trim()) this._turns().output({ key: meta.turnKey || id || null, startedAt: meta.replyStartedAt ?? null, final: !!isFinal });
+        // there (meta.turnKey, _liveSplitUtteranceTurn). Outside a call the
+        // voice layer's words are a filler ("Let me check that.") or a reply
+        // the backend also renders: they show a reply has started but never
+        // answer the turn, so a session that dies before the answer leaves a
+        // visible failure, not a silent one.
+        const voiceFiller = !!meta.voiceLayer && !this._inCall();
+        if (String(text || '').trim()) this._turns().output({ key: meta.turnKey || id || null, startedAt: meta.replyStartedAt ?? null, final: !!isFinal && !voiceFiller });
     }
 
     addMessage(sender, text) {

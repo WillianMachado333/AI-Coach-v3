@@ -69,7 +69,9 @@ test('a queued send shows its bubble at the tap and the send reuses its id; queu
 });
 
 test('an answer counts for the messages the model had when it began: reply ids and start times reach the turn watch; held messages count from the flush', () => {
-    assert.match(method('updateBotMessage'), /this\._turns\(\)\.output\(\{ key: meta\.turnKey \|\| id \|\| null, startedAt: meta\.replyStartedAt \?\? null, final: !!isFinal \}\)/);
+    assert.match(method('updateBotMessage'), /this\._turns\(\)\.output\(\{ key: meta\.turnKey \|\| id \|\| null, startedAt: meta\.replyStartedAt \?\? null, final: !!isFinal && !voiceFiller \}\)/);
+    // Outside a call the voice layer's words never answer a turn.
+    assert.match(method('updateBotMessage'), /const voiceFiller = !!meta\.voiceLayer && !this\._inCall\(\);/);
     const live = method('handleLiveMessage');
     assert.match(live, /if \(inner\.type === 'response\.created'\) \{[\s\S]{0,200}this\._liveReplyStartedAt\.set\(message\.delegation_id \|\| '', Date\.now\(\)\);/);
     assert.equal((live.match(/\{ replyStartedAt: this\._liveDelegatedStartedAt \}/g) || []).length, 2, 'the delegated bubble, streaming and final');
@@ -81,7 +83,7 @@ test('an answer counts for the messages the model had when it began: reply ids a
 test('in a call, a voice utterance that runs on past a typed message is a new reply for the turn watch from its next word, in the same bubble', () => {
     const live = method('handleLiveMessage');
     assert.match(live, /else if \(this\._liveBotTurnSplit\) \{[\s\S]{0,300}this\._liveBotTurnKey = `\$\{this\._liveBotItemId\}@\$\{Date\.now\(\)\}`;/);
-    assert.equal((live.match(/this\.updateBotMessage\(this\._liveBotItemId, shown, (false|true), Date\.now\(\), \{ turnKey: this\._liveBotTurnKey \}\)/g) || []).length, 2, 'the voice bubble, streaming and final');
+    assert.equal((live.match(/this\.updateBotMessage\(this\._liveBotItemId, shown, (false|true), Date\.now\(\), \{ turnKey: this\._liveBotTurnKey, voiceLayer: true \}\)/g) || []).length, 2, 'the voice bubble, streaming and final, marked as the voice layer');
     assert.match(method('sendTextMessage'), /this\._turns\(\)\.send\(\{[^}]*\}\);[\s\S]{0,120}if \(!held\) this\._liveSplitUtteranceTurn\(\);/);
     assert.match(method('_liveSplitUtteranceTurn'), /if \(this\._liveBotItemId && this\._inCall\(\)\) this\._liveBotTurnSplit = true;/, 'calls only: after a hang-up her trailing words are not a chat answer');
     assert.match(method('_resendOpenTurns'), /resend\.forEach\(\(entry\) => this\._sendUserItem\(entry\.message\)\);\s*(\/\/[^\n]*\n\s*)*this\._liveSplitUtteranceTurn\(\);\s*this\._requestResponse\('re-sent turn'\);/, 'a re-send (Try again mid-utterance) splits too');
