@@ -104,6 +104,16 @@ class VoiceChatBot {
         this._urlQuestionSent = false;
         // Queue for messages sent before connection is ready
         this._pendingTextMessages = [];
+        // The open user turn (lib/turnWatch.js): the reply slot's dots and
+        // labels, and what a dead session means for it. Each model session
+        // gets a number, so a re-send knows what that session has seen.
+        this._turnWatch = null;
+        this._sessionSeq = 0;
+        // A GPT-Live content close (safety filter) keeps what was in the
+        // window out of every later session.input; the safety card shows
+        // once per conversation. Both are saved with the conversation.
+        this._contentClosed = null;
+        this._safetyCard = null;
         // Attachments are prepared in the browser and sent as supported
         // Realtime input content; file bytes/content are never logged.
         this.pendingAttachments = [];
@@ -214,7 +224,9 @@ class VoiceChatBot {
 
             // 2. Connect
             // console.log('[Erica] Triggering connect()...');
-            this.connect().catch(e => console.error('[Erica] Connection failed during restore:', e));
+            this._connectForCall = true;
+            this.connect().catch(e => console.error('[Erica] Connection failed during restore:', e))
+                .finally(() => { this._connectForCall = false; });
 
             // 3. Start recording
             // console.log('[Erica] Triggering startRecording()...');
@@ -230,7 +242,9 @@ class VoiceChatBot {
             if (window.uiLayout && typeof window.uiLayout.setCallModePanelOpen === 'function') {
                 window.uiLayout.setCallModePanelOpen(this, true, true);
             }
-            this.connect().catch(e => console.error('[Erica] Connection failed during voiceMode init:', e));
+            this._connectForCall = true;
+            this.connect().catch(e => console.error('[Erica] Connection failed during voiceMode init:', e))
+                .finally(() => { this._connectForCall = false; });
             this.startRecording().catch(err => {
                 console.warn('[Erica] Auto-start voice blocked by browser, waiting for user interaction.', err);
             });
@@ -1457,6 +1471,13 @@ class VoiceChatBot {
             this.restoreConversationHistory(state.conversationHistory);
         }
 
+        // A content close and the safety card belong to this conversation:
+        // a reload keeps the blocked messages out of session.input and puts
+        // the card back where it was (once).
+        this._contentClosed = state.contentClosed && Array.isArray(state.contentClosed.keys) ? state.contentClosed : null;
+        this._safetyCard = state.safetyCard && typeof state.safetyCard === 'object' ? state.safetyCard : null;
+        this._restoreSafetyCard();
+
         return state;
     }
 
@@ -1481,7 +1502,9 @@ class VoiceChatBot {
                 thumb: this.currentVoiceThumbUrl
             } : {},
             conversationHistory: this.getConversationHistory(),
-            userId: this.getUserIdFromURL()
+            userId: this.getUserIdFromURL(),
+            contentClosed: this._contentClosed || null,
+            safetyCard: this._safetyCard || null
         };
 
         if (signedIn && this.currentVoiceThumbUrl && !this.currentVoiceThumbUrl.startsWith('http')) {
@@ -2193,20 +2216,44 @@ class VoiceChatBot {
     // own representation of past turns, and the user's words stay user-role
     // text instead of gaining system authority.
     //   Realtime: conversation.item.create right after session.update.
-    //   GPT-Live: session.input at creation (establishConnection). Its voice
-    //   layer never sees items added later — response.item.create reaches
-    //   only the delegated backend.
-    _historyItems() {
+    //   GPT-Live: session.input at creation (establishConnection) reaches the
+    //   voice layer; items added later (response.item.create) reach only the
+    //   delegated backend. User-role text in session.input is what the
+    //   content filter closed sessions on (2026-10-14, staging probe
+    //   2026-10-28), so a chat session's session.input carries the coach's
+    //   messages only and the backend gets the window as items right after
+    //   session.update (_liveHistoryPlan, _injectHistoryIntoSession).
+    // The open turn's unanswered messages are not history yet: they are
+    // re-sent after it (_resendOpenTurns).
+    _historyWindow({ includeOpen = false } = {}) {
         const onScreen = Array.isArray(this.messages) ? this.messages : [];
         // Server/preparation history is already merged into this.messages;
         // the queued copy is only a fallback for a session configured first.
         const source = onScreen.length ? onScreen : (this.conversationHistoryToSend || []);
-        const turns = window.coachUiRules?.recentHistory ? window.coachUiRules.recentHistory(source) : [];
+        const open = includeOpen ? [] : this._turns().openIds();
+        const rest = open.length ? source.filter((m) => !open.includes(m.id)) : source;
+        return window.coachUiRules?.recentHistory ? window.coachUiRules.recentHistory(rest) : [];
+    }
+
+    _historyItems(turns = this._historyWindow()) {
         return turns.map((turn) => ({
             type: 'message',
             role: turn.role,
             content: [{ type: turn.role === 'assistant' ? 'output_text' : 'input_text', text: turn.text }]
         }));
+    }
+
+    // GPT-Live: what a new session's voice layer gets at creation
+    // (session.input) and what its backend gets as items once it starts.
+    // A call keeps the user's words in session.input, minus anything a
+    // content close blocked (lib/turnWatch.js liveHistoryPlan).
+    _liveHistoryPlan() {
+        const turns = this._historyWindow();
+        const callMode = !!(this.isRecording || this._connectForCall);
+        const lib = window.turnWatch;
+        if (!lib) return { input: this._historyItems(turns), backend: [], callMode };
+        const plan = lib.liveHistoryPlan(turns, { callMode, blocked: (this._contentClosed && this._contentClosed.keys) || [] });
+        return { input: this._historyItems(plan.input), backend: this._historyItems(plan.backend), callMode };
     }
 
     // A CleverTap event from the host page (bridge.js HOST_EVENT): where the
@@ -2242,7 +2289,20 @@ class VoiceChatBot {
         if (this._historyInjectedFor && this._historyInjectedFor === this.pc) return 0;
         this._historyInjectedFor = this.pc;
         this.conversationHistoryToSend = null;
-        if (this.voiceApiMode === 'live') return 0; // sent as session.input at creation
+        // GPT-Live: the voice layer got what it may see at creation
+        // (session.input); the backend gets the window now when session.input
+        // lacked part of it (_liveHistoryPlan).
+        if (this.voiceApiMode === 'live') {
+            const backend = this._liveBackendHistory || [];
+            this._liveBackendHistory = [];
+            if (!backend.length) return 0;
+            let given = 0;
+            for (const item of backend) {
+                if (this.sendMessage({ type: 'response.item.create', item })) given++;
+            }
+            (given === backend.length ? console.log : console.warn)(`[Erica] History: ${given}/${backend.length} messages given to the live backend as items (${reason})`);
+            return given;
+        }
         const items = this._historyItems();
         if (!items.length) {
             console.log(`[Erica] History: nothing to replay into the ${this.voiceApiMode} session (${reason})`);
@@ -2887,9 +2947,13 @@ class VoiceChatBot {
             if (!this.isConnecting) {
                 console.log('[Erica] Not connected — reconnecting before starting voice...');
                 this.isOnHold = false;
+                // The session about to open is for a call: its voice layer gets
+                // the user's words too (_liveHistoryPlan).
+                this._connectForCall = true;
                 this.connect()
                     .then(() => new Promise(resolve => setTimeout(resolve, 800)))
                     .then(() => {
+                        this._connectForCall = false;
                         if (this.isConnected) {
                             this.startRecording().catch(err => {
                                 console.error('[Erica] startRecording after reconnect failed:', err);
@@ -2899,6 +2963,7 @@ class VoiceChatBot {
                         }
                     })
                     .catch(err => {
+                        this._connectForCall = false;
                         console.error('[Erica] Manual connect failed:', err);
                     });
             }
@@ -3331,6 +3396,8 @@ class VoiceChatBot {
         // to sending anything. They only serve to reduce cold-start friction;
         // once the conversation is underway they'd just clutter the view.
         this.hideQuickActions();
+        // A new message moves on from a turn that could not be answered.
+        if (window.uiLayout && typeof window.uiLayout.clearTurnFailed === 'function') window.uiLayout.clearTurnFailed(this);
 
         // A message that can't fit the data channel must be refused BEFORE the
         // composer clears — dataChannel.send() throws past the cap, and the
@@ -3352,6 +3419,8 @@ class VoiceChatBot {
             // Queue the message — it will be sent when connection is ready
             console.log('[Erica] Not connected — queuing message with text/attachments');
             this._pendingTextMessages.push({ text, attachments });
+            // The reply slot shows the dots from the tap, not from the connect.
+            this._turns().queue();
             if (fromComposer && this.textInput) {
                 this.textInput.value = '';
                 if (attachments.length && typeof this.markAttachmentsSending === 'function') {
@@ -3384,7 +3453,8 @@ class VoiceChatBot {
 
         // Send first; the composer clears and the bubble appears only once
         // the message has actually left.
-        if (!this._sendUserItem(this._buildUserItemMessage(text, attachments))) {
+        const itemMessage = this._buildUserItemMessage(text, attachments);
+        if (!this._sendUserItem(itemMessage)) {
             this._refuseSend(fromComposer, 'Couldn’t send that. Check your connection and try again.');
             return;
         }
@@ -3424,6 +3494,10 @@ class VoiceChatBot {
                 src: attachment.kind === 'image' ? (attachment.dataUrl || null) : null
             }))
         });
+        // The coach's reply slot shows the dots from here until the first
+        // words of the answer; a session that dies first re-sends it
+        // (lib/turnWatch.js).
+        this._turns().send({ id: userMessageId, message: itemMessage, session: this._sessionSeq });
 
 
         // Fire analytics for asked question (text path)
@@ -3434,18 +3508,12 @@ class VoiceChatBot {
             this.botStartTimestamp = userTimestamp + 100; // 100ms after user message
         }
 
-        // Create a response to get the model's reply
+        // Create a response to get the model's reply. The mic stays enabled
+        // while it is generated.
         setTimeout(() => {
             if (this.isConnected) {
                 this._requestResponse('user message');
             }
-
-            // Show loader and disable inputs while waiting for response
-            // Show loader and disable inputs while waiting for response
-            // Loader removed as per request for questions
-            // Mic button logic removed: Keep mic enabled during text response generation
-            // if (typeof this.setMicButtonState === 'function') this.setMicButtonState('disabled');
-
         }, 100);
     }
 
@@ -5306,6 +5374,10 @@ class VoiceChatBot {
         this.messages = [];
         this.messageElements.clear();
         this.pendingBotMessages = [];
+        // A new conversation: nothing blocked, the card may show again.
+        this._contentClosed = null;
+        this._safetyCard = null;
+        this._turns().reset();
 
         // Clear current message tracking
         this.currentUserMessageElement = null;
@@ -5507,6 +5579,9 @@ class VoiceChatBot {
                 // The server ended this visit's Live connection (#40): show the
                 // cut, once connect() has finished unwinding.
                 setTimeout(() => this._cutLive(error.liveCut, 'server'), 0);
+            } else {
+                // No session came up: the open turn cannot be answered.
+                this._turns().connectFailed();
             }
             console.error('Connection error:', error);
             const errorMessage = error.message || 'Unknown error occurred';
@@ -6185,8 +6260,9 @@ class VoiceChatBot {
 
     async establishConnection() {
         try {
-            // Show loader and disable mic while connecting
-            if (typeof this.showLoader === 'function') this.showLoader();
+            // Show loader and disable mic while connecting (an open turn's
+            // reply slot already shows the dots)
+            if (typeof this.showLoader === 'function' && !this._turnOpen()) this.showLoader();
             if (typeof this.setMicButtonState === 'function') this.setMicButtonState('disabled');
 
             // Which voice API to speak — resolved once per page load (the
@@ -6199,6 +6275,10 @@ class VoiceChatBot {
             this.pc = new RTCPeerConnection({
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
             });
+            // This connection's events: one that is no longer current (torn
+            // down, replaced) changes nothing.
+            const pc = this.pc;
+            this._sessionSeq = (this._sessionSeq || 0) + 1;
 
 
             // Pre-create an audio transceiver so we can attach the mic later via replaceTrack without renegotiation
@@ -6452,8 +6532,13 @@ class VoiceChatBot {
                     this.updateTextButtonVisibility();
                 }
                 this.startSessionInactivityTimer();
-                // Send any message queued while connecting
+                // The open turn's unanswered messages, then anything queued
+                this._resendOpenTurns();
                 this._sendPendingTextMessage();
+            };
+            // The data channel closing ends the session like session.closed.
+            const onDataChannelClose = () => {
+                if (this.pc === pc) this._onSessionEnd('dc_closed', { pc });
             };
 
             // Set up data channel for text messages (OpenAI may create this, so we listen for it)
@@ -6461,12 +6546,14 @@ class VoiceChatBot {
                 this.dataChannel = event.channel;
                 this.dataChannel.onmessage = onDataChannelMessage;
                 this.dataChannel.onopen = onDataChannelOpen;
+                this.dataChannel.onclose = onDataChannelClose;
             };
 
             // Also create our own data channel as fallback
             this.dataChannel = this.pc.createDataChannel('oai-events');
             this.dataChannel.onmessage = onDataChannelMessage;
             this.dataChannel.onopen = onDataChannelOpen;
+            this.dataChannel.onclose = onDataChannelClose;
 
             // Create WebRTC offer
             const offer = await this.pc.createOffer({
@@ -6535,8 +6622,10 @@ class VoiceChatBot {
             // #40: the visit this connection belongs to (the server's guard
             // notes its turns) and whether the client reconnected on its own —
             // right after a cut the server refuses that, and only the person's
-            // tap or message opens a new session.
-            const reconnectKind = this._reconnectKind === 'auto' ? 'auto' : 'user';
+            // tap or message opens a new session. 'recover' (the one fresh
+            // session for an unanswered turn) is automatic too: it never
+            // lifts a cut.
+            const reconnectKind = (this._reconnectKind === 'auto' || this._reconnectKind === 'recover') ? this._reconnectKind : 'user';
             this._reconnectKind = null;
             if (isLive) {
                 if (this.sessionId) headers['X-Erica-Session'] = this.sessionId;
@@ -6546,17 +6635,20 @@ class VoiceChatBot {
             this._liveConnectKind = reconnectKind;
 
             let body = this.pc.localDescription.sdp;
-            const liveHistory = isLive ? this._historyItems() : [];
+            const plan = isLive ? this._liveHistoryPlan() : null;
+            const liveHistory = plan ? plan.input : [];
+            // The rest goes to the backend once the session starts.
+            this._liveBackendHistory = plan ? plan.backend : [];
             if (liveHistory.length) {
                 headers['Content-Type'] = 'application/json';
                 body = JSON.stringify({ sdp: body, input: liveHistory });
-                console.log(`[Erica] History: ${liveHistory.length} messages sent with the new live session (session.input)`);
+                console.log(`[Erica] History: ${liveHistory.length} messages sent with the new live session (session.input${plan.callMode ? '' : ', the coach’s only'})`);
             }
-            const response = await fetch(this.apiUrl(proxyPath), {
+            const response = await this._fetchWithTimeout(this.apiUrl(proxyPath), {
                 method: 'POST',
                 headers,
                 body
-            });
+            }, this._turnLimits().connectMs, 'session create');
 
             if (!response.ok) {
                 // #40: the server ended this visit's Live connection moments ago
@@ -6615,8 +6707,9 @@ class VoiceChatBot {
             }));
 
             // Monitor connection state
-            this.pc.onconnectionstatechange = () => {
-                if (this.pc.connectionState === 'connected') {
+            pc.onconnectionstatechange = () => {
+                if (pc !== this.pc) return;
+                if (pc.connectionState === 'connected') {
                     this.isConnected = true;
                     this._openaiFailCount = 0; // Reset failure counter on successful connection
                     this.updateStatus(true);
@@ -6629,54 +6722,9 @@ class VoiceChatBot {
                     this.startSessionInactivityTimer();
                     if (this.voiceApiMode === 'live') this._liveGuardStart(this._liveConnectKind);
 
-                } else if (this.pc.connectionState === 'disconnected' || this.pc.connectionState === 'failed') {
-                    this.isConnected = false;
-
-                    // Auto-reconnect silently instead of showing "Disconnected"
-                    // Show "Connecting..." while we attempt to restore the session.
-                    // Not after a cost cut (#40): that waits for the person's tap.
-                    if (!this.isConnecting && !this._autoReconnecting && !this._liveCut) {
-                        this._autoReconnecting = true;
-                        console.log('[Erica] WebRTC dropped — auto-reconnecting silently...');
-                        if (window.uiLayout && typeof window.uiLayout.updateStatusDot === 'function') {
-                            window.uiLayout.updateStatusDot(this, 'connecting');
-                        }
-
-                        // Tear down the dead WebRTC stack FIRST so we don't
-                        // orphan an RTCPeerConnection + <audio> element +
-                        // level-check intervals on every reconnect. On a
-                        // flaky network the old code stacked all of these.
-                        // Metering: this connection's usage ends here; the new
-                        // session starts its own (Live seconds restart at 0).
-                        try { this._flushUsageOnDisconnect('reconnect'); } catch (_) {}
-                        const keepMic = !!(this.isRecording && this.localStream);
-                        try { this._teardownWebRTCOnly({ keepMic }); } catch (_) {}
-
-                        // Small delay to let the connection fully close
-                        setTimeout(() => {
-                            this._reconnectKind = 'auto';
-                            this.connect({ skipOpeningLine: true })
-                                .then(() => {
-                                    // connect() reports failure by not connecting, not by throwing.
-                                    if (this.isConnected) console.log('[Erica] Auto-reconnect successful');
-                                    else console.warn('[Erica] Auto-reconnect did not reconnect' + (this._liveCut ? ' — the server ended this Live connection (' + this._liveCut.reason + ')' : ''));
-                                    this._autoReconnecting = false;
-                                    this._reconnectKind = null;
-                                })
-                                .catch(err => {
-                                    console.warn('[Erica] Auto-reconnect failed:', err?.message || err);
-                                    this._autoReconnecting = false;
-                                    this._reconnectKind = null;
-                                    // Only now show disconnected if reconnect failed
-                                    this.updateStatus(false);
-                                    if (this.callButton) this.callButton.disabled = true;
-                                    if (this.connectButton) {
-                                        this.connectButton.disabled = false;
-                                        this.connectButton.textContent = 'Reconnect';
-                                    }
-                                });
-                        }, 1500);
-                    }
+                } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                    // A dropped connection ends the session like session.closed.
+                    this._onSessionEnd('pc_' + pc.connectionState, { pc });
                 }
             };
 
@@ -7418,6 +7466,14 @@ class VoiceChatBot {
         messages.forEach((entry, i) => {
             setTimeout(() => {
                 const pending = typeof entry === 'string' ? { text: entry, attachments: [] } : entry;
+                // The session died before this went out: back in the queue for
+                // the next one. A flush never opens a session itself (a content
+                // close re-queued and re-sent it into one dying session after
+                // another); the turn watch decides whether one opens.
+                if (!this._channelOpen()) {
+                    this._pendingTextMessages.push(pending);
+                    return;
+                }
                 this.sendTextMessage(pending.text, pending.attachments);
             }, 500 + (i * 300));
         });
@@ -7512,6 +7568,11 @@ class VoiceChatBot {
             }
         }
 
+        // The reply slot says what the coach is doing while this runs; every
+        // fetch below gives up (an error output, so the model carries on).
+        const toolKey = callId || functionName;
+        this._turns().toolStart(toolKey, functionName);
+        const limits = this._turnLimits();
         try {
             console.log('[Erica] 🔍 Function call received:', functionName, functionArgs);
             let result = null;
@@ -7539,7 +7600,7 @@ class VoiceChatBot {
 
                         const searchUrl = this.apiUrl('/api/search');
                         console.log('[Erica] 🔍 Sending POST request to:', searchUrl, 'with query:', query);
-                        const searchResponse = await fetch(searchUrl, {
+                        const searchResponse = await this._fetchWithTimeout(searchUrl, {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
@@ -7547,7 +7608,7 @@ class VoiceChatBot {
                             body: JSON.stringify({
                                 query: query
                             })
-                        });
+                        }, limits.toolMs, 'search_web');
 
                         if (!searchResponse.ok) {
                             const errorText = await searchResponse.text();
@@ -7603,7 +7664,7 @@ class VoiceChatBot {
 
                 try {
                     const resourcesUrl = this.apiUrl('/api/helpful-resources');
-                    const resourcesResponse = await fetch(resourcesUrl, {
+                    const resourcesResponse = await this._fetchWithTimeout(resourcesUrl, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -7613,7 +7674,7 @@ class VoiceChatBot {
                             type,
                             limit
                         })
-                    });
+                    }, limits.toolMs, 'get_helpful_resources');
 
                     if (!resourcesResponse.ok) {
                         const errorText = await resourcesResponse.text();
@@ -7823,11 +7884,11 @@ class VoiceChatBot {
                     console.log('[Erica] 🔎 search_knowledge:', { scope, hasUserId: !!userId, hasObjectId: !!objectId, queryPreview: query.slice(0, 120) });
                     try {
                         const searchUrl = this.apiUrl('/api/knowledge-search');
-                        const kresp = await fetch(searchUrl, {
+                        const kresp = await this._fetchWithTimeout(searchUrl, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ query, scope, userId, objectId })
-                        });
+                        }, limits.toolMs, 'search_knowledge');
 
                         if (!kresp.ok) {
                             const errText = await kresp.text();
@@ -7897,11 +7958,11 @@ class VoiceChatBot {
                     });
                     try {
                         const dtUrl = this.apiUrl('/api/deep-think');
-                        const dtResp = await fetch(dtUrl, {
+                        const dtResp = await this._fetchWithTimeout(dtUrl, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ query, context })
-                        });
+                        }, limits.deepThinkMs, 'deep_think');
 
                         if (!dtResp.ok) {
                             const errText = await dtResp.text();
@@ -8039,6 +8100,8 @@ class VoiceChatBot {
         } catch (error) {
             console.error('[Erica] Function execution error:', error);
             this._sendFunctionResult(callId, JSON.stringify({ error: error.message || 'Function execution failed' }));
+        } finally {
+            this._turns().toolEnd(toolKey);
         }
     }
 
@@ -8552,6 +8615,8 @@ class VoiceChatBot {
         const minutes = g ? Math.round((Date.now() - g.startedAt) / 600) / 100 : null;
         const inCall = !!this.isRecording;
         this._liveCut = { reason, by, inCall, at: Date.now() };
+        // A cut wins over recovery: an open turn fails now, no new session.
+        this._turns().fail('cut');
         // The server applies its own limits (a request may have shortened them).
         const why = by === 'server'
             ? `the server's ${reason === 'idle' ? 'idle' : 'maximum-length'} limit`
@@ -8567,16 +8632,8 @@ class VoiceChatBot {
                 .catch((e) => console.warn('[Erica][Live] cut NOT logged:', e?.message || e));
         }
         try { await this.disconnect(); } catch (e) { console.warn('[Erica][Live] disconnect after the cut failed:', e?.message || e); }
-        // Standby, as on page load: the composer and the call button work and
-        // connect on demand; nothing is open, nothing is billed.
-        this._liveStandby = true;
-        if (this.textInput) this.textInput.disabled = false;
-        if (this.callButton) this.callButton.disabled = false;
-        if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
-        if (typeof this.updateTextButtonVisibility === 'function') this.updateTextButtonVisibility();
+        this._enterStandby();
         const ui = window.uiLayout;
-        if (ui && typeof ui.updateStatusDot === 'function') ui.updateStatusDot(this, 'standby');
-        this._postConnectionState();
         if (inCall && ui && typeof ui.showCallEnded === 'function') ui.showCallEnded(this, reason);
     }
 
@@ -9967,6 +10024,279 @@ class VoiceChatBot {
     }
 
     // One event on this visit's Studio timeline. Best effort, never blocks.
+    // ---- The open turn (lib/turnWatch.js; Varsha's stall, 2026-10-14) -------
+    // A turn sent into a dying session was never asked again; a chat tab
+    // rebuilt its session every ~39 s; a content close was replayed 24 times
+    // in 5 min; and a thinking turn looked the same as a dead one.
+
+    _turns() {
+        if (this._turnWatch) return this._turnWatch;
+        const lib = window.turnWatch;
+        if (!lib) {
+            console.error('[Erica] lib/turnWatch.js not loaded — no thinking indicator, no turn recovery');
+            const none = () => {};
+            this._turnWatch = {
+                queue: none, send: none, toolStart: () => false, toolEnd: none, output: none, fail: () => null,
+                connectFailed: () => null, retry: () => false, reset: none, sessionStarted: () => [],
+                isOpen: () => false, openIds: () => [], turnId: () => null,
+                view: () => ({ state: 'idle', dots: false, label: null, failed: null }),
+                hardSignal: ({ inCall }) => ({ action: inCall ? 'resume-call' : 'standby', turnId: null }),
+            };
+            return this._turnWatch;
+        }
+        this._turnWatch = lib.createTurnWatch({
+            coachName: () => this._coachName(),
+            onChange: (view) => {
+                const ui = window.uiLayout;
+                if (ui && typeof ui.renderTurnIndicator === 'function') ui.renderTurnIndicator(this, view);
+            },
+            onFail: (record) => this._onTurnFailed(record),
+            onEvent: (name, meta) => this._logSessionEvent(name, meta),
+        });
+        return this._turnWatch;
+    }
+
+    _turnOpen() {
+        return this._turns().isOpen();
+    }
+
+    _turnLimits() {
+        return (window.turnWatch && window.turnWatch.LIMITS) || { toolMs: 20000, deepThinkMs: 30000, connectMs: 12000, resendDelayMs: 500 };
+    }
+
+    _coachName() {
+        const eff = typeof this.getEffectiveVoiceProfile === 'function' ? this.getEffectiveVoiceProfile() : null;
+        return (eff && eff.character) || (this.currentVoiceProfile && this.currentVoiceProfile.character) || 'Erica';
+    }
+
+    _channelOpen() {
+        return !!(this.isConnected && this.dataChannel && this.dataChannel.readyState === 'open');
+    }
+
+    // A fetch that gives up: a tool or a session create that hangs left the
+    // turn waiting (a tool, every later turn too: held behind it). The error
+    // names what timed out; callers turn it into a tool error output or a
+    // failed connect.
+    _fetchWithTimeout(url, options = {}, ms = 20000, label = 'request') {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ms);
+        return fetch(url, { ...options, signal: controller.signal })
+            .catch((error) => {
+                if (controller.signal.aborted) throw new Error(`${label} timed out after ${Math.round(ms / 1000)} s`);
+                throw error;
+            })
+            .finally(() => clearTimeout(timer));
+    }
+
+    // Every way a model session ends lands here, once per connection:
+    // session.closed (any reason), the data channel closing, the peer
+    // connection disconnected/failed. The session is dead, so it is torn down
+    // now (a send into it would vanish), then the turn watch decides: an open
+    // turn gets one fresh session that re-sends it, a call reconnects as
+    // before, and a chat with nothing open goes to standby (the next send
+    // reconnects).
+    _onSessionEnd(cause, { reason = null, pc = this.pc } = {}) {
+        if (!pc || pc !== this.pc) return;
+        const content = cause === 'session_closed' && reason === 'content';
+        const inCall = !!(this.isRecording || this._connectForCall);
+        const fullCause = reason ? `${cause}:${reason}` : cause;
+        console.warn(`[Erica] Session ended (${fullCause})${inCall ? ' in a call' : ''}${this._turns().isOpen() ? ' with a turn waiting' : ''}`);
+        this.isConnected = false;
+        // Metering: this connection's usage ends here.
+        try { this._flushUsageOnDisconnect('reconnect'); } catch (_) {}
+        // A call keeps its mic for the reconnect, unless the content filter
+        // ended it.
+        const keepMic = inCall && !content && !!this.localStream;
+        try { this._teardownWebRTCOnly({ keepMic }); } catch (_) {}
+        if (content) this._onContentClose(inCall);
+        const decision = this._turns().hardSignal({ cause: fullCause, inCall: inCall && !content, cut: !!this._liveCut });
+        if (decision.action === 'recover') this._recoverTurn();
+        else if (decision.action === 'resume-call') this._autoReconnectCall();
+        else this._enterStandby();
+    }
+
+    // GPT-Live's safety filter closed the session ('content'). What tripped
+    // it is what session.input carried (staging probe, 2026-10-28), so
+    // nothing that is in the window now goes into a session.input again —
+    // after a coach switch or a reload too; the backend still gets it as
+    // items. The static safety card shows (once per conversation), and a call
+    // ends to text standby instead of reconnecting into the same history.
+    _onContentClose(inCall) {
+        const lib = window.turnWatch;
+        const keys = lib ? this._historyWindow({ includeOpen: true }).map((t) => lib.messageKey(t)) : [];
+        const prior = this._contentClosed || { keys: [], count: 0 };
+        this._contentClosed = { keys: [...new Set([...prior.keys, ...keys])].slice(-60), at: Date.now(), count: (prior.count || 0) + 1 };
+        console.error(`[Erica][Live] 🛑 session closed by the safety filter — ${keys.length} message(s) in the window stay out of every later session.input`);
+        if (inCall) {
+            this._connectForCall = false;
+            if (this.isRecording) this.stopRecording();
+            const ui = window.uiLayout;
+            if (ui && typeof ui.showCallEnded === 'function') ui.showCallEnded(this, 'content');
+        }
+        this._showSafetyCard('content_close');
+        this.saveCurrentState(this.isRecording ? 'call' : 'chat');
+    }
+
+    // The one fresh session for the open turn; its unanswered messages go out
+    // again once it starts (_resendOpenTurns).
+    async _recoverTurn() {
+        if (this._liveCut) { this._turns().fail('cut'); return; }
+        const ui = window.uiLayout;
+        if (ui && typeof ui.updateStatusDot === 'function') ui.updateStatusDot(this, 'connecting');
+        // A session can die ~0.2 s after it starts, while its connect() is
+        // still unwinding.
+        for (let i = 0; this.isConnecting && i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 250));
+        if (!this._turns().isOpen() || this.isConnected || this.isConnecting) return;
+        console.log('[Erica] Recovering the waiting turn on a fresh session');
+        this._reconnectKind = 'recover';
+        await this.connect({ skipOpeningLine: true });
+        this._reconnectKind = null;
+    }
+
+    // A call that dropped reconnects on its own, keeping the mic.
+    // Not after a cost cut (#40): that waits for the person's tap.
+    _autoReconnectCall() {
+        if (!this.isConnecting && !this._autoReconnecting && !this._liveCut) {
+            this._autoReconnecting = true;
+            console.log('[Erica] WebRTC dropped — auto-reconnecting silently...');
+            if (window.uiLayout && typeof window.uiLayout.updateStatusDot === 'function') {
+                window.uiLayout.updateStatusDot(this, 'connecting');
+            }
+            // Small delay to let the connection fully close
+            setTimeout(() => {
+                this._reconnectKind = 'auto';
+                this.connect({ skipOpeningLine: true })
+                    .then(() => {
+                        // connect() reports failure by not connecting, not by throwing.
+                        if (this.isConnected) console.log('[Erica] Auto-reconnect successful');
+                        else console.warn('[Erica] Auto-reconnect did not reconnect' + (this._liveCut ? ' — the server ended this Live connection (' + this._liveCut.reason + ')' : ''));
+                        this._autoReconnecting = false;
+                        this._reconnectKind = null;
+                    })
+                    .catch(err => {
+                        console.warn('[Erica] Auto-reconnect failed:', err?.message || err);
+                        this._autoReconnecting = false;
+                        this._reconnectKind = null;
+                        // Only now show disconnected if reconnect failed
+                        this.updateStatus(false);
+                        if (this.callButton) this.callButton.disabled = true;
+                        if (this.connectButton) {
+                            this.connectButton.disabled = false;
+                            this.connectButton.textContent = 'Reconnect';
+                        }
+                    });
+            }, 1500);
+        } else if (this._liveCut) {
+            this._enterStandby();
+        }
+    }
+
+    // Standby, as on page load: the composer and the call button work and
+    // connect on demand; nothing is open, nothing is billed.
+    _enterStandby() {
+        this._liveStandby = true;
+        this.isConnected = false;
+        if (this.textInput) this.textInput.disabled = false;
+        if (this.callButton) this.callButton.disabled = false;
+        if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
+        if (typeof this.updateTextButtonVisibility === 'function') this.updateTextButtonVisibility();
+        if (typeof this.hideLoader === 'function') this.hideLoader();
+        const ui = window.uiLayout;
+        if (ui && typeof ui.updateStatusDot === 'function') ui.updateStatusDot(this, 'standby');
+        this._postConnectionState();
+    }
+
+    // A session is up (after the history went in): the open turn's
+    // unanswered messages that it has not seen go out again, once, in order,
+    // with one response.create. Never as new bubbles or new Studio turns.
+    _resendOpenTurns() {
+        const seq = this._sessionSeq;
+        const resend = this._turns().sessionStarted(seq);
+        if (!resend.length) return 0;
+        setTimeout(() => {
+            // That session died meanwhile: the turn watch already has it.
+            if (seq !== this._sessionSeq || !this._channelOpen()) return;
+            resend.forEach((entry) => this._sendUserItem(entry.message));
+            this._requestResponse('re-sent turn');
+            console.log(`[Erica] ↻ re-sent ${resend.length} unanswered message(s) and one response.create on the new session`);
+        }, this._turnLimits().resendDelayMs);
+        return resend.length;
+    }
+
+    // The turn could not be answered: say so, with Try again. The connection
+    // is closed first, so a late answer cannot also arrive (a call keeps its
+    // connection: the turn was typed into it).
+    _onTurnFailed(record) {
+        if (this.pc && !this.isRecording) {
+            if (this.voiceApiMode === 'live' && this.dataChannel && this.dataChannel.readyState === 'open') {
+                try { this.dataChannel.send(JSON.stringify({ type: 'session.close' })); } catch (_) {}
+            }
+            try { this._flushUsageOnDisconnect('disconnect'); } catch (_) {}
+            try { this._teardownWebRTCOnly(); } catch (_) {}
+        }
+        if (!this.pc) this._enterStandby();
+        const ui = window.uiLayout;
+        if (ui && typeof ui.showTurnFailed === 'function') {
+            ui.showTurnFailed(this, {
+                text: record.partial ? 'The reply was cut off.' : `${this._coachName()} couldn’t answer this.`,
+                onRetry: () => this._retryTurn(),
+            });
+        }
+        console.error(`[Erica] ❌ turn ${record.turnId} not answered (${record.cause}${record.partial ? ', reply cut off' : ''}) after ${record.attempts} recovery session(s)`);
+        if (record.hard) this._showSafetyCard('turn_failed');
+    }
+
+    // 'Try again': the person asking, so an ordinary reconnect ('user'); its
+    // session re-sends the unanswered messages.
+    _retryTurn() {
+        const ui = window.uiLayout;
+        if (ui && typeof ui.clearTurnFailed === 'function') ui.clearTurnFailed(this);
+        if (!this._turns().retry()) return;
+        if (this._channelOpen()) { this._resendOpenTurns(); return; }
+        this.isConnected = false;
+        if (this.isConnecting) return; // that session re-sends it when it starts
+        this.connect({ skipOpeningLine: true })
+            .then(() => this._sendPendingTextMessage())
+            .catch((e) => console.error('[Erica] Try again: reconnect error:', e));
+    }
+
+    // The static safety card: on a content close or a turn that failed on a
+    // hard signal, once per conversation, never removed. Its copy is the
+    // site's own crisis guidance (lib/turnWatch.js); no model, no network.
+    _showSafetyCard(trigger) {
+        if (this._safetyCard) return false;
+        this._safetyCard = { trigger, at: Date.now() };
+        this._renderSafetyCard(this._safetyCard.at);
+        this._logSessionEvent('safety_fallback_shown', { turnId: this._turns().turnId(), trigger });
+        console.warn(`[Erica] 🛟 safety card shown (${trigger})`);
+        this.saveCurrentState(this.isRecording ? 'call' : 'chat');
+        return true;
+    }
+
+    _renderSafetyCard(timestamp) {
+        const lib = window.turnWatch;
+        const ui = window.uiLayout;
+        if (!lib || !ui || typeof ui.showSafetyCard !== 'function') {
+            console.error('[Erica] safety card NOT shown — lib/turnWatch.js or uiLayout.js missing');
+            return;
+        }
+        ui.showSafetyCard(this, lib.safetyCardContent({ inApp: this._inNativeApp() }), { timestamp });
+    }
+
+    // After a reload: back where it was in the transcript (its timestamp).
+    _restoreSafetyCard() {
+        if (this._safetyCard && this._safetyCard.at) this._renderSafetyCard(this._safetyCard.at);
+    }
+
+    // The My Talents app (no caller, or caller=app, or a native bridge) gets
+    // no link: its webview has no defined way to open one.
+    _inNativeApp() {
+        let caller = 'app';
+        try { caller = new URLSearchParams(window.location.search).get('caller') || 'app'; } catch (_) { /* default */ }
+        const hasBridge = !!(window.JSInterface || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.ericaMessage));
+        return window.turnWatch ? window.turnWatch.isNativeApp({ caller, hasBridge }) : true;
+    }
+
     _logSessionEvent(name, meta) {
         if (!this.sessionId) return;
         try {
@@ -9988,6 +10318,7 @@ class VoiceChatBot {
                 // A Live session that gets no audio expires within ~30 s (#40):
                 // a closed speech gate gives it some now, not before it exists.
                 if (this._gate && this._gate.state === 'on') this._speechGateBlip(this._gate, 'a new Live session expires within ~30 s if no audio reaches it');
+                this._liveSessionStartedAt = Date.now();
                 this.configureLiveSession();
                 if (typeof this.hideLoader === 'function') this.hideLoader();
                 if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
@@ -9998,6 +10329,9 @@ class VoiceChatBot {
                     this.updateTextButtonVisibility();
                 }
                 this.startSessionInactivityTimer();
+                // After the history: the open turn's unanswered messages, then
+                // anything queued.
+                this._resendOpenTurns();
                 this._sendPendingTextMessage();
                 break;
 
@@ -10017,6 +10351,13 @@ class VoiceChatBot {
             case 'session.closed':
                 console.log('[Erica][Live] session.closed — final usage:', message.usage, 'reason:', message.reason);
                 this._recordLiveSeconds(message, 'session.closed', { force: true });
+                // Every close, with or without usage (a close without usage
+                // left no trace): why, how old the session was, and whether a
+                // turn was waiting on it.
+                this._logSessionEvent('live_closed', { reason: message.reason || null, sessionAgeS: this._liveSessionStartedAt ? Math.round((Date.now() - this._liveSessionStartedAt) / 100) / 10 : null, turnOpen: this._turns().isOpen(), hadUsage: !!(message.usage && typeof message.usage.seconds === 'number'), inCall: !!this.isRecording });
+                // It used to be billing only: the header said 'Connected' for
+                // 7-9 s on a dead channel and sends went nowhere.
+                this._onSessionEnd('session_closed', { reason: message.reason || null });
                 break;
 
             case 'session.input_transcript.delta':
@@ -10185,6 +10526,11 @@ class VoiceChatBot {
                     msSinceLastFunctionCall: ctx ? Date.now() - ctx.ts : null
                 };
                 console.error('[Erica][Live] ⚠️ ERROR EVENT (full):', JSON.stringify(entry, null, 2));
+                // Logged, never a teardown on its own: OpenAI documents
+                // moderation errors after which the session goes on, and a
+                // fatal one is followed by session.closed (content_filter came
+                // ~0.2 s before the 'content' close in the staging probe).
+                this._logSessionEvent('live_error', { code: (message.error && (message.error.code || message.error.type)) || null, type: (message.error && message.error.type) || null, turnOpen: this._turns().isOpen() });
                 if (!window.__ericaLiveErrors) window.__ericaLiveErrors = [];
                 window.__ericaLiveErrors.push(entry);
                 if (window.__ericaLiveErrors.length > 50) window.__ericaLiveErrors.shift();
@@ -11510,6 +11856,8 @@ class VoiceChatBot {
         if (isFinal && !meta.qcChecked) {
             this.queueBotMessageQC(id || `bot-${Date.now()}`, text);
         }
+        // The open turn's answer is showing: the reply slot's dots go.
+        if (String(text || '').trim()) this._turns().output({ final: !!isFinal });
     }
 
     addMessage(sender, text) {

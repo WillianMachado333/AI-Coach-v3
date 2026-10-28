@@ -951,3 +951,22 @@ textarea:focus {
 .coach-dd-row.playing .voice-card-icon-play { display: none; }
 .coach-dd-row.playing .voice-card-icon-wave { display: block; animation: voice-card-wave 0.7s ease-in-out infinite alternate; }
 .coach-chip.in-call .coach-chip-caret { visibility: hidden; }
+
+/* The open turn (lib/turnWatch.js, Varsha's stall 2026-10-14): the coach's
+   reply slot while a sent turn waits — dots, then a label — and what shows
+   when it could not be answered. On the coach's side, like her bubbles. */
+.turn-indicator.hidden { display: none; }
+.turn-indicator-bubble { display: flex; align-items: center; gap: 10px; max-width: 80%; background: #f3f4f6; border-radius: 16px; border-bottom-left-radius: 6px; padding: 10px 14px; }
+.turn-indicator-dots { display: flex; gap: 5px; padding-top: 2px; }
+.turn-indicator-dots .typing-dot { width: 7px; height: 7px; }
+.turn-indicator-dots .typing-dot:nth-child(3) { animation-delay: 0s; }
+.turn-indicator-label { font-size: 13px; color: #4b5563; line-height: 1.3; }
+.turn-indicator-label.hidden { display: none; }
+.turn-failed-box { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; max-width: 80%; font-size: 13px; color: #4b5563; padding: 2px 4px; }
+.turn-failed-retry { border: 1px solid #79c9d2; color: #0f766e; background: #fff; border-radius: 9999px; padding: 4px 12px; font-size: 12.5px; font-weight: 500; cursor: pointer; }
+.turn-failed-retry:hover { background: #f0fdfa; }
+/* The static safety card: calm, readable, never removed. */
+.safety-card { max-width: 85%; background: #fffbeb; border: 1px solid #fcd34d; border-radius: 16px; border-bottom-left-radius: 6px; padding: 12px 16px; font-size: 14px; line-height: 1.5; color: #374151; display: flex; flex-direction: column; gap: 6px; }
+.safety-card-title { font-weight: 600; color: #111827; }
+.safety-card-link { color: #0f766e; font-weight: 600; text-decoration: underline; }
+.safety-card-pointer { font-weight: 500; }

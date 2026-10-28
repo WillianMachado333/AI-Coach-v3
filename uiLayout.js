@@ -1668,11 +1668,15 @@
         else if (statusOrConnected === 'standby') state = 'standby';
         else state = 'disconnected';
 
-        // Connection loader overlay — show when connecting/disconnected, hide when connected/onhold
+        // Connection loader overlay — show when connecting/disconnected, hide when connected/onhold.
+        // An open turn has its own reply slot (dots, 'Reconnecting...'): no
+        // full-panel overlay over it.
         const connectionLoader = document.getElementById('connectionLoader');
         if (connectionLoader) {
+            const turnOpen = !!(app && typeof app._turnOpen === 'function' && app._turnOpen());
             if (state === 'connecting' || state === 'disconnected') {
-                connectionLoader.classList.remove('hidden');
+                if (turnOpen) connectionLoader.classList.add('hidden');
+                else connectionLoader.classList.remove('hidden');
             } else {
                 connectionLoader.classList.add('hidden');
             }
@@ -3133,13 +3137,16 @@
     }
 
     function setWaitingState(app, isWaiting) {
+        // An open typed turn has its own reply slot (renderTurnIndicator),
+        // which names the tool: no second set of dots for it.
+        const turnOpen = !!(app && typeof app._turnOpen === 'function' && app._turnOpen());
         const loader = document.getElementById('chatLoader');
         const micBtn = document.getElementById('micToggleBtn');
         const chatContainer = document.getElementById('chatMessages');
         const scrollContainer = document.getElementById('chatContainer');
 
         if (loader) {
-            if (isWaiting) {
+            if (isWaiting && !turnOpen) {
                 loader.classList.remove('hidden');
                 // Ensure it's at the bottom
                 if (chatContainer) {
@@ -3170,13 +3177,16 @@
     }
 
     // #40: "Call ended — tap to resume", docked above the composer controls.
+    // Also after GPT-Live's safety filter closed a call ('content').
     function showCallEnded(app, reason) {
         const el = app.callEndedNotice || document.getElementById('callEndedNotice');
         if (!el) return;
         const lim = app._liveLimits || { maxMin: 30, idleMin: 10 };
         el.title = reason === 'idle'
             ? `Ended after ${lim.idleMin} quiet minute${lim.idleMin === 1 ? '' : 's'}, so an open call costs nothing. Your conversation continues where it was.`
-            : `Calls end after ${lim.maxMin} minute${lim.maxMin === 1 ? '' : 's'}. Your conversation continues where it was.`;
+            : reason === 'content'
+                ? 'The call ended. You can keep writing here, or tap to call again.'
+                : `Calls end after ${lim.maxMin} minute${lim.maxMin === 1 ? '' : 's'}. Your conversation continues where it was.`;
         el.dataset.reason = reason || '';
         el.classList.remove('hidden');
     }
@@ -3186,10 +3196,133 @@
         if (el) el.classList.add('hidden');
     }
 
+    // ---- The open turn (lib/turnWatch.js) ------------------------------------
+    // The coach's reply slot while a sent turn waits: typing dots, then a
+    // label ('{Coach} is thinking...', a tool, 'Reconnecting...'). Always the
+    // last thing in the transcript.
+    function renderTurnIndicator(app, view) {
+        const list = app && app.chatMessages;
+        if (!list) return;
+        let el = document.getElementById('turnIndicator');
+        if (!view || !view.dots) {
+            if (el) el.classList.add('hidden');
+            return;
+        }
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'turnIndicator';
+            el.className = 'turn-indicator w-full flex justify-start';
+            // Sorts after every message insertMessageInOrder places.
+            el.setAttribute('data-timestamp', '9999999999999');
+            const bubble = document.createElement('div');
+            bubble.className = 'turn-indicator-bubble';
+            const dots = document.createElement('div');
+            dots.className = 'turn-indicator-dots';
+            for (let i = 0; i < 3; i++) {
+                const dot = document.createElement('div');
+                dot.className = 'typing-dot';
+                dots.appendChild(dot);
+            }
+            const label = document.createElement('span');
+            label.className = 'turn-indicator-label';
+            label.setAttribute('data-turn-label', '');
+            label.setAttribute('aria-live', 'polite');
+            bubble.appendChild(dots);
+            bubble.appendChild(label);
+            el.appendChild(bubble);
+        }
+        const wasNearBottom = typeof app.isChatNearBottom === 'function' ? app.isChatNearBottom() : true;
+        const label = el.querySelector('[data-turn-label]');
+        if (label) {
+            label.textContent = view.label || '';
+            label.classList.toggle('hidden', !view.label);
+        }
+        el.classList.remove('hidden');
+        if (el.parentNode !== list || list.lastChild !== el) list.appendChild(el);
+        const container = document.getElementById('chatContainer');
+        if (container && wasNearBottom) container.scrollTop = container.scrollHeight;
+    }
+
+    // Under a turn the coach could not answer: why, and Try again.
+    function showTurnFailed(app, { text, onRetry } = {}) {
+        const list = app && app.chatMessages;
+        if (!list) return null;
+        clearTurnFailed(app);
+        const el = document.createElement('div');
+        el.className = 'turn-failed w-full flex justify-start';
+        el.setAttribute('data-turn-failed', '');
+        const box = document.createElement('div');
+        box.className = 'turn-failed-box';
+        const note = document.createElement('span');
+        note.className = 'turn-failed-text';
+        note.textContent = text || '';
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'turn-failed-retry';
+        retry.textContent = 'Try again';
+        retry.addEventListener('click', () => { if (typeof onRetry === 'function') onRetry(); });
+        box.appendChild(note);
+        box.appendChild(retry);
+        el.appendChild(box);
+        insertMessageInOrder(app, el, { timestamp: Date.now() });
+        return el;
+    }
+
+    function clearTurnFailed(app) {
+        const list = app && app.chatMessages;
+        if (!list) return;
+        list.querySelectorAll('[data-turn-failed]').forEach((el) => el.remove());
+    }
+
+    // The static safety card (copy from lib/turnWatch.js): text nodes only,
+    // never formatText, so nothing is auto-linked; a link only on the web.
+    function showSafetyCard(app, content, { timestamp } = {}) {
+        const list = app && app.chatMessages;
+        if (!list || !content || list.querySelector('[data-safety-card]')) return null;
+        const el = document.createElement('div');
+        el.className = 'safety-card-row w-full flex justify-start';
+        el.setAttribute('data-safety-card', '');
+        el.setAttribute('role', 'note');
+        const card = document.createElement('div');
+        card.className = 'safety-card';
+        const title = document.createElement('p');
+        title.className = 'safety-card-title';
+        title.textContent = content.title || '';
+        card.appendChild(title);
+        (content.paragraphs || []).forEach((text) => {
+            const p = document.createElement('p');
+            p.textContent = text;
+            card.appendChild(p);
+        });
+        if (content.link) {
+            const p = document.createElement('p');
+            const a = document.createElement('a');
+            a.setAttribute('href', content.link.url);
+            a.setAttribute('target', '_blank');
+            a.setAttribute('rel', 'noopener noreferrer');
+            a.className = 'safety-card-link';
+            a.textContent = content.link.label;
+            p.appendChild(a);
+            card.appendChild(p);
+        } else if (content.pointer) {
+            const p = document.createElement('p');
+            p.className = 'safety-card-pointer';
+            p.textContent = content.pointer;
+            card.appendChild(p);
+        }
+        el.appendChild(card);
+        insertMessageInOrder(app, el, { timestamp: timestamp || Date.now() });
+        return el;
+    }
+
     // Export helpers
     global.uiLayout = {
         showCallEnded,
         hideCallEnded,
+        renderTurnIndicator,
+        showTurnFailed,
+        clearTurnFailed,
+        showSafetyCard,
         initLayout,
         updateTextButtonVisibility,
         updateMicToggleVisibility,
