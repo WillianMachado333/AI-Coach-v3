@@ -43,9 +43,13 @@ test('an unsendable message is refused before the composer clears', () => {
     const sizeCheck = send.indexOf('_userMessageFits(');
     const firstClear = send.indexOf('clearAttachments()');
     assert.ok(sizeCheck > 0 && sizeCheck < firstClear, 'size check must run before any clear');
-    const realSend = send.indexOf('if (!this._sendUserItem(this._buildUserItemMessage(');
-    const bubble = send.indexOf("this.upsertMessage(userMessageId, 'user'");
-    assert.ok(realSend > 0 && realSend < bubble, 'the user bubble only appears after the send succeeded');
+    const realSend = send.indexOf('if (!this._sendUserItem(');
+    const bubble = send.indexOf('this._showUserTextBubble(userMessageId,');
+    assert.ok(realSend > 0 && realSend < bubble, 'connected: the user bubble only appears after the send succeeded');
+    // No session (standby): the bubble shows at the tap, after the size
+    // check; the send reuses its id (tests/turnRecovery.test.js).
+    const queuedBubble = send.indexOf('this._showUserTextBubble(pending.id,');
+    assert.ok(sizeCheck < queuedBubble && queuedBubble < realSend, 'queued: after the size check');
     assert.match(app, /try \{\s*this\.dataChannel\.send\(messageStr\);\s*\} catch/);
 });
 

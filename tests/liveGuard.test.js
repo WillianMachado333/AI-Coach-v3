@@ -209,6 +209,7 @@ test('client: a cut ends the connection once, logs it, leaves the page in standb
             textInput: { disabled: true }, callButton: { disabled: true }, disconnects: 0,
             disconnect: async function () { this.disconnects++; this.isRecording = false; },
             setMicButtonState: function (s) { this.mic = s; }, updateTextButtonVisibility: () => {}, _postConnectionState: function () { this.posted = true; },
+            _enterStandby: method('_enterStandby', ''), _turns: () => ({ fail: (cause) => { app.turnFailed = cause; } }),
         };
         return app;
     };
@@ -219,6 +220,7 @@ test('client: a cut ends the connection once, logs it, leaves the page in standb
     assert.deepEqual(posted.map((p) => [p.kind, p.name, p.meta.reason, p.meta.by, p.meta.inCall, p.meta.liveSessionId]), [['event', 'live_session_cut', 'max', 'client', true, 'ls_9']]);
     assert.ok(posted[0].meta.minutes >= 30);
     assert.deepEqual([call._liveStandby, call.textInput.disabled, call.callButton.disabled, call.mic, call.posted], [true, false, false, 'enabled', true]);
+    assert.equal(call.turnFailed, 'cut', 'a turn waiting on the connection fails: a cut wins over recovery');
     assert.deepEqual(ui, [['dot', 'standby'], ['ended', 'max']]);
     // Typing, not calling: quiet — the next message reconnects.
     ui.length = 0;
@@ -260,8 +262,8 @@ test('client wiring: guard on open/teardown, turns noted, the reconnect kind sen
     assert.match(src, /if \(message\.role !== 'user' && message\.role !== 'bot'\) return;\s*this\._liveGuardNoteTurn\(\);/);
     assert.match(src, /headers\['X-Erica-Session'\] = this\.sessionId;\s*headers\['X-Erica-Reconnect'\] = reconnectKind;/);
     assert.match(src, /if \(isLive && response\.status === 409\) \{[\s\S]{0,400}cutErr\.liveCut = refusal\.reason \|\| 'max';\s*throw cutErr;/);
-    assert.match(src, /if \(error && error\.liveCut\) throw error;\s*console\.error\('Connection error:', error\);\s*\/\/ Track consecutive OpenAI connection failures/, 'before the maintenance-redirect counter');
-    assert.match(src, /if \(!this\.isConnecting && !this\._autoReconnecting && !this\._liveCut\) \{/);
+    assert.match(src, /if \(error && error\.liveCut\) throw error;\s*console\.error\('Connection error:', error\);[\s\S]{0,600}if \(automatic\) throw error;\s*\/\/ Track consecutive OpenAI connection failures/, 'before the maintenance-redirect counter');
+    assert.match(src, /_autoReconnectCall\(\) \{\s*if \(this\._liveCut\) \{ this\._enterStandby\(\); return; \}\s*if \(this\._autoReconnecting\) return;/);
     assert.match(src, /this\._reconnectKind = 'auto';\s*this\.connect\(\{ skipOpeningLine: true \}\)/);
     assert.match(src, /if \(error && error\.liveCut\) \{[\s\S]{0,200}setTimeout\(\(\) => this\._cutLive\(error\.liveCut, 'server'\), 0\);/);
     assert.match(src, /this\._liveSessionId = \(liveJson\.session && liveJson\.session\.id\) \|\| null;/);
@@ -343,6 +345,46 @@ test('HTTP: limits published; the session id registered; a late snapshot hangs i
         assert.equal((await open('auto')).status, 200, 'the tap cleared the cut');
     } finally {
         srv.child.kill();
+    }
+});
+
+// Varsha's stall (2026-10-14): the client's one recovery session after a
+// dead session ('recover') is automatic, so right after a cut it is refused
+// like 'auto' and never lifts the cut; the person's 'user' still does. The
+// session create gives up after 12 s instead of hanging the connect.
+test('HTTP: a recover reconnect is refused after a cut and never clears it; the session create times out', async () => {
+    const port = 19000 + Math.floor(Math.random() * 900);
+    const srv = await startServer(port, {
+        SESSION_DATA_DIR: path.join(tmp, 'srv-recover'), FAKE_LIVE_LOG: path.join(tmp, 'live-recover.ndjson'), ERICA_LIVE_GUARD_GRACE_S: '1',
+    });
+    try {
+        const sid = 'v-http-recover';
+        const open = (kind, extra = {}) => request(port, '/api/proxy/live', { method: 'POST', headers: { 'Content-Type': 'application/sdp', 'X-Erica-Session': sid, 'X-Erica-Reconnect': kind, ...extra }, body: 'v=0\r\n' });
+        const first = await open('user', { 'X-Erica-Live-Max-Min': '0.01' });
+        assert.equal(first.status, 200);
+        const liveId = JSON.parse(first.body).session.id;
+        await new Promise((r) => setTimeout(r, 2000));
+        const snap = await request(port, '/api/session-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: sid, kind: 'usage', voiceMode: 'live', source: 'session.usage.updated', liveSessionId: liveId, connectionId: 'c-1', sessionMinutes: 0.04, usage: { seconds: 2 } }) });
+        assert.equal(JSON.parse(snap.body).cut, true);
+        const recover = await open('recover');
+        assert.equal(recover.status, 409);
+        assert.deepEqual(JSON.parse(recover.body), { error: 'live_session_cut', cut: true, reason: 'max' });
+        assert.equal((await open('auto')).status, 409, 'the recover attempt did not lift the cut');
+        assert.equal((await open('user')).status, 200, "the person's own reconnect does");
+    } finally {
+        srv.child.kill();
+    }
+    const port2 = 19000 + Math.floor(Math.random() * 900);
+    const slow = await startServer(port2, { SESSION_DATA_DIR: path.join(tmp, 'srv-hang'), FAKE_LIVE_HANG: '1', ERICA_LIVE_CREATE_TIMEOUT_MS: '300' });
+    try {
+        const t0 = Date.now();
+        const res = await request(port2, '/api/proxy/live', { method: 'POST', headers: { 'Content-Type': 'application/sdp', 'X-Erica-Session': 'v-hang', 'X-Erica-Reconnect': 'user' }, body: 'v=0\r\n' });
+        assert.equal(res.status, 504);
+        assert.match(JSON.parse(res.body).error, /timed out/);
+        assert.ok(Date.now() - t0 < 5000);
+        assert.match(slow.out(), /\/api\/proxy\/live - the session create timed out after 0\.3 s/);
+    } finally {
+        slow.child.kill();
     }
 });
 

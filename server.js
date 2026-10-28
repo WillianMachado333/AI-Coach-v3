@@ -353,6 +353,10 @@ const { VOICE_API } = require('./lib/voiceConfig');
 // option. Defaulting to terra since this build is about quality/naturalness,
 // not cost.
 const { LIVE_BACKEND_MODEL } = require('./lib/voiceConfig');
+// OpenAI's /v1/live/sessions create gives up after this (the client's own
+// /api/proxy/live fetch gives up at 12 s too): a hung create left the
+// connect, and the turn waiting on it, hanging with no answer.
+const LIVE_CREATE_TIMEOUT_MS = Math.max(100, Number(process.env.ERICA_LIVE_CREATE_TIMEOUT_MS) || 12000);
 
 // Cost metering (/api/session-log kind 'usage'): the client names the model
 // it saw in session.created / session.started; when it could not, the
@@ -768,6 +772,16 @@ const server = http.createServer(async (req, res) => {
                     case 'event':
                     default:
                         sessionLog.logEvent(sid, { name: p.name || p.kind, meta: p.meta });
+                        // What a Railway log search must find (Varsha's stall
+                        // left only 201s in the logs): no message text in these.
+                        {
+                            const name = p.name || p.kind;
+                            const m = p.meta && typeof p.meta === 'object' ? p.meta : {};
+                            if (name === 'turn_failed') console.error(`[turnWatch] turn_failed ${String(m.cause || '?').slice(0, 60)} · visit ${sid} · after ${Number(m.attempts) || 0} recovery session(s)${m.partial ? ' · reply cut off' : ''}`);
+                            else if (name === 'safety_fallback_shown') console.error(`[turnWatch] safety_fallback_shown ${String(m.trigger || '?').slice(0, 40)} · visit ${sid}`);
+                            else if (name === 'live_closed' && m.reason === 'content') console.error(`[turnWatch] live_closed content (safety filter) · visit ${sid} · session age ${m.sessionAgeS ?? '?'} s · turn open ${!!m.turnOpen}`);
+                            else if (name === 'call_reconnect_capped') console.error(`[turnWatch] call_reconnect_capped · visit ${sid} · ${Number(m.reconnects) || 0} automatic reconnects in ${Number(m.windowS) || 0} s, call ended`);
+                        }
                         // Also feed the prompt-budget analyzer so the admin
                         // home surfaces the exact chars of the last live
                         // session's system prompt breakdown, not just an
@@ -3275,16 +3289,21 @@ const server = http.createServer(async (req, res) => {
             // #40: the visit this connection belongs to, and whether the client
             // reconnected on its own. Right after a cut only a reconnect the
             // person asked for opens a new session.
+            // 'recover' is the client's one fresh session for an unanswered
+            // turn after a session died: automatic too, so it is refused
+            // right after a cut and never lifts one.
             const guardSid = String(req.headers['x-erica-session'] || '').slice(0, 120) || null;
-            const autoReconnect = req.headers['x-erica-reconnect'] === 'auto';
-            const priorCut = autoReconnect ? liveGuard.refuseAutoReconnect(guardSid) : null;
+            const reconnectKind = req.headers['x-erica-reconnect'];
+            const autoReconnect = reconnectKind === 'auto';
+            const automatic = reconnectKind === 'auto' || reconnectKind === 'recover';
+            const priorCut = automatic ? liveGuard.refuseAutoReconnect(guardSid) : null;
             if (priorCut) {
-                console.warn(`[SERVER] /api/proxy/live - automatic reconnect refused for ${guardSid}: cut (${priorCut.reason}) ${Math.round((Date.now() - priorCut.at) / 1000)} s ago`);
+                console.warn(`[SERVER] /api/proxy/live - automatic reconnect (${reconnectKind}) refused for ${guardSid}: cut (${priorCut.reason}) ${Math.round((Date.now() - priorCut.at) / 1000)} s ago`);
                 res.writeHead(409, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
                 res.end(JSON.stringify({ error: 'live_session_cut', cut: true, reason: priorCut.reason }));
                 return;
             }
-            if (!autoReconnect) liveGuard.clearCut(guardSid);
+            if (!automatic) liveGuard.clearCut(guardSid);
 
             const voice = req.headers['x-erica-voice'] || 'marin';
             let shortInstructions = 'You are a voice coaching assistant. Delegate substantive reasoning, ' +
@@ -3298,6 +3317,7 @@ const server = http.createServer(async (req, res) => {
             try {
                 const openaiRes = await fetch('https://api.openai.com/v1/live/sessions', {
                     method: 'POST',
+                    signal: AbortSignal.timeout(LIVE_CREATE_TIMEOUT_MS),
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,
                         'Content-Type': 'application/json'
@@ -3360,6 +3380,12 @@ const server = http.createServer(async (req, res) => {
                 });
                 res.end(responseText);
             } catch (error) {
+                if (error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+                    console.error(`[SERVER] /api/proxy/live - the session create timed out after ${LIVE_CREATE_TIMEOUT_MS / 1000} s`);
+                    res.writeHead(504, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: `live session create timed out after ${LIVE_CREATE_TIMEOUT_MS / 1000} s` }));
+                    return;
+                }
                 console.error('[SERVER] /api/proxy/live - Proxy error:', error);
                 res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
                 res.end(JSON.stringify({ error: error.message }));

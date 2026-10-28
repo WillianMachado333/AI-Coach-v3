@@ -6,6 +6,7 @@
 //
 //   POST /v1/live/sessions            → { session: { id: 'ls_test_N' }, transport: { sdp } }
 //   POST /v1/live/sessions/{id}/hangup → FAKE_LIVE_HANGUP_STATUS (default 200)
+//   FAKE_LIVE_HANG=1: the create never answers (until the caller aborts it)
 const fs = require('fs');
 
 const realFetch = globalThis.fetch;
@@ -24,6 +25,13 @@ globalThis.fetch = async (url, init = {}) => {
     if (hangup) {
         record({ kind: 'hangup', id: decodeURIComponent(hangup[1]), auth: /^Bearer \S+/.test(String((init.headers || {}).Authorization || '')) });
         return new Response(hangupStatus < 300 ? '{}' : '{"error":{"message":"not found"}}', { status: hangupStatus, headers: { 'content-type': 'application/json' } });
+    }
+    if (process.env.FAKE_LIVE_HANG === '1') {
+        record({ kind: 'create-hang' });
+        return new Promise((resolve, reject) => {
+            const signal = init.signal;
+            if (signal) signal.addEventListener('abort', () => reject(signal.reason || new Error('aborted')));
+        });
     }
     created++;
     const id = 'ls_test_' + created;

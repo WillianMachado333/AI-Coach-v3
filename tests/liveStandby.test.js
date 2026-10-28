@@ -19,7 +19,7 @@ test('no GPT-Live session on page load', () => {
     assert.match(liveBranch, /this\.fetchEricaPreparation\(/);
     assert.match(liveBranch, /this\.requestReportContextFromParent\(\)/);
     // The first call click and the first typed message connect on demand.
-    const toggle = app.slice(app.indexOf('    toggleMicTrack() {'), app.indexOf('    toggleMicTrack() {') + 1500);
+    const toggle = app.slice(app.indexOf('    toggleMicTrack() {'), app.indexOf('    setMicToggleUI(isEnabled) {'));
     assert.match(toggle, /if \(!this\.isConnected\)[\s\S]*this\.connect\(\)/);
     const send = app.slice(app.indexOf('    sendTextMessage('), app.indexOf('    _buildUserItemMessage('));
     assert.match(send, /this\.connect\(\{ skipOpeningLine: true \}\)/);
