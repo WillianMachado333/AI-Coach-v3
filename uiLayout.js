@@ -3177,7 +3177,8 @@
     }
 
     // #40: "Call ended — tap to resume", docked above the composer controls.
-    // Also after GPT-Live's safety filter closed a call ('content').
+    // Also after GPT-Live's safety filter closed a call ('content'), and
+    // after a call's connection kept dropping ('dropped').
     function showCallEnded(app, reason) {
         const el = app.callEndedNotice || document.getElementById('callEndedNotice');
         if (!el) return;
@@ -3186,7 +3187,9 @@
             ? `Ended after ${lim.idleMin} quiet minute${lim.idleMin === 1 ? '' : 's'}, so an open call costs nothing. Your conversation continues where it was.`
             : reason === 'content'
                 ? 'The call ended. You can keep writing here, or tap to call again.'
-                : `Calls end after ${lim.maxMin} minute${lim.maxMin === 1 ? '' : 's'}. Your conversation continues where it was.`;
+                : reason === 'dropped'
+                    ? 'The connection kept dropping, so the call ended. Your conversation continues where it was.'
+                    : `Calls end after ${lim.maxMin} minute${lim.maxMin === 1 ? '' : 's'}. Your conversation continues where it was.`;
         el.dataset.reason = reason || '';
         el.classList.remove('hidden');
     }

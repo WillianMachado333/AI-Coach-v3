@@ -263,7 +263,7 @@ test('client wiring: guard on open/teardown, turns noted, the reconnect kind sen
     assert.match(src, /headers\['X-Erica-Session'\] = this\.sessionId;\s*headers\['X-Erica-Reconnect'\] = reconnectKind;/);
     assert.match(src, /if \(isLive && response\.status === 409\) \{[\s\S]{0,400}cutErr\.liveCut = refusal\.reason \|\| 'max';\s*throw cutErr;/);
     assert.match(src, /if \(error && error\.liveCut\) throw error;\s*console\.error\('Connection error:', error\);\s*\/\/ Track consecutive OpenAI connection failures/, 'before the maintenance-redirect counter');
-    assert.match(src, /if \(!this\.isConnecting && !this\._autoReconnecting && !this\._liveCut\) \{/);
+    assert.match(src, /_autoReconnectCall\(\) \{\s*if \(this\._liveCut\) \{ this\._enterStandby\(\); return; \}\s*if \(this\._autoReconnecting\) return;/);
     assert.match(src, /this\._reconnectKind = 'auto';\s*this\.connect\(\{ skipOpeningLine: true \}\)/);
     assert.match(src, /if \(error && error\.liveCut\) \{[\s\S]{0,200}setTimeout\(\(\) => this\._cutLive\(error\.liveCut, 'server'\), 0\);/);
     assert.match(src, /this\._liveSessionId = \(liveJson\.session && liveJson\.session\.id\) \|\| null;/);

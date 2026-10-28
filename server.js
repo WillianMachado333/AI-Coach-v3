@@ -780,6 +780,7 @@ const server = http.createServer(async (req, res) => {
                             if (name === 'turn_failed') console.error(`[turnWatch] turn_failed ${String(m.cause || '?').slice(0, 60)} · visit ${sid} · after ${Number(m.attempts) || 0} recovery session(s)${m.partial ? ' · reply cut off' : ''}`);
                             else if (name === 'safety_fallback_shown') console.error(`[turnWatch] safety_fallback_shown ${String(m.trigger || '?').slice(0, 40)} · visit ${sid}`);
                             else if (name === 'live_closed' && m.reason === 'content') console.error(`[turnWatch] live_closed content (safety filter) · visit ${sid} · session age ${m.sessionAgeS ?? '?'} s · turn open ${!!m.turnOpen}`);
+                            else if (name === 'call_reconnect_capped') console.error(`[turnWatch] call_reconnect_capped · visit ${sid} · ${Number(m.reconnects) || 0} automatic reconnects in ${Number(m.windowS) || 0} s, call ended`);
                         }
                         // Also feed the prompt-budget analyzer so the admin
                         // home surfaces the exact chars of the last live

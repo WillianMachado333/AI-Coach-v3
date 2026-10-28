@@ -82,7 +82,7 @@ test('session.closed during an open turn: exactly one fresh session, every unans
     assert.equal(h.live.creates.length, 2, 'nothing more opens on its own');
 });
 
-test('a second failure is failed with Try again (and the safety card, once); no third session; Try again re-sends as the person asking', async () => {
+test('a second failure is failed with Try again (no safety card: no content close); no third session; Try again re-sends as the person asking', async () => {
     const h = harness();
     h.history(PRIOR);
     h.app.sendTextMessage('first');
@@ -99,9 +99,9 @@ test('a second failure is failed with Try again (and the safety card, once); no 
     assert.equal(retry.textContent, 'Try again');
     assert.equal(h.indicator().visible, false);
     assert.equal(h.live.pcs[1].closed, true, 'the connection is closed before Try again is offered');
-    assert.equal(h.safetyCards().length, 1, 'failed on a hard signal: the card');
+    assert.equal(h.safetyCards().length, 0, 'a transport failure is not a crisis: no card');
     assert.deepEqual(h.events('turn_failed').map((e) => e.meta.cause), ['pc_failed']);
-    assert.deepEqual(h.events('safety_fallback_shown').map((e) => e.meta.trigger), ['turn_failed']);
+    assert.equal(h.events('safety_fallback_shown').length, 0);
     await h.advance(5 * MIN);
     assert.equal(h.live.creates.length, 2, 'never a third automatic session');
     retry.click();
@@ -114,7 +114,7 @@ test('a second failure is failed with Try again (and the safety card, once); no 
     h.live.reply('Sorry for the wait');
     await h.advance(200);
     assert.equal(h.events('turn_recovered')[0].meta.step, 'user_retry');
-    assert.equal(h.safetyCards().length, 1, 'still once per conversation');
+    assert.equal(h.safetyCards().length, 0);
 });
 
 test('content close: the card once, every later session.input leaves out what was in the window, at most 2 connects per turn, and it survives a reload and a coach switch', async () => {
@@ -291,7 +291,7 @@ test('a tool fetch that hangs ends in an error function output (20 s; deep_think
     assert.match(out[1][1].error, /timed out after 30 s/);
 });
 
-test('the session create times out at 12 s: the queued turn fails visibly, with the card', async () => {
+test('the session create times out at 12 s: the queued turn fails visibly (no card: a network failure is not a crisis)', async () => {
     const h = harness();
     h.live.policy = () => 'hang';
     h.app.sendTextMessage('q');
@@ -302,7 +302,7 @@ test('the session create times out at 12 s: the queued turn fails visibly, with 
     assert.ok(h.failedNote(), 'failed, not a spinner');
     assert.equal(h.indicator().visible, false);
     assert.deepEqual(h.events('turn_failed').map((e) => e.meta.cause), ['connect_failed']);
-    assert.equal(h.safetyCards().length, 1);
+    assert.equal(h.safetyCards().length, 0);
 });
 
 test('the indicator: no label at first, "Erica is thinking..." at 4 s, "Still working on it..." at 15 s, gone at 60 s with a failed state (no card) and the connection closed', async () => {
@@ -369,4 +369,212 @@ test('the card: a link on the web (new tab), a plain pointer and no link in the 
     // A new conversation may show it again.
     web.app.clearConversation();
     assert.equal(web.app._showSafetyCard('content_close'), true);
+});
+
+// ---- Review of PR #55 (b211f1e) ---------------------------------------------
+
+test('a call drop while a typed turn is streaming keeps the call: it reconnects on its own with the same mic; the turn is cut off (Try again), no standby, no card', async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    const mic = h.app.localStream;
+    h.app.sendTextMessage('typed in call');
+    await h.advance(300);
+    h.live.say('Sure, '); // the voice layer's filler is output for the typed turn
+    await h.advance(100);
+    h.live.failPc('disconnected');
+    await h.advance(3000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'auto']);
+    assert.equal(h.app.isRecording, true);
+    assert.equal(h.app.localStream, mic, 'the same mic');
+    assert.ok(h.app.pc && h.app.isConnected, 'connected again');
+    assert.equal(h.app._liveStandby, false);
+    assert.match(h.failedNote().textContent, /The reply was cut off\./);
+    assert.equal(h.safetyCards().length, 0);
+});
+
+test("a call drop while a typed turn waits re-sends it on the call's next session; a second drop fails it but the call still reconnects with the same mic", async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    const mic = h.app.localStream;
+    h.app.sendTextMessage('typed in call');
+    await h.advance(300);
+    h.live.failPc('disconnected');
+    await h.advance(3000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'auto']);
+    assert.deepEqual(wire(h.live.sent(1)).slice(-2), ['item:user:typed in call', 'create'], "re-sent once on the call's new session");
+    assert.ok(!h.live.creates[1].input.some((i) => i.content[0].text === 'typed in call'), 'not also in session.input');
+    h.live.failPc('disconnected');
+    await h.advance(3000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'auto', 'auto']);
+    assert.equal(h.app.isRecording, true);
+    assert.equal(h.app.localStream, mic);
+    assert.ok(h.app.pc && h.app.isConnected);
+    assert.equal(h.app._liveStandby, false);
+    assert.ok(h.failedNote(), 'failed, with Try again');
+    assert.equal(h.safetyCards().length, 0);
+    // Try again re-sends into the call's open session.
+    h.failedNote().querySelector('button').click();
+    await h.advance(1000);
+    assert.deepEqual(wire(h.live.sent(2)).slice(-2), ['item:user:typed in call', 'create']);
+    assert.equal(h.live.creates.length, 3);
+});
+
+test('a call whose sessions keep dropping stops reconnecting on its own: 3 automatic reconnects in 2 min, then "Call ended — tap to resume", the mic released, one telemetry event', async () => {
+    const h = harness();
+    h.live.onStarted = () => h.clock.setTimeout(() => h.live.closeSession('expired'), 2000);
+    h.app.toggleMicTrack();
+    await h.advance(10 * MIN);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'auto', 'auto', 'auto']);
+    assert.equal(h.app.isRecording, false);
+    assert.equal(h.app.localStream, null, 'the mic is released');
+    assert.equal(h.app._liveStandby, true);
+    assert.equal(h.app.callEndedNotice.classList.contains('hidden'), false);
+    assert.equal(h.app.callEndedNotice.dataset.reason, 'dropped');
+    const capped = h.events('call_reconnect_capped');
+    assert.equal(capped.length, 1);
+    assert.deepEqual(capped[0].meta, { reconnects: 3, windowS: 120 });
+    // The person resumes: a fresh budget.
+    h.live.onStarted = null;
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    assert.equal(h.live.creates[4].kind, 'user');
+    h.live.failPc('disconnected');
+    await h.advance(3000);
+    assert.equal(h.live.creates[5].kind, 'auto', 'a resumed call reconnects again');
+});
+
+test('a slow chat turn that outlives two Live sessions (each expires 29.2 s after it starts) fails visibly with Try again, and shows no safety card', async () => {
+    const h = harness();
+    h.live.onStarted = () => h.clock.setTimeout(() => h.live.closeSession('expired'), 29200);
+    h.app.sendTextMessage('Can you analyse my whole values report in depth?');
+    await h.advance(5 * MIN);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'recover']);
+    assert.ok(h.failedNote());
+    assert.deepEqual(h.events('turn_failed').map((e) => e.meta.cause), ['session_closed:expired']);
+    assert.equal(h.safetyCards().length, 0);
+    assert.equal(h.events('safety_fallback_shown').length, 0);
+});
+
+test('a reply cut off by the expiry, or a 500 on the session create: the failed note only, no safety card', async () => {
+    const h = harness({ search: '?caller=web' });
+    h.app.sendTextMessage('quick question about my resume');
+    await h.advance(3000);
+    h.live.event({ type: 'response.created', response: { id: 'r1' } }, 'd1');
+    h.live.event({ type: 'response.output_text.delta', delta: 'Start with your top three' }, 'd1');
+    await h.advance(100);
+    h.live.closeSession('expired');
+    await h.advance(5000);
+    assert.match(h.failedNote().textContent, /The reply was cut off\./);
+    assert.equal(h.safetyCards().length, 0);
+    assert.equal(h.live.creates.length, 1, 'a started reply is never re-sent on its own');
+
+    const s = harness({ search: '?caller=web' });
+    s.live.policy = () => ({ status: 500, body: { error: 'upstream' } });
+    s.app.sendTextMessage('quick question about my resume');
+    await s.advance(5000);
+    assert.match(s.failedNote().textContent, /Erica couldn’t answer this\./);
+    assert.equal(s.safetyCards().length, 0);
+});
+
+test('a message held behind a tool keeps its dots after the reply to the first one; if the session then expires, the recovery session re-sends it once', async () => {
+    const h = harness();
+    h.history(PRIOR);
+    h.hangs.add('/api/knowledge-search');
+    h.app.sendTextMessage('first');
+    await h.advance(1000);
+    h.live.functionCall('search_knowledge', { query: 'values' }, { delegation: 'd1' });
+    await h.advance(100);
+    h.app.sendTextMessage('second');
+    await h.advance(500);
+    assert.ok(!wire(h.live.sent(0)).includes('item:user:second'), 'held behind the tool');
+    await h.advance(20000); // the tool times out: an error output, then the continuation
+    h.live.reply('Answer to first', { delegation: 'd1', response: 'r_cont', completed: true });
+    await h.advance(100);
+    assert.deepEqual(wire(h.live.sent(0)).slice(-2), ['item:user:second', 'create'], 'flushed after the continuation');
+    assert.equal(h.indicator().visible, true, 'the held message still waits');
+    h.live.closeSession('expired');
+    await h.advance(3000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'recover']);
+    const w = wire(h.live.sent(1));
+    assert.ok(w.includes('item:user:first') && w.includes('item:assistant:Answer to first'), 'answered: history now');
+    assert.deepEqual(w.slice(-2), ['item:user:second', 'create']);
+    assert.equal(w.filter((x) => x === 'item:user:second').length, 1);
+    assert.equal(h.failedNote(), null);
+});
+
+test('two quick sends: the answer to the first leaves the second waiting; an expiry before its answer re-sends only the second', async () => {
+    const h = harness();
+    h.app.sendTextMessage('first');
+    await h.advance(1000);
+    h.live.event({ type: 'response.created', response: { id: 'r1' } }, 'd1');
+    await h.advance(500);
+    h.app.sendTextMessage('second');
+    await h.advance(500);
+    h.live.reply('Answer to first', { delegation: 'd1', response: 'r1', created: false, completed: true });
+    await h.advance(100);
+    assert.equal(h.indicator().visible, true, 'the second still waits');
+    h.live.closeSession('expired');
+    await h.advance(3000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'recover']);
+    const w = wire(h.live.sent(1));
+    assert.deepEqual(w.slice(-2), ['item:user:second', 'create']);
+    assert.ok(!w.slice(0, -2).includes('item:user:second'));
+    assert.ok(w.includes('item:user:first') && w.includes('item:assistant:Answer to first'));
+});
+
+test('a message sent while the previous reply streams keeps its dots; that reply finishing does not end its turn; an expiry then re-sends it', async () => {
+    const h = harness();
+    h.app.sendTextMessage('A');
+    await h.advance(1000);
+    h.live.event({ type: 'response.created', response: { id: 'rA' } }, 'dA');
+    h.live.event({ type: 'response.output_text.delta', delta: 'Part one, ' }, 'dA');
+    await h.advance(100);
+    assert.equal(h.indicator().visible, false);
+    h.app.sendTextMessage('B');
+    await h.advance(200);
+    assert.equal(h.indicator().visible, true, 'B waits');
+    h.live.event({ type: 'response.output_text.delta', delta: 'part two.' }, 'dA');
+    await h.advance(100);
+    assert.equal(h.indicator().visible, true, "A's later words do not hide B's dots");
+    h.live.event({ type: 'response.output_text.done', text: 'Part one, part two.' }, 'dA');
+    await h.advance(100);
+    assert.equal(h.indicator().visible, true, "A's answer does not end B's turn");
+    h.live.closeSession('expired');
+    await h.advance(3000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'recover']);
+    assert.deepEqual(wire(h.live.sent(1)).slice(-2), ['item:user:B', 'create']);
+    assert.equal(h.events('turn_stalled').length, 1);
+    h.live.reply('Answer to B', { delegation: 'dB' });
+    await h.advance(200);
+    assert.equal(h.indicator().visible, false);
+});
+
+test("a send from standby shows the person's bubble at the tap; the queued message goes once (not also as history) and is logged once", async () => {
+    const realTurnLog = { setup: (app) => { delete app._logTurnFor; } }; // the harness stubs the Studio turn log
+    const h = harness(realTurnLog);
+    h.history(PRIOR);
+    h.app.sendTextMessage('hello');
+    const mine = () => h.app.messages.filter((m) => m.role === 'user' && m.text === 'hello');
+    assert.equal(mine().length, 1, 'the bubble shows before any session exists');
+    assert.ok(h.app.messageElements.get(mine()[0].id), 'on screen');
+    assert.equal(h.live.creates.length, 0);
+    await h.advance(3000);
+    assert.equal(mine().length, 1, 'no second bubble when it is sent');
+    assert.deepEqual(wire(h.live.sent(0)), ['update', 'item:user:I have an interview', 'item:assistant:Tell me more', 'item:user:hello', 'create']);
+    assert.equal(h.posts.filter((p) => p.kind === 'user_turn' && p.text === 'hello').length, 1, 'one Studio turn');
+    // A connect that fails keeps the bubble; Try again sends it, once.
+    const s = harness(realTurnLog);
+    s.live.policy = () => (s.live.creates.length === 1 ? { status: 500, body: {} } : undefined);
+    s.app.sendTextMessage('hi');
+    await s.advance(3000);
+    assert.ok(s.failedNote());
+    assert.equal(s.app.messages.filter((m) => m.text === 'hi').length, 1);
+    s.failedNote().querySelector('button').click();
+    await s.advance(3000);
+    assert.equal(s.live.creates.length, 2);
+    assert.deepEqual(wire(s.live.sent()).filter((x) => x === 'item:user:hi'), ['item:user:hi']);
+    assert.equal(s.app.messages.filter((m) => m.text === 'hi').length, 1);
+    assert.equal(s.posts.filter((p) => p.kind === 'user_turn' && p.text === 'hi').length, 1);
 });

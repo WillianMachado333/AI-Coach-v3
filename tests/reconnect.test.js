@@ -23,7 +23,7 @@ test('a mid-call reconnect keeps the mic and re-attaches it', () => {
     assert.match(end, /_flushUsageOnDisconnect\('reconnect'\)[\s\S]*const keepMic = inCall && !content && !!this\.localStream;[\s\S]*_teardownWebRTCOnly\(\{ keepMic \}\)[\s\S]*this\._autoReconnectCall\(\)/,
         'metering closes the old connection, then the teardown keeps the mic during a call');
     const drop = app.slice(app.indexOf("console.log('[Erica] WebRTC dropped — auto-reconnecting silently...');"));
-    assert.match(drop.slice(0, 600), /this\._reconnectKind = 'auto';\s*this\.connect\(\{ skipOpeningLine: true \}\)/);
+    assert.match(drop.slice(0, 1200), /this\._reconnectKind = 'auto';\s*this\.connect\(\{ skipOpeningLine: true \}\)/);
 
     // The new connection's sender gets the same track, and says so.
     assert.match(app, /reconnect: mic re-attached to the new connection/);

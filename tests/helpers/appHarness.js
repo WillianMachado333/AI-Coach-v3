@@ -7,6 +7,7 @@
 //   h.live.creates   — every POST /api/proxy/live: { kind, input, headers }
 //   h.live.sent(i)   — what the client sent on connection i's data channel
 //   h.live.closeSession('expired') / h.live.failPc() / h.live.reply('text')
+//   h.live.event(inner, delegation) / h.live.functionCall(name, args) / h.live.say('words')
 //   h.events(name)   — /api/session-log events posted
 //
 // The constructor is not run (it wires the whole page); the fields the
@@ -133,11 +134,22 @@ function createFakeLive(clock) {
         pc.connectionState = state;
         if (pc.onconnectionstatechange) pc.onconnectionstatechange();
     };
-    live.reply = (text, { delegation = 'del_1', response = 'resp_' + Math.random().toString(36).slice(2) } = {}) => {
-        live.deliver({ type: 'response.event', delegation_id: delegation, event: { type: 'response.created', response: { id: response } } });
-        live.deliver({ type: 'response.event', delegation_id: delegation, event: { type: 'response.output_text.delta', delta: text } });
-        live.deliver({ type: 'response.event', delegation_id: delegation, event: { type: 'response.output_text.done', text } });
+    // The delegated backend: one nested Responses event in its envelope.
+    live.event = (inner, delegation = 'del_1') => live.deliver({ type: 'response.event', delegation_id: delegation, event: inner });
+    live.reply = (text, { delegation = 'del_1', response = 'resp_' + Math.random().toString(36).slice(2), created = true, completed = false } = {}) => {
+        if (created) live.event({ type: 'response.created', response: { id: response } }, delegation);
+        live.event({ type: 'response.output_text.delta', delta: text }, delegation);
+        live.event({ type: 'response.output_text.done', text }, delegation);
+        if (completed) live.event({ type: 'response.completed', response: { id: response } }, delegation);
     };
+    // The backend asks the client to run a tool (GPT-Live delegation).
+    live.functionCall = (name, args, { delegation = 'del_1', call = 'call_' + name, response = 'resp_fc_' + name } = {}) => {
+        live.event({ type: 'response.created', response: { id: response } }, delegation);
+        live.event({ type: 'response.output_item.done', item: { type: 'function_call', name, call_id: call, arguments: JSON.stringify(args) } }, delegation);
+        live.event({ type: 'response.completed', response: { id: response } }, delegation);
+    };
+    // The voice layer speaking (a call): its own transcript stream.
+    live.say = (text) => live.deliver({ type: 'session.output_transcript.delta', delta: text });
     return live;
 }
 

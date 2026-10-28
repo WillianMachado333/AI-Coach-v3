@@ -63,7 +63,7 @@ test('a sent turn with no answer: dots, then "is thinking..." at 4 s, "Still wor
     assert.deepEqual(watch.view(), { state: 'failed', dots: false, label: null, failed: { partial: false, cause: 'cap' } });
     assert.equal(fails.length, 1);
     assert.equal(fails[0].cause, 'cap');
-    assert.equal(fails[0].hard, false, 'the cap is not a transport signal (no safety card)');
+    assert.equal('hard' in fails[0], false, 'no hard/soft split: the safety card is for a content close only');
     assert.equal(clock.pending(), 0, 'nothing left running after failed');
 });
 
@@ -108,7 +108,7 @@ test('a session end with no open turn: chat goes to standby, a call reconnects a
     assert.equal(events.length, 0);
 });
 
-test('an open turn on a dead session: one fresh session re-sends it; a second failure is failed (hard) — never a third session', () => {
+test('an open turn on a dead session: one fresh session re-sends it; a second failure is failed — never a third session', () => {
     const { clock, watch, fails, events } = make();
     watch.send({ id: 'u1', message: item('first'), session: 1 });
     watch.send({ id: 'u2', message: item('second'), session: 1 });
@@ -126,7 +126,7 @@ test('an open turn on a dead session: one fresh session re-sends it; a second fa
     const d2 = watch.hardSignal({ cause: 'dc_closed', inCall: false });
     assert.deepEqual(d2, { action: 'fail', turnId: 'u1' });
     assert.equal(fails.length, 1);
-    assert.deepEqual([fails[0].cause, fails[0].hard, fails[0].partial, fails[0].attempts], ['dc_closed', true, false, 1]);
+    assert.deepEqual(fails[0], { turnId: 'u1', cause: 'dc_closed', partial: false, attempts: 1 });
     assert.deepEqual(watch.view(), { state: 'failed', dots: false, label: null, failed: { partial: false, cause: 'dc_closed' } });
     const stalled = events.filter((e) => e.name === 'turn_stalled');
     assert.deepEqual(stalled.map((e) => [e.meta.turnId, e.meta.cause, e.meta.attempt]), [['u1', 'session_closed:expired', 1], ['u1', 'dc_closed', 2]]);
@@ -150,7 +150,7 @@ test('a live cut wins over recovery: the open turn fails at once', () => {
     const { watch, fails } = make();
     watch.send({ id: 'u1', message: item('q'), session: 1 });
     assert.deepEqual(watch.hardSignal({ cause: 'pc_failed', inCall: false, cut: true }), { action: 'fail', turnId: 'u1' });
-    assert.deepEqual([fails[0].cause, fails[0].hard], ['cut', false]);
+    assert.equal(fails[0].cause, 'cut');
     // fail() is idempotent, and a cut on its own fails an open turn the same way.
     const b = make();
     b.watch.send({ id: 'u9', message: item('q'), session: 1 });
@@ -173,7 +173,7 @@ test('a message queued while not connected opens the turn; one recovery connect 
     b.watch.send({ id: 'u1', message: item('q'), session: 1 });
     b.watch.hardSignal({ cause: 'pc_failed', inCall: false });
     b.watch.connectFailed();
-    assert.deepEqual([b.fails[0].cause, b.fails[0].hard], ['connect_failed', true]);
+    assert.equal(b.fails[0].cause, 'connect_failed');
 });
 
 test('Try again is the person asking: a fresh 60 s, its session re-sends the turn; if that dies too it fails, with no automatic session after the tap', () => {
@@ -230,6 +230,120 @@ test('a new send restarts the clock and joins the open turn; reset clears everyt
     assert.equal(clock.pending(), 0);
 });
 
+// Review of PR #55: the turn ended at the first finished answer, so a later
+// message in it lost its dots and its recovery (Varsha's lost-turn class).
+// An answer counts only for the messages the model had when that reply
+// began.
+test('a message sent while the previous reply streams keeps its dots and its recovery; the older reply never answers it', () => {
+    const { clock, watch } = make();
+    watch.send({ id: 'uA', message: item('A'), session: 1 });
+    clock.advance(1000);
+    watch.output({ key: 'rA', final: false });
+    assert.equal(watch.view().dots, false, "A's reply is showing");
+    clock.advance(500);
+    watch.send({ id: 'uB', message: item('B'), session: 1 });
+    assert.equal(watch.view().dots, true, 'B waits');
+    watch.output({ key: 'rA', final: false });
+    assert.equal(watch.view().dots, true, "A's later words do not hide B's dots");
+    watch.output({ key: 'rA', final: true });
+    assert.equal(watch.isOpen(), true, "A's answer does not close B's turn");
+    assert.deepEqual(watch.openIds(), ['uB']);
+    assert.deepEqual(watch.hardSignal({ cause: 'session_closed:expired', inCall: false }), { action: 'recover', turnId: 'uA' });
+    assert.deepEqual(watch.sessionStarted(2).map((e) => e.id), ['uB'], 'only the unanswered message goes again');
+    clock.advance(2000);
+    watch.output({ key: 'rB', final: true });
+    assert.equal(watch.view().state, 'done');
+});
+
+test('a reply that began before the turn (the opening line) never answers it', () => {
+    const { clock, watch } = make();
+    watch.output({ key: 'greet', final: false });
+    clock.advance(500);
+    watch.send({ id: 'u1', message: item('q'), session: 1 });
+    watch.output({ key: 'greet', final: true });
+    assert.equal(watch.isOpen(), true);
+    assert.equal(watch.view().dots, true);
+});
+
+test('a message held behind a tool waits from when it reaches the model; the reply to the first message leaves it open', () => {
+    const { clock, watch } = make();
+    const m2 = item('second');
+    watch.send({ id: 'u1', message: item('first'), session: 1 });
+    watch.toolStart('call_1', 'search_knowledge');
+    clock.advance(2000);
+    watch.send({ id: 'u2', message: m2, session: 1, held: true });
+    clock.advance(18000);
+    watch.toolEnd('call_1');
+    const contStarted = clock.now();
+    clock.advance(1500);
+    watch.output({ key: 'cont', startedAt: contStarted, final: false });
+    assert.equal(watch.view().dots, true, 'the held message still waits');
+    watch.output({ key: 'cont', startedAt: contStarted, final: true });
+    assert.equal(watch.isOpen(), true);
+    assert.deepEqual(watch.openIds(), ['u2']);
+    // The flush: it reaches the model now, and its 60 s start here.
+    clock.advance(500);
+    assert.equal(watch.delivered([m2]), 1);
+    assert.equal(watch.delivered([m2]), 0, 'once');
+    clock.advance(59000);
+    assert.equal(watch.view().dots, true, '60 s from the delivery, not from the tap');
+    assert.equal(watch.hardSignal({ cause: 'session_closed:expired', inCall: false }).action, 'recover');
+    assert.deepEqual(watch.sessionStarted(2).map((e) => e.id), ['u2']);
+});
+
+test('two quick sends: a reply the backend began before the second one answers only the first', () => {
+    const { clock, watch } = make();
+    watch.send({ id: 'u1', message: item('first'), session: 1 });
+    clock.advance(300);
+    const began = clock.now(); // response.created for the first
+    clock.advance(700);
+    watch.send({ id: 'u2', message: item('second'), session: 1 });
+    clock.advance(3000);
+    watch.output({ key: 'r1', startedAt: began, final: true });
+    assert.equal(watch.isOpen(), true);
+    assert.deepEqual(watch.openIds(), ['u2']);
+    // A reply that began after both answers both.
+    const b = make();
+    b.watch.send({ id: 'u1', message: item('first'), session: 1 });
+    b.clock.advance(300);
+    b.watch.send({ id: 'u2', message: item('second'), session: 1 });
+    b.clock.advance(300);
+    b.watch.output({ key: 'r', startedAt: b.clock.now(), final: true });
+    assert.equal(b.watch.view().state, 'done');
+});
+
+test('a session ends with one reply streaming and a later message waiting: the started reply is cut off, the waiting one goes again', () => {
+    const { clock, watch, fails } = make();
+    watch.send({ id: 'uA', message: item('A'), session: 1 });
+    clock.advance(1000);
+    watch.output({ key: 'rA', final: false });
+    watch.send({ id: 'uB', message: item('B'), session: 1 });
+    assert.equal(watch.hardSignal({ cause: 'pc_failed', inCall: false }).action, 'recover');
+    assert.deepEqual(watch.openIds(), ['uB'], 'A is history now (cut off), never re-sent automatically');
+    assert.deepEqual(watch.sessionStarted(2).map((e) => e.id), ['uB']);
+    assert.equal(fails.length, 0);
+    // Only a streaming reply left when it dies: cut off.
+    const c = make();
+    c.watch.send({ id: 'u1', message: item('q'), session: 1 });
+    c.watch.output({ key: 'r1', final: false });
+    assert.equal(c.watch.hardSignal({ cause: 'session_closed:expired', inCall: false }).action, 'fail');
+    assert.equal(c.fails[0].partial, true);
+});
+
+test('a queued send with its bubble already showing: left out of history until the queue sends it, then the same message (no second entry)', () => {
+    const { watch } = make();
+    watch.queue({ id: 'q1' });
+    assert.equal(watch.view().dots, true);
+    assert.equal(watch.turnId(), 'q1');
+    assert.deepEqual(watch.openIds(), ['q1'], 'not history: the queue sends it');
+    assert.equal(watch.hardSignal({ cause: 'pc_failed', inCall: false }).action, 'recover');
+    assert.deepEqual(watch.sessionStarted(2), [], 'the queue flushes itself');
+    watch.send({ id: 'q1', message: item('hi'), session: 2 });
+    assert.deepEqual(watch.openIds(), ['q1']);
+    watch.output({ key: 'r', final: true });
+    assert.equal(watch.view().state, 'done');
+});
+
 // The invariant the whole thing exists for: no indicator spins forever.
 test('fuzz: the dots show only while waiting or recovering, and never 60 s past the latest send', () => {
     let seed = 42;
@@ -238,11 +352,18 @@ test('fuzz: the dots show only while waiting or recovering, and never 60 s past 
         const { clock, watch } = make();
         let lastSend = null;
         let session = 1;
+        const held = [];
         for (let step = 0; step < 120; step++) {
             const r = rnd();
-            if (r < 0.15) { watch.send({ id: 'u' + step, message: item('x'), session }); lastSend = clock.now(); }
-            else if (r < 0.2) { watch.queue(); lastSend = clock.now(); }
-            else if (r < 0.3) watch.output({ final: rnd() < 0.5 });
+            if (r < 0.12) {
+                const m = item('x');
+                const isHeld = rnd() < 0.3;
+                if (isHeld) held.push(m);
+                watch.send({ id: 'u' + step, message: m, session, held: isHeld });
+                lastSend = clock.now();
+            } else if (r < 0.15) { if (watch.delivered(held.splice(0))) lastSend = clock.now(); }
+            else if (r < 0.2) { watch.queue(rnd() < 0.5 ? { id: 'q' + step } : undefined); lastSend = clock.now(); }
+            else if (r < 0.3) watch.output({ key: 'r' + Math.floor(rnd() * 4), startedAt: clock.now() - Math.floor(rnd() * 3000), final: rnd() < 0.5 });
             else if (r < 0.38) watch.hardSignal({ cause: 'pc_failed', inCall: rnd() < 0.3, cut: rnd() < 0.1 });
             else if (r < 0.45) watch.sessionStarted(++session);
             else if (r < 0.5) { if (watch.retry()) lastSend = clock.now(); }
@@ -316,6 +437,6 @@ test('the safety card: static copy; a link on the web, a plain pointer with no U
 
 test('limits: the timeouts PR1 sets', () => {
     assert.deepEqual(
-        [tw.LIMITS.thinkingMs, tw.LIMITS.stillMs, tw.LIMITS.capMs, tw.LIMITS.toolMs, tw.LIMITS.deepThinkMs, tw.LIMITS.connectMs, tw.LIMITS.maxRecoveries],
-        [4000, 15000, 60000, 20000, 30000, 12000, 1]);
+        [tw.LIMITS.thinkingMs, tw.LIMITS.stillMs, tw.LIMITS.capMs, tw.LIMITS.toolMs, tw.LIMITS.deepThinkMs, tw.LIMITS.connectMs, tw.LIMITS.maxRecoveries, tw.LIMITS.callReconnects, tw.LIMITS.callReconnectWindowMs],
+        [4000, 15000, 60000, 20000, 30000, 12000, 1, 3, 120000]);
 });

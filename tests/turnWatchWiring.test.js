@@ -50,10 +50,51 @@ test('every session end goes through _onSessionEnd, and a stale connection is ig
 test('sendTextMessage opens the turn (the loader-removed path is gone) and the queue flush never opens a session itself', () => {
     const send = method('sendTextMessage');
     assert.doesNotMatch(send, /Loader removed as per request/);
-    assert.match(send, /this\._turns\(\)\.queue\(\)/);
-    assert.match(send, /this\._turns\(\)\.send\(\{ id: userMessageId, message: itemMessage, session: this\._sessionSeq \}\)/);
+    assert.match(send, /this\._turns\(\)\.queue\(\{ id: pending\.id \}\)/);
+    assert.match(send, /const held = this\._liveBusy\(\);\s*if \(!this\._sendUserItem\(itemMessage\)\)/, 'held is what _sendUserItem will do');
+    assert.match(send, /this\._turns\(\)\.send\(\{ id: userMessageId, message: itemMessage, session: this\._sessionSeq, held \}\)/);
     const flush = method('_sendPendingTextMessage');
     assert.match(flush, /if \(!this\._channelOpen\(\)\) \{[\s\S]*this\._pendingTextMessages\.push\(pending\);[\s\S]*return;/);
+});
+
+// Review of PR #55 (b211f1e).
+test('a queued send shows its bubble at the tap and the send reuses its id; queued messages are not history', () => {
+    const send = method('sendTextMessage');
+    const queuedPath = send.slice(send.indexOf('if (!this.isConnected || channelDead) {'), send.indexOf('// Clear on-hold flag'));
+    assert.match(queuedPath, /this\._pendingTextMessages\.push\(pending\);\s*this\._showUserTextBubble\(pending\.id, displayText, attachments, queuedAt\);/);
+    assert.match(send, /const userMessageId = queued \? queued\.id : this\._newUserTextId\(userTimestamp\);/);
+    assert.match(send, /if \(queued\) \{ this\._pendingTextMessages\.push\(queued\); return; \}/, 'a queued send that cannot go out goes back in the queue, not to a refusal');
+    assert.match(method('_sendPendingTextMessage'), /this\.sendTextMessage\(pending\.text, pending\.attachments, \{ queued: pending\.id \? pending : null \}\)/);
+    assert.match(method('_historyWindow'), /const open = includeOpen \? \[\] : \[\.\.\.this\._turns\(\)\.openIds\(\), \.\.\.queued\];/);
+});
+
+test('an answer counts for the messages the model had when it began: reply ids and start times reach the turn watch; held messages count from the flush', () => {
+    assert.match(method('updateBotMessage'), /this\._turns\(\)\.output\(\{ key: id \|\| null, startedAt: meta\.replyStartedAt \?\? null, final: !!isFinal \}\)/);
+    const live = method('handleLiveMessage');
+    assert.match(live, /if \(inner\.type === 'response\.created'\) \{[\s\S]{0,200}this\._liveReplyStartedAt\.set\(message\.delegation_id \|\| '', Date\.now\(\)\);/);
+    assert.equal((live.match(/\{ replyStartedAt: this\._liveDelegatedStartedAt \}/g) || []).length, 2, 'the delegated bubble, streaming and final');
+    assert.match(method('_scheduleLiveTextFallback'), /\{ replyStartedAt: since \}/);
+    const flush = method('_flushLiveHeldTurns');
+    assert.match(flush, /held\.forEach\(\(message\) => this\.sendMessage\(message\)\);[\s\S]*this\._turns\(\)\.delivered\(held\);/);
+});
+
+test('a call reconnects whatever happens to a typed turn, at most 3 times in 2 min; a failed turn never puts a call in standby', () => {
+    const end = method('_onSessionEnd');
+    assert.match(end, /if \(inCall && !content\) this\._autoReconnectCall\(\);\s*else if \(decision\.action === 'recover'\) this\._recoverTurn\(\);\s*else this\._enterStandby\(\);/);
+    const failed = method('_onTurnFailed');
+    assert.match(failed, /if \(!this\.pc && !inCall\) this\._enterStandby\(\);/);
+    const auto = method('_autoReconnectCall');
+    assert.match(auto, /if \(this\._callReconnects\.length >= limits\.callReconnects\) \{ this\._endDroppingCall\(/);
+    assert.match(method('_endDroppingCall'), /_logSessionEvent\('call_reconnect_capped'[\s\S]*this\.stopRecording\(\)[\s\S]*showCallEnded\(this, 'dropped'\)/);
+    assert.match(method('establishConnection'), /if \(reconnectKind === 'user'\) this\._callReconnects = \[\];/, "the person's connect gives a call its reconnects back");
+    assert.match(method('_retryTurn'), /if \(this\.isConnecting \|\| this\._autoReconnecting\) return;/);
+});
+
+test('the safety card shows on a content close only: a transport failure (expiry, drop, 500, timeout) is not a crisis', () => {
+    const callers = [...app.matchAll(/this\._showSafetyCard\('([a-z_]+)'\)/g)].map((m) => m[1]);
+    assert.deepEqual(callers, ['content_close']);
+    assert.match(method('_onContentClose'), /this\._showSafetyCard\('content_close'\);/);
+    assert.doesNotMatch(method('_onTurnFailed'), /_showSafetyCard/);
 });
 
 test('tool labels and the waiting dots go through the turn watch', () => {
