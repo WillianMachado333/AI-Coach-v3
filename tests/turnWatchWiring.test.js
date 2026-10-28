@@ -69,13 +69,21 @@ test('a queued send shows its bubble at the tap and the send reuses its id; queu
 });
 
 test('an answer counts for the messages the model had when it began: reply ids and start times reach the turn watch; held messages count from the flush', () => {
-    assert.match(method('updateBotMessage'), /this\._turns\(\)\.output\(\{ key: id \|\| null, startedAt: meta\.replyStartedAt \?\? null, final: !!isFinal \}\)/);
+    assert.match(method('updateBotMessage'), /this\._turns\(\)\.output\(\{ key: meta\.turnKey \|\| id \|\| null, startedAt: meta\.replyStartedAt \?\? null, final: !!isFinal \}\)/);
     const live = method('handleLiveMessage');
     assert.match(live, /if \(inner\.type === 'response\.created'\) \{[\s\S]{0,200}this\._liveReplyStartedAt\.set\(message\.delegation_id \|\| '', Date\.now\(\)\);/);
     assert.equal((live.match(/\{ replyStartedAt: this\._liveDelegatedStartedAt \}/g) || []).length, 2, 'the delegated bubble, streaming and final');
     assert.match(method('_scheduleLiveTextFallback'), /\{ replyStartedAt: since \}/);
     const flush = method('_flushLiveHeldTurns');
-    assert.match(flush, /held\.forEach\(\(message\) => this\.sendMessage\(message\)\);[\s\S]*this\._turns\(\)\.delivered\(held\);/);
+    assert.match(flush, /held\.forEach\(\(message\) => this\.sendMessage\(message\)\);[\s\S]*this\._turns\(\)\.delivered\(held\);\s*if \(held\.length\) this\._liveSplitUtteranceTurn\(\);/);
+});
+
+test('in a call, a voice utterance that runs on past a typed message is a new reply for the turn watch from its next word, in the same bubble', () => {
+    const live = method('handleLiveMessage');
+    assert.match(live, /else if \(this\._liveBotTurnSplit\) \{[\s\S]{0,300}this\._liveBotTurnKey = `\$\{this\._liveBotItemId\}@\$\{Date\.now\(\)\}`;/);
+    assert.equal((live.match(/this\.updateBotMessage\(this\._liveBotItemId, shown, (false|true), Date\.now\(\), \{ turnKey: this\._liveBotTurnKey \}\)/g) || []).length, 2, 'the voice bubble, streaming and final');
+    assert.match(method('sendTextMessage'), /this\._turns\(\)\.send\(\{[^}]*\}\);[\s\S]{0,120}if \(!held\) this\._liveSplitUtteranceTurn\(\);/);
+    assert.match(method('_liveSplitUtteranceTurn'), /if \(this\._liveBotItemId\) this\._liveBotTurnSplit = true;/);
 });
 
 test('a call reconnects whatever happens to a typed turn, at most 3 times in 2 min; a failed turn never puts a call in standby', () => {
@@ -88,6 +96,13 @@ test('a call reconnects whatever happens to a typed turn, at most 3 times in 2 m
     assert.match(method('_endDroppingCall'), /_logSessionEvent\('call_reconnect_capped'[\s\S]*this\.stopRecording\(\)[\s\S]*showCallEnded\(this, 'dropped'\)/);
     assert.match(method('establishConnection'), /if \(reconnectKind === 'user'\) this\._callReconnects = \[\];/, "the person's connect gives a call its reconnects back");
     assert.match(method('_retryTurn'), /if \(this\.isConnecting \|\| this\._autoReconnecting\) return;/);
+    // An automatic reconnect that ends without a session tries again inside
+    // the cap, never over a cut.
+    assert.equal((auto.match(/this\._afterAutoReconnect\(\);/g) || []).length, 2, 'after the connect resolves and after it throws');
+    assert.match(auto, /if \(this\._liveCut\) \{ this\._autoReconnecting = false; return; \}/);
+    const after = method('_afterAutoReconnect');
+    assert.match(after, /if \(this\.isConnecting \|\| this\._sessionUnderway\(\)\) return;/);
+    assert.match(after, /if \(this\._liveCut \|\| this\.isConnected \|\| this\.isConnecting \|\| this\._autoReconnecting\) return;\s*if \(this\._inCall\(\)\) \{ this\._autoReconnectCall\(\); return; \}/);
 });
 
 test('the safety card shows on a content close only: a transport failure (expiry, drop, 500, timeout) is not a crisis', () => {

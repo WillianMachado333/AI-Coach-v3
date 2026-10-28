@@ -3507,7 +3507,8 @@ class VoiceChatBot {
         // words of the answer; a session that dies first re-sends it
         // (lib/turnWatch.js).
         this._turns().send({ id: userMessageId, message: itemMessage, session: this._sessionSeq, held });
-
+        // A held one reaches the model later (_flushLiveHeldTurns).
+        if (!held) this._liveSplitUtteranceTurn();
 
         // Fire analytics for asked question (text path)
         // this.emitAskedEricaEvent(text); // REMOVED: This was causing duplicate "Voice" events for text chat
@@ -8321,7 +8322,21 @@ class VoiceChatBot {
         // They reach the model only now: the reply that just finished did not
         // answer them, and their 60 s start here (lib/turnWatch.js).
         this._turns().delivered(held);
+        if (held.length) this._liveSplitUtteranceTurn();
         if (this.isConnected) this.sendMessage({ type: 'response.create' });
+    }
+
+    // A call: a typed message reached the model while the voice layer is
+    // mid-utterance. Her transcript is one bubble per utterance until 1.5 s
+    // after her last word, and a reply answers only the messages the model
+    // had when it began (lib/turnWatch.js output), so an utterance that ran
+    // on into the answer left the message 'unanswered': failed at the 60 s
+    // cap in a call she answered, and Try again asked her twice. From her
+    // next word the utterance is a new reply for the turn watch; the bubble
+    // stays one. (No utterance is open outside a call: chat Live sends no
+    // audio.)
+    _liveSplitUtteranceTurn() {
+        if (this._liveBotItemId) this._liveBotTurnSplit = true;
     }
 
     // A tool that never returns would hold every later turn; say so loudly.
@@ -10200,6 +10215,9 @@ class VoiceChatBot {
     // drop ends the call (_endDroppingCall). A close that repeated at
     // creation looped ~17 billed sessions a minute. Not after a cost cut
     // (#40): that waits for the person's tap.
+    // A drop while a reconnect is on its way is not lost: when that
+    // connect() finishes without a session, the call tries again inside the
+    // same cap (_afterAutoReconnect).
     _autoReconnectCall() {
         if (this._liveCut) { this._enterStandby(); return; }
         if (this._autoReconnecting) return;
@@ -10218,6 +10236,8 @@ class VoiceChatBot {
             // A session can die while its connect() is still unwinding;
             // the call may have been hung up meanwhile.
             for (let i = 0; this.isConnecting && i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 250));
+            // A cut meanwhile (#40) has its own notice and standby.
+            if (this._liveCut) { this._autoReconnecting = false; return; }
             if (this.isConnected || this.isConnecting || !this._inCall()) {
                 this._autoReconnecting = false;
                 if (!this.isConnected && !this.isConnecting) this._enterStandby();
@@ -10226,11 +10246,13 @@ class VoiceChatBot {
             this._reconnectKind = 'auto';
             this.connect({ skipOpeningLine: true })
                 .then(() => {
-                    // connect() reports failure by not connecting, not by throwing.
-                    if (this.isConnected) console.log('[Erica] Auto-reconnect successful');
+                    // connect() reports failure by not connecting, not by
+                    // throwing (and leaves isConnected at 'connecting').
+                    if (this._sessionUnderway()) console.log('[Erica] Auto-reconnect successful');
                     else console.warn('[Erica] Auto-reconnect did not reconnect' + (this._liveCut ? ' — the server ended this Live connection (' + this._liveCut.reason + ')' : ''));
                     this._autoReconnecting = false;
                     this._reconnectKind = null;
+                    this._afterAutoReconnect();
                 })
                 .catch(err => {
                     console.warn('[Erica] Auto-reconnect failed:', err?.message || err);
@@ -10243,8 +10265,37 @@ class VoiceChatBot {
                         this.connectButton.disabled = false;
                         this.connectButton.textContent = 'Reconnect';
                     }
+                    this._afterAutoReconnect();
                 });
         }, 1500);
+    }
+
+    // An automatic reconnect's connect() finished. Without a session (it
+    // ended while connect() was still unwinding: a close 0-1 s after
+    // session.started, as Varsha's were; or the create failed or timed
+    // out), a call that is still on tries again, counted by the cap, so it
+    // ends reconnected or in "Call ended — tap to resume", never frozen with
+    // the mic held and no session. A server cut (#40) is shown by _cutLive,
+    // which runs once connect() has unwound: no attempt over it.
+    _afterAutoReconnect() {
+        if (this.isConnecting || this._sessionUnderway()) return;
+        // A failed connect leaves isConnected at 'connecting' (updateStatus),
+        // which reads as connected: no session is coming on it.
+        this.isConnected = false;
+        setTimeout(() => {
+            if (this._liveCut || this.isConnected || this.isConnecting || this._autoReconnecting) return;
+            if (this._inCall()) { this._autoReconnectCall(); return; }
+            // Hung up meanwhile: as on page load, the next tap or send connects.
+            this._enterStandby();
+        }, 0);
+    }
+
+    // The session is up, or its connection is still coming up (ICE slower
+    // than connect()'s 1 s wait): that connection's own state change decides.
+    _sessionUnderway() {
+        if (this.isConnected === true) return true;
+        const pc = this.pc;
+        return !!(pc && pc.remoteDescription && !['failed', 'disconnected', 'closed'].includes(pc.connectionState));
     }
 
     // The call kept dropping: it ends to text standby ("Call ended — tap to
@@ -10468,21 +10519,30 @@ class VoiceChatBot {
                 if (typeof this.hideLoader === 'function') this.hideLoader();
                 if (!this._liveBotItemId) {
                     this._liveBotItemId = `live-bot-${Date.now()}`;
+                    this._liveBotTurnKey = this._liveBotItemId;
                     // A new utterance (not the continuation of one already playing).
                     if (!this._liveUtteranceStarts) this._liveUtteranceStarts = [];
                     this._liveUtteranceStarts.push(Date.now());
                     if (this._liveUtteranceStarts.length > 100) this._liveUtteranceStarts.shift();
+                } else if (this._liveBotTurnSplit) {
+                    // A typed message reached the model during this utterance:
+                    // from this word on it is a new reply for the turn watch
+                    // (_liveSplitUtteranceTurn), in the same bubble.
+                    this._liveBotTurnKey = `${this._liveBotItemId}@${Date.now()}`;
                 }
+                this._liveBotTurnSplit = false;
                 this._liveBotTranscript = (this._liveBotTranscript || '') + message.delta;
                 {
                     const shown = this._nonSpeechFiltered(this._liveBotTranscript, 'coach');
-                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, false, Date.now());
+                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, false, Date.now(), { turnKey: this._liveBotTurnKey });
                 }
                 clearTimeout(this._liveBotFinalizeTimer);
                 this._liveBotFinalizeTimer = setTimeout(() => {
                     const shown = this._nonSpeechFiltered(this._liveBotTranscript, 'coach', true);
-                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, true, Date.now());
+                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, true, Date.now(), { turnKey: this._liveBotTurnKey });
                     this._liveBotItemId = null;
+                    this._liveBotTurnKey = null;
+                    this._liveBotTurnSplit = false;
                     this._liveBotTranscript = '';
                 }, 1500);
                 break;
@@ -11947,8 +12007,10 @@ class VoiceChatBot {
         }
         // An answer is showing: the dots go for the messages the model had
         // when this reply began (meta.replyStartedAt, its response.created);
-        // a message sent after that keeps them (lib/turnWatch.js).
-        if (String(text || '').trim()) this._turns().output({ key: id || null, startedAt: meta.replyStartedAt ?? null, final: !!isFinal });
+        // a message sent after that keeps them (lib/turnWatch.js). A voice
+        // utterance that ran on past a typed message is a new reply from
+        // there (meta.turnKey, _liveSplitUtteranceTurn).
+        if (String(text || '').trim()) this._turns().output({ key: meta.turnKey || id || null, startedAt: meta.replyStartedAt ?? null, final: !!isFinal });
     }
 
     addMessage(sender, text) {
