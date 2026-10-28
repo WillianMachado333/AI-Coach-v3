@@ -83,7 +83,8 @@ test('in a call, a voice utterance that runs on past a typed message is a new re
     assert.match(live, /else if \(this\._liveBotTurnSplit\) \{[\s\S]{0,300}this\._liveBotTurnKey = `\$\{this\._liveBotItemId\}@\$\{Date\.now\(\)\}`;/);
     assert.equal((live.match(/this\.updateBotMessage\(this\._liveBotItemId, shown, (false|true), Date\.now\(\), \{ turnKey: this\._liveBotTurnKey \}\)/g) || []).length, 2, 'the voice bubble, streaming and final');
     assert.match(method('sendTextMessage'), /this\._turns\(\)\.send\(\{[^}]*\}\);[\s\S]{0,120}if \(!held\) this\._liveSplitUtteranceTurn\(\);/);
-    assert.match(method('_liveSplitUtteranceTurn'), /if \(this\._liveBotItemId\) this\._liveBotTurnSplit = true;/);
+    assert.match(method('_liveSplitUtteranceTurn'), /if \(this\._liveBotItemId && this\._inCall\(\)\) this\._liveBotTurnSplit = true;/, 'calls only: after a hang-up her trailing words are not a chat answer');
+    assert.match(method('_resendOpenTurns'), /resend\.forEach\(\(entry\) => this\._sendUserItem\(entry\.message\)\);\s*(\/\/[^\n]*\n\s*)*this\._liveSplitUtteranceTurn\(\);\s*this\._requestResponse\('re-sent turn'\);/, 'a re-send (Try again mid-utterance) splits too');
 });
 
 test('a call reconnects whatever happens to a typed turn, at most 3 times in 2 min; a failed turn never puts a call in standby', () => {
@@ -103,6 +104,30 @@ test('a call reconnects whatever happens to a typed turn, at most 3 times in 2 m
     const after = method('_afterAutoReconnect');
     assert.match(after, /if \(this\.isConnecting \|\| this\._sessionUnderway\(\)\) return;/);
     assert.match(after, /if \(this\._liveCut \|\| this\.isConnected \|\| this\.isConnecting \|\| this\._autoReconnecting\) return;\s*if \(this\._inCall\(\)\) \{ this\._autoReconnectCall\(\); return; \}/);
+});
+
+test('a call never freezes, never leaves for maintenance.html on its own reconnects, and its hang-up tap always hangs up', () => {
+    // Automatic reconnects are spaced out and bounded by the call cap, not
+    // by the maintenance redirect.
+    const auto = method('_autoReconnectCall');
+    assert.match(auto, /const delays = limits\.callReconnectDelaysMs \|\| \[1500\];\s*const delay = delays\[Math\.min\(this\._callReconnects\.length, delays\.length\) - 1\];/);
+    assert.match(auto, /\}, delay\);\s*\}$/);
+    const est = method('establishConnection');
+    assert.match(est, /const automatic = this\._reconnectKind === 'auto';\s*try \{/);
+    assert.ok(est.indexOf('if (automatic) throw error;') > 0 && est.indexOf('if (automatic) throw error;') < est.indexOf('this._openaiFailCount = (this._openaiFailCount || 0) + 1;'), 'not counted toward the redirect');
+    // A failed connect leaves no truthy 'connecting' behind; the reconnect's
+    // timer asks whether a session came up; a connect of the person's own
+    // that ends without a session during a call is followed up.
+    const connect = method('connect');
+    assert.match(connect, /const automatic = this\._reconnectKind === 'auto';\s*await this\.stopActivePreview/);
+    assert.match(connect, /\} catch \(error\) \{\s*(\/\/[^\n]*\n\s*)*if \(!this\._sessionUnderway\(\)\) this\.isConnected = false;/);
+    assert.match(connect, /\} finally \{\s*this\.isConnecting = false;\s*(\/\/[^\n]*\n\s*)*if \(!automatic && this\.isRecording && !this\._liveCut && !this\._sessionUnderway\(\)\) this\._afterAutoReconnect\(\);\s*\}/);
+    assert.match(auto, /const underway = this\._sessionUnderway\(\);\s*if \(underway \|\| this\.isConnecting \|\| !this\._inCall\(\)\) \{/);
+    // The hang-up comes before "not connected, reconnect".
+    const toggle = method('toggleMicTrack');
+    const hangup = toggle.search(/if \(this\.isRecording\) \{\s*this\.stopRecording\(\);\s*return;\s*\}/);
+    assert.ok(hangup > 0 && hangup < toggle.indexOf('if (!this.isConnected) {'), 'hang-up first');
+    assert.equal((toggle.match(/this\.stopRecording\(\)/g) || []).length, 1);
 });
 
 test('the safety card shows on a content close only: a transport failure (expiry, drop, 500, timeout) is not a crisis', () => {

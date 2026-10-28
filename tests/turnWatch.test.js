@@ -439,4 +439,8 @@ test('limits: the timeouts PR1 sets', () => {
     assert.deepEqual(
         [tw.LIMITS.thinkingMs, tw.LIMITS.stillMs, tw.LIMITS.capMs, tw.LIMITS.toolMs, tw.LIMITS.deepThinkMs, tw.LIMITS.connectMs, tw.LIMITS.maxRecoveries, tw.LIMITS.callReconnects, tw.LIMITS.callReconnectWindowMs],
         [4000, 15000, 60000, 20000, 30000, 12000, 1, 3, 120000]);
+    // One wait per automatic call reconnect in the window: a few seconds
+    // offline does not use up the cap.
+    assert.deepEqual(tw.LIMITS.callReconnectDelaysMs, [1500, 5000, 15000]);
+    assert.equal(tw.LIMITS.callReconnectDelaysMs.length, tw.LIMITS.callReconnects);
 });

@@ -9,6 +9,7 @@
 //   h.live.closeSession('expired') / h.live.failPc() / h.live.reply('text')
 //   h.live.event(inner, delegation) / h.live.functionCall(name, args) / h.live.say('words')
 //   h.events(name)   — /api/session-log events posted
+//   h.navigations    — every location.href assignment (the page would leave)
 //
 // The constructor is not run (it wires the whole page); the fields the
 // recovery paths read are set here, and what is not under test is stubbed.
@@ -210,6 +211,15 @@ function createHarness({ search = '', savedState = null, voiceApiMode = 'live', 
         constructor(...a) { if (a.length) super(...a); else super(clock.now()); }
         static now() { return clock.now(); }
     }
+    // A page that assigns location.href navigates away (maintenance.html):
+    // every assignment is recorded, since the vm page itself stays.
+    const navigations = [];
+    let href = 'http://localhost/' + search;
+    const location = {
+        search, origin: 'http://localhost', pathname: '/',
+        get href() { return href; },
+        set href(v) { navigations.push(String(v)); href = String(v); },
+    };
     const ctx = {
         console: quiet,
         setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
@@ -217,7 +227,7 @@ function createHarness({ search = '', savedState = null, voiceApiMode = 'live', 
         Date: FakeDate,
         document: doc,
         navigator: { userAgent: 'node-harness' },
-        location: { search, origin: 'http://localhost', pathname: '/', href: 'http://localhost/' + search },
+        location,
         URLSearchParams, URL, AbortController, TextEncoder, TextDecoder,
         btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
         atob: (s) => Buffer.from(s, 'base64').toString('binary'),
@@ -302,7 +312,7 @@ function createHarness({ search = '', savedState = null, voiceApiMode = 'live', 
     if (savedState) app.loadSavedState();
 
     return {
-        app, ctx, live, clock, doc, logs, posts, fetches, hangs,
+        app, ctx, live, clock, doc, logs, posts, fetches, hangs, navigations,
         state: () => stateStore.state,
         advance: (ms) => clock.advance(ms),
         flush: () => clock.flush(),

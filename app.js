@@ -2934,9 +2934,19 @@ class VoiceChatBot {
         // First voice-mode entry: the person picks how the coach sounds
         // (image cards). Checked once per page; skipping costs one tap.
         if (!this.isRecording && !this._voiceStepChecked) { this._voiceStepChecked = true; this._voiceStepGate(); return; }
+        // A call is on: this tap is the hang-up, whatever the connection is
+        // doing. Checked before "not connected": during a call's reconnect
+        // (the wait before an attempt, a create in flight) the tap used to
+        // start a reconnect of its own, which brought the mic back after the
+        // person had hung up, or it was swallowed. The reconnect sees the call is
+        // over and goes to standby (_autoReconnectCall, _afterAutoReconnect).
+        if (this.isRecording) {
+            this.stopRecording();
+            return;
+        }
         // A call is starting (cold or warm): from here, 20 s without a word
         // is a silent call (#32). A hang-up click disarms in stopRecording.
-        if (!this.isRecording) this._silentCallArm('click');
+        this._silentCallArm('click');
         // Detect dead connection (same as sendTextMessage)
         const channelDead = !this.dataChannel || this.dataChannel.readyState !== 'open';
         if (channelDead && this.isConnected) {
@@ -2969,12 +2979,6 @@ class VoiceChatBot {
                         console.error('[Erica] Manual connect failed:', err);
                     });
             }
-            return;
-        }
-
-        // If we are recording, treat this as a "Stop" action
-        if (this.isRecording) {
-            this.stopRecording();
             return;
         }
 
@@ -5442,6 +5446,8 @@ class VoiceChatBot {
     }
 
     async connect(options = {}) {
+        // A call's automatic reconnect (_autoReconnectCall follows it up).
+        const automatic = this._reconnectKind === 'auto';
         await this.stopActivePreview({ clearPreview: false });
         // Voice Limit Check
         if (!this.checkVoiceLimit()) {
@@ -5604,6 +5610,10 @@ class VoiceChatBot {
                 await this._maybeSendOpeningLine();
             }
         } catch (error) {
+            // updateStatus('connecting') left the truthy 'connecting' behind,
+            // which reads as connected (a later connect() was a no-op, and a
+            // call's reconnect skipped its attempt): no session is coming.
+            if (!this._sessionUnderway()) this.isConnected = false;
             if (error && error.liveCut) {
                 // The server ended this visit's Live connection (#40): show the
                 // cut, once connect() has finished unwinding.
@@ -5632,6 +5642,12 @@ class VoiceChatBot {
             }
         } finally {
             this.isConnecting = false;
+            // A connect of the person's own during a call (a message typed
+            // or Try again while it reconnects, a coach switch) that ended
+            // without a session: the call goes on reconnecting by itself,
+            // inside the cap, instead of staying on with the mic held and no
+            // session. An automatic one is followed up by _autoReconnectCall.
+            if (!automatic && this.isRecording && !this._liveCut && !this._sessionUnderway()) this._afterAutoReconnect();
         }
     }
 
@@ -6288,6 +6304,9 @@ class VoiceChatBot {
     }
 
     async establishConnection() {
+        // A call's automatic reconnect: not counted toward the maintenance
+        // redirect below (the call cap bounds it).
+        const automatic = this._reconnectKind === 'auto';
         try {
             // Show loader and disable mic while connecting (an open turn's
             // reply slot already shows the dots)
@@ -6768,6 +6787,13 @@ class VoiceChatBot {
             // it must not count toward the maintenance redirect below.
             if (error && error.liveCut) throw error;
             console.error('Connection error:', error);
+            // Neither is a call's automatic reconnect: the call cap bounds
+            // those and ends the call with "Call ended — tap to resume".
+            // When they were counted, three of them (1.5 s apart then, failing
+            // fast while the device is offline) sent a call that lost its
+            // network for a few seconds, such as a Wi-Fi to cellular handoff,
+            // to this page.
+            if (automatic) throw error;
 
             // Track consecutive OpenAI connection failures
             // (not Wix 429s — those are handled separately with retries)
@@ -8333,10 +8359,12 @@ class VoiceChatBot {
     // on into the answer left the message 'unanswered': failed at the 60 s
     // cap in a call she answered, and Try again asked her twice. From her
     // next word the utterance is a new reply for the turn watch; the bubble
-    // stays one. (No utterance is open outside a call: chat Live sends no
-    // audio.)
+    // stays one. Calls only: after a hang-up her last utterance stays open
+    // for 1.5 s, and its trailing words are not an answer to a message typed
+    // in chat (counted as one, a session that expired next recovered
+    // nothing, and the message was lost without a note).
     _liveSplitUtteranceTurn() {
-        if (this._liveBotItemId) this._liveBotTurnSplit = true;
+        if (this._liveBotItemId && this._inCall()) this._liveBotTurnSplit = true;
     }
 
     // A tool that never returns would hold every later turn; say so loudly.
@@ -10111,7 +10139,7 @@ class VoiceChatBot {
     }
 
     _turnLimits() {
-        return (window.turnWatch && window.turnWatch.LIMITS) || { toolMs: 20000, deepThinkMs: 30000, connectMs: 12000, resendDelayMs: 500, callReconnects: 3, callReconnectWindowMs: 120000 };
+        return (window.turnWatch && window.turnWatch.LIMITS) || { toolMs: 20000, deepThinkMs: 30000, connectMs: 12000, resendDelayMs: 500, callReconnects: 3, callReconnectWindowMs: 120000, callReconnectDelaysMs: [1500, 5000, 15000] };
     }
 
     _coachName() {
@@ -10218,6 +10246,10 @@ class VoiceChatBot {
     // A drop while a reconnect is on its way is not lost: when that
     // connect() finishes without a session, the call tries again inside the
     // same cap (_afterAutoReconnect).
+    // The attempts in a window are spaced out (LIMITS.callReconnectDelaysMs:
+    // 1.5 s, 5 s, 15 s), so a few seconds without a network (a Wi-Fi to
+    // cellular handoff, where every create fails at once) does not use up
+    // the cap before the network is back.
     _autoReconnectCall() {
         if (this._liveCut) { this._enterStandby(); return; }
         if (this._autoReconnecting) return;
@@ -10226,28 +10258,42 @@ class VoiceChatBot {
         this._callReconnects = (this._callReconnects || []).filter((at) => now - at < limits.callReconnectWindowMs);
         if (this._callReconnects.length >= limits.callReconnects) { this._endDroppingCall(this._callReconnects.length, limits); return; }
         this._callReconnects.push(now);
+        const delays = limits.callReconnectDelaysMs || [1500];
+        const delay = delays[Math.min(this._callReconnects.length, delays.length) - 1];
         this._autoReconnecting = true;
-        console.log('[Erica] WebRTC dropped — auto-reconnecting silently...');
+        console.log(`[Erica] WebRTC dropped — auto-reconnecting silently in ${delay / 1000} s (attempt ${this._callReconnects.length} of ${limits.callReconnects})...`);
         if (window.uiLayout && typeof window.uiLayout.updateStatusDot === 'function') {
             window.uiLayout.updateStatusDot(this, 'connecting');
         }
-        // Small delay to let the connection fully close
         setTimeout(async () => {
             // A session can die while its connect() is still unwinding;
             // the call may have been hung up meanwhile.
             for (let i = 0; this.isConnecting && i < 40; i++) await new Promise((resolve) => setTimeout(resolve, 250));
             // A cut meanwhile (#40) has its own notice and standby.
             if (this._liveCut) { this._autoReconnecting = false; return; }
-            if (this.isConnected || this.isConnecting || !this._inCall()) {
+            // Whether a session came up, not isConnected: a connect of the
+            // person's own that failed meanwhile (a message typed into the
+            // call) left the truthy 'connecting' behind, and the attempt was
+            // skipped with the call frozen. One still in flight is followed
+            // up when it ends (connect()'s finally).
+            const underway = this._sessionUnderway();
+            if (underway || this.isConnecting || !this._inCall()) {
                 this._autoReconnecting = false;
-                if (!this.isConnected && !this.isConnecting) this._enterStandby();
+                // Hung up, nothing on its way: the person is in chat now. A
+                // message typed into the call that still waits gets the
+                // chat's one fresh session; otherwise standby.
+                if (!underway && !this.isConnecting) {
+                    if (this._turns().isOpen()) this._recoverTurn();
+                    else this._enterStandby();
+                }
                 return;
             }
+            this.isConnected = false;
             this._reconnectKind = 'auto';
             this.connect({ skipOpeningLine: true })
                 .then(() => {
                     // connect() reports failure by not connecting, not by
-                    // throwing (and leaves isConnected at 'connecting').
+                    // throwing.
                     if (this._sessionUnderway()) console.log('[Erica] Auto-reconnect successful');
                     else console.warn('[Erica] Auto-reconnect did not reconnect' + (this._liveCut ? ' — the server ended this Live connection (' + this._liveCut.reason + ')' : ''));
                     this._autoReconnecting = false;
@@ -10267,7 +10313,7 @@ class VoiceChatBot {
                     }
                     this._afterAutoReconnect();
                 });
-        }, 1500);
+        }, delay);
     }
 
     // An automatic reconnect's connect() finished. Without a session (it
@@ -10279,8 +10325,7 @@ class VoiceChatBot {
     // which runs once connect() has unwound: no attempt over it.
     _afterAutoReconnect() {
         if (this.isConnecting || this._sessionUnderway()) return;
-        // A failed connect leaves isConnected at 'connecting' (updateStatus),
-        // which reads as connected: no session is coming on it.
+        // No session is coming on this connection.
         this.isConnected = false;
         setTimeout(() => {
             if (this._liveCut || this.isConnected || this.isConnecting || this._autoReconnecting) return;
@@ -10339,6 +10384,10 @@ class VoiceChatBot {
             // That session died meanwhile: the turn watch already has it.
             if (seq !== this._sessionSeq || !this._channelOpen()) return;
             resend.forEach((entry) => this._sendUserItem(entry.message));
+            // In a call she may be mid-utterance (Try again with the channel
+            // open): what she says from her next word is a reply that began
+            // after the re-send, as for a typed message (sendTextMessage).
+            this._liveSplitUtteranceTurn();
             this._requestResponse('re-sent turn');
             console.log(`[Erica] ↻ re-sent ${resend.length} unanswered message(s) and one response.create on the new session`);
         }, this._turnLimits().resendDelayMs);

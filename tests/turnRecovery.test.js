@@ -406,7 +406,7 @@ test("a call drop while a typed turn waits re-sends it on the call's next sessio
     assert.deepEqual(wire(h.live.sent(1)).slice(-2), ['item:user:typed in call', 'create'], "re-sent once on the call's new session");
     assert.ok(!h.live.creates[1].input.some((i) => i.content[0].text === 'typed in call'), 'not also in session.input');
     h.live.failPc('disconnected');
-    await h.advance(3000);
+    await h.advance(7000); // the second automatic reconnect in 2 min waits 5 s
     assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'auto', 'auto']);
     assert.equal(h.app.isRecording, true);
     assert.equal(h.app.localStream, mic);
@@ -622,6 +622,7 @@ test('a call whose every reconnect ends at session.started stops after 3 automat
     assert.equal(h.app.callEndedNotice.classList.contains('hidden'), false);
     assert.equal(h.app.callEndedNotice.dataset.reason, 'dropped');
     assert.deepEqual(h.events('call_reconnect_capped').map((e) => e.meta), [{ reconnects: 3, windowS: 120 }]);
+    assert.deepEqual(h.navigations, [], 'no maintenance.html');
     await h.advance(5 * MIN);
     assert.equal(h.live.creates.length, 4, 'nothing reconnects after the notice');
 });
@@ -639,6 +640,7 @@ test('a call whose automatic reconnect cannot create a session (a 500, or the 12
         assert.equal(h.app.localStream, null, `${label}: the mic is released`);
         assert.equal(h.app.callEndedNotice.dataset.reason, 'dropped', label);
         assert.equal(h.events('call_reconnect_capped').length, 1, label);
+        assert.deepEqual(h.navigations, [], `${label}: the page stays (no maintenance.html)`);
     }
 });
 
@@ -746,4 +748,240 @@ test('in a call, a message held behind a tool that reaches the model while Erica
     await h.advance(65000);
     assert.equal(h.failedNote(), null);
     assert.deepEqual(h.events('turn_failed'), []);
+});
+
+// ---- Re-review of PR #55, round 3 (1689b3b) ---------------------------------
+
+// A call's automatic reconnects are bounded by the call cap, which ends in
+// "Call ended — tap to resume". They used to count toward establishConnection's
+// rule that 3 failed creates in a row send the page to maintenance.html, and
+// they came 1.5 s apart: a few seconds offline (a Wi-Fi to cellular handoff)
+// used up both and replaced the coach with "temporarily unavailable".
+test('a call that is offline for 6 s (every session create rejects) reconnects once the network is back: spaced attempts, no maintenance.html, no notice', async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    const mic = h.app.localStream;
+    const online = h.ctx.fetch;
+    const dropAt = h.clock.now();
+    const offline = [];
+    h.ctx.fetch = (url, init) => {
+        if (String(url).includes('/api/proxy/live') && h.clock.now() < dropAt + 6000) {
+            offline.push(h.clock.now() - dropAt);
+            return Promise.reject(new TypeError('Failed to fetch'));
+        }
+        return online(url, init);
+    };
+    h.live.failPc('failed');
+    await h.advance(30000);
+    assert.deepEqual(h.navigations, [], 'the page stays');
+    assert.deepEqual(offline, [1500], 'one attempt while offline, 1.5 s after the drop');
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'auto'], 'the next attempt waits long enough for the network to return');
+    assert.ok(h.app.pc && h.app.isConnected === true, 'connected again');
+    assert.equal(h.app.isRecording, true);
+    assert.equal(h.app.localStream, mic, 'the same mic');
+    assert.equal(h.app.callEndedNotice.classList.contains('hidden'), true, 'no notice');
+    assert.equal(h.events('call_reconnect_capped').length, 0);
+});
+
+test("a call whose automatic reconnects all fail spaces them out (1.5 s, then 5 s, then 15 s) and ends with 'Call ended — tap to resume', never maintenance.html; the person's own connects still count toward it", async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    h.live.policy = (create) => (create.kind === 'auto' ? { status: 500, body: { error: 'upstream' } } : undefined);
+    const dropAt = h.clock.now();
+    h.live.failPc('disconnected');
+    await h.advance(2 * MIN);
+    const autos = h.live.creates.filter((c) => c.kind === 'auto').map((c) => c.at - dropAt);
+    assert.equal(autos.length, 3, String(autos));
+    assert.equal(autos[0], 1500);
+    assert.ok(autos[1] - autos[0] >= 5000, `second attempt ${autos[1] - autos[0]} ms after the first`);
+    assert.ok(autos[2] - autos[1] >= 15000, `third attempt ${autos[2] - autos[1]} ms after the second`);
+    assert.equal(h.app.callEndedNotice.dataset.reason, 'dropped');
+    assert.equal(h.app.localStream, null, 'the mic is released');
+    assert.deepEqual(h.navigations, [], 'the page stays');
+    assert.equal(h.app._openaiFailCount || 0, 0, 'automatic reconnects are not counted for the redirect');
+    // Unchanged: three failed connects of the person's own (send, Try
+    // again, Try again) still go to the maintenance page.
+    const c = harness();
+    c.live.policy = () => ({ status: 500, body: {} });
+    c.app.sendTextMessage('hello');
+    await c.advance(3000);
+    c.failedNote().querySelector('button').click();
+    await c.advance(3000);
+    c.failedNote().querySelector('button').click();
+    await c.advance(3000);
+    assert.deepEqual(c.navigations, ['maintenance.html']);
+});
+
+// A failed connect left isConnected at the truthy 'connecting', which the
+// reconnect's 1.5 s timer read as connected: no attempt, no standby, and the
+// call stayed on with the mic held and no session.
+test('a message typed during a call reconnect whose own connect fails (a 500, or the 12 s timeout) leaves the call reconnecting: never frozen with the mic held and no session', async () => {
+    for (const [label, verdict] of [['500', { status: 500, body: {} }], ['create timeout', 'hang']]) {
+        const h = harness();
+        h.app.toggleMicTrack();
+        await h.advance(3000);
+        const mic = h.app.localStream;
+        let typed = false;
+        h.live.policy = (create) => {
+            if (create.kind !== 'user' || h.live.creates.length < 2 || typed) return undefined;
+            typed = true;
+            return verdict;
+        };
+        h.live.failPc('disconnected');
+        await h.advance(300);
+        h.app.sendTextMessage('hello?');
+        await h.advance(40000);
+        const kinds = h.live.creates.map((c) => c.kind);
+        assert.deepEqual(kinds.slice(0, 2), ['user', 'user'], label);
+        assert.ok(kinds.slice(2).includes('auto'), `${label}: the call tries again on its own (${kinds})`);
+        assert.ok(h.app.pc && h.app.isConnected === true, `${label}: connected again`);
+        assert.equal(h.app.isRecording, true, label);
+        assert.equal(h.app.localStream, mic, `${label}: the same mic`);
+        assert.equal(h.app.callEndedNotice.classList.contains('hidden'), true, `${label}: no notice`);
+        assert.deepEqual(h.navigations, [], label);
+        const sent = h.live.pcs.map((p) => wire(p.dc.sent).filter((x) => x === 'item:user:hello?').length);
+        assert.equal(sent.reduce((a, b) => a + b, 0), 1, `${label}: the typed message reaches the reconnected call once (${sent})`);
+        assert.equal(sent[sent.length - 1], 1, label);
+    }
+});
+
+// The call button checked "not connected" before "recording": a hang-up tap
+// during a reconnect started a reconnect of its own (the mic attached again,
+// after the person had hung up), or was swallowed while a create was in
+// flight.
+test('hang-up tapped during a call reconnect hangs up: the mic is released at once, no session comes back for the call, the automatic attempts stop', async () => {
+    // In the 1.5 s delay before the automatic attempt.
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    h.live.failPc('disconnected');
+    await h.advance(500);
+    h.app.toggleMicTrack();
+    assert.equal(h.app.isRecording, false, 'the tap hangs up');
+    assert.equal(h.app.localStream, null, 'the mic is released');
+    await h.advance(2 * MIN);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user'], 'nothing reconnects');
+    assert.equal(h.app.pc, null);
+    assert.equal(h.app.isRecording, false);
+    assert.equal(h.app._liveStandby, true);
+    assert.equal(h.app.callEndedNotice.classList.contains('hidden'), true);
+    assert.equal(h.events('call_reconnect_capped').length, 0);
+
+    // While the automatic attempt's create hangs (until the 12 s timeout).
+    const g = harness();
+    g.app.toggleMicTrack();
+    await g.advance(3000);
+    g.live.policy = (create) => (create.kind === 'auto' ? 'hang' : undefined);
+    g.live.failPc('disconnected');
+    await g.advance(3000);
+    assert.deepEqual(g.live.creates.map((c) => c.kind), ['user', 'auto']);
+    g.app.toggleMicTrack();
+    assert.equal(g.app.isRecording, false, 'the tap is not swallowed');
+    assert.equal(g.app.localStream, null);
+    await g.advance(2 * MIN);
+    assert.deepEqual(g.live.creates.map((c) => c.kind), ['user', 'auto'], 'no attempt after the hang-up');
+    assert.equal(g.app.isRecording, false);
+    assert.equal(g.app._liveStandby, true);
+    assert.equal(g.events('call_reconnect_capped').length, 0);
+    assert.deepEqual(g.navigations, []);
+
+    // Every new session closes at session.started: the tap in the delay
+    // neither reconnects nor gives the call a fresh budget.
+    const s = harness();
+    s.app.toggleMicTrack();
+    await s.advance(3000);
+    s.live.onStarted = () => s.live.closeSession('expired');
+    s.live.failPc('disconnected');
+    await s.advance(500);
+    s.app.toggleMicTrack();
+    await s.advance(2 * MIN);
+    assert.deepEqual(s.live.creates.map((c) => c.kind), ['user']);
+    assert.equal(s.app.isRecording, false);
+    assert.equal(s.app.localStream, null);
+});
+
+// After that hang-up the person is in chat: a message typed into the call
+// that was still waiting gets the chat's one fresh session, instead of a
+// minute under "Reconnecting..." with nothing reconnecting.
+test('hang-up tapped during a call reconnect while a typed message waits: the message gets its one fresh session, as in chat; the mic stays released', async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    h.app.sendTextMessage('typed in call');
+    await h.advance(300);
+    h.live.failPc('disconnected');
+    await h.advance(500);
+    h.app.toggleMicTrack(); // hang up
+    await h.advance(5000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'recover']);
+    assert.equal(h.app.isRecording, false);
+    assert.equal(h.app.localStream, null, 'no mic on the new session');
+    assert.deepEqual(wire(h.live.sent(1)).filter((x) => x === 'item:user:typed in call'), ['item:user:typed in call'], 're-sent once');
+    h.live.reply('Here you go');
+    await h.advance(200);
+    assert.equal(h.indicator().visible, false);
+    await h.advance(2 * MIN);
+    assert.equal(h.failedNote(), null);
+    assert.equal(h.live.creates.length, 2);
+});
+
+// Try again with the channel open re-sends through _resendOpenTurns, which
+// did not mark the open utterance: an answer inside it counted as older than
+// the re-send (dots kept, a false failure at 60 s, a second Try again would
+// ask twice).
+test('in a call, Try again tapped while Erica is speaking and answered in the same utterance: the dots go, nothing fails at 60 s, the message goes once', async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    h.app.sendTextMessage('typed');
+    await h.advance(300);
+    let failed = 0;
+    h.live.policy = (create) => (create.kind === 'auto' && failed++ === 0 ? { status: 500, body: {} } : undefined);
+    h.live.failPc('disconnected');
+    await h.advance(15000);
+    assert.ok(h.failedNote(), 'the turn failed with its connect');
+    assert.ok(h.app.pc && h.app.isConnected === true, 'the call is back');
+    const pcIndex = h.live.pcs.length - 1;
+    h.live.say('So, as I was saying, ');
+    await h.advance(700);
+    h.failedNote().querySelector('button').click();
+    for (let i = 0; i < 8; i++) { await h.advance(700); h.live.say(i < 3 ? 'more words ' : 'and about your typed question, here it is '); }
+    await h.advance(3000);
+    assert.equal(h.indicator().visible, false, 'answered in the same utterance');
+    await h.advance(65000);
+    assert.equal(h.failedNote(), null, 'no false failure');
+    assert.deepEqual(h.events('turn_failed').map((e) => e.meta.cause), ['connect_failed']);
+    assert.deepEqual(wire(h.live.sent(pcIndex)).filter((x) => x === 'item:user:typed'), ['item:user:typed'], 'Try again sent it once');
+    assert.equal(h.live.pcs.length - 1, pcIndex, 'on the same session');
+});
+
+// The utterance split is for calls. Right after a hang-up her last utterance
+// stays open for 1.5 s; a chat message sent then used to be "answered" by its
+// trailing words, so a session that expired next recovered nothing and the
+// message was lost without a note (Varsha's class).
+test('right after a hang-up, a chat message sent while her last utterance is still open is not answered by its trailing words: an expiry then recovers it once', async () => {
+    const h = harness();
+    h.app.toggleMicTrack();
+    await h.advance(3000);
+    h.live.say('So that is my view on it.');
+    await h.advance(200);
+    h.app.toggleMicTrack(); // hang up
+    await h.advance(200);
+    assert.equal(h.app.isRecording, false);
+    h.app.sendTextMessage('Q typed in chat');
+    await h.advance(300);
+    h.live.say(' Talk soon.');
+    await h.advance(3000);
+    assert.equal(h.indicator().visible, true, 'her trailing words are not the answer');
+    h.live.closeSession('expired');
+    await h.advance(5000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'recover']);
+    assert.deepEqual(h.live.pcs.map((p) => wire(p.dc.sent).filter((x) => x === 'item:user:Q typed in chat').length), [1, 1], 're-sent once on the recover session');
+    assert.deepEqual(h.events('turn_stalled').map((e) => e.meta.cause), ['session_closed:expired']);
+    h.live.reply('Answer to Q');
+    await h.advance(200);
+    assert.equal(h.indicator().visible, false);
+    assert.equal(h.failedNote(), null);
 });
