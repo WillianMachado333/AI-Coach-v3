@@ -2686,11 +2686,7 @@ class VoiceChatBot {
         window.addEventListener('message', (event) => {
             const data = event?.data || {};
             if (data.type === 'GET_PILL_LABELS') {
-                const container = document.getElementById('quickActions');
-                const btns = container ? Array.from(container.querySelectorAll('.quickActionBtn')) : [];
-                const labels = btns
-                    .map((b) => (b.textContent || '').trim())
-                    .filter((t) => t && !/^\s*$/.test(t));
+                const labels = this._pillLabels();
                 try {
                     (event.source || window.parent).postMessage({ type: 'PILL_LABELS', labels }, event.origin || '*');
                 } catch (_) { /* non-fatal */ }
@@ -4063,6 +4059,7 @@ class VoiceChatBot {
         const followScroll = typeof wasChatNearBottom === 'boolean'
             ? () => wasChatNearBottom
             : () => (typeof this.isChatNearBottom !== 'function' || this.isChatNearBottom());
+        if (!this._suggestionPillsEnabled()) { this.hideQuickActions(); return; }
         const container = document.getElementById('quickActions');
         if (!container) return;
 
@@ -4189,6 +4186,25 @@ class VoiceChatBot {
     hideQuickActions() {
         const container = document.getElementById('quickActions');
         if (container) container.classList.add('hidden');
+    }
+
+    // Suggestion pills are off: Varsha's review (14 Oct 2026) found them "a
+    // distraction and a visual hurdle", and Willian removed them (29 Oct).
+    // Off means no bar, no /api/suggest-followups call and no labels for the
+    // icon's hover hints. ?pills=1 on the coach page brings them back for
+    // staff testing.
+    _suggestionPillsEnabled() {
+        try { return new URLSearchParams(window.location.search || '').get('pills') === '1'; } catch (_) { return false; }
+    }
+
+    // What the icon's hover hints show (GET_PILL_LABELS from the bridge).
+    _pillLabels() {
+        if (!this._suggestionPillsEnabled()) return [];
+        const container = document.getElementById('quickActions');
+        const btns = container ? Array.from(container.querySelectorAll('.quickActionBtn')) : [];
+        return btns
+            .map((b) => (b.textContent || '').trim())
+            .filter((t) => t && !/^\s*$/.test(t));
     }
 
     setSelectedVoice(voice, thumb, character, companionId = null, skipSave = false) {
