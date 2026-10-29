@@ -2692,6 +2692,16 @@ class VoiceChatBot {
                 } catch (_) { /* non-fatal */ }
                 return;
             }
+            if (data.type === 'CT_BRIDGE_EXPANDED') {
+                // The corner-icon bridge opened the panel, so it can fold it
+                // back: the header gets its minimise button (Varsha's review,
+                // point 8). A standalone page or the app web view never gets
+                // this message and never shows a button that would do nothing.
+                if (this._isTrustedBridgeOrigin(event.origin)) {
+                    this._showMinimizeButton(event.source || window.parent, event.origin);
+                }
+                return;
+            }
             if (data.type === 'PAGE_CONTEXT_RESPONSE' && data.context) {
                 try { if (data.context.url) this._noteVisitPage(data.context.url); } catch (_) { /* observability only */ }
                 // Bridge just replied with a page snapshot. Resolve any
@@ -4195,6 +4205,21 @@ class VoiceChatBot {
     // staff testing.
     _suggestionPillsEnabled() {
         try { return new URLSearchParams(window.location.search || '').get('pills') === '1'; } catch (_) { return false; }
+    }
+
+    // The header's minimise button asks the bridge that opened the panel
+    // (CT_BRIDGE_EXPANDED) to fold it back to the corner icon.
+    _showMinimizeButton(bridge, origin) {
+        const btn = document.getElementById('minimizeChatBtn');
+        if (!btn) return;
+        this._bridgeWindow = bridge;
+        this._bridgeOrigin = origin;
+        btn.classList.remove('hidden');
+        if (btn.dataset.wired) return;
+        btn.dataset.wired = '1';
+        btn.addEventListener('click', () => {
+            try { this._bridgeWindow.postMessage({ type: 'MINIMIZE_TO_ICON' }, this._bridgeOrigin); } catch (_) { /* non-fatal */ }
+        });
     }
 
     // What the icon's hover hints show (GET_PILL_LABELS from the bridge).
