@@ -96,8 +96,18 @@
                     <span id="coachTypeText" class="text-xs font-medium text-iconColor">Supportive</span>
                 </div>
             </div>
-            <!-- ⋮ menu (right-aligned; only interactive element left in header) -->
-            <div class="z-10">
+            <!-- Minimise (shown only inside the corner-icon bridge, which can fold
+                 the panel back; app.js _showMinimizeButton) + ⋮ menu, right-aligned -->
+            <div class="z-10 flex items-center">
+                <button id="minimizeChatBtn"
+                    class="hidden w-[40px] h-[40px] text-iconColor transition-colors p-2 rounded-xl hover:bg-accent hover:text-accentText"
+                    type="button" aria-label="Minimize chat" title="Minimize">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                        class="m-auto">
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                </button>
                 <div class="relative">
                     <button id="moreMenuBtn"
                         class="w-[40px] h-[40px] text-iconColor transition-colors p-2 rounded-xl hover:bg-accent hover:text-accentText"
@@ -713,7 +723,7 @@
     <script src="lib/speechGate.js?v=20261002a"></script>
     <script src="lib/turnWatch.js?v=20261028d"></script>
     <script src="uiLayout.js?v=20261028b"></script>
-    <script src="app.js?v=20261029a"></script>
+    <script src="app.js?v=20261029b"></script>
 </body>
 
 </html>
