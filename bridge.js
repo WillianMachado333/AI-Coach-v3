@@ -27,7 +27,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-09-29T08:00-live-standby';
+    var VERSION = '2026-11-03-member-id';
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -69,6 +69,40 @@
     var _isSimHost = /[?&]simulator=1\b/i.test(_hostSearch);
     var IFRAME_SRC = 'https://web-staging-2c7ff.up.railway.app/index.html?caller='
         + (_isSimHost ? 'admin-simulator&simulator=1' : 'web');
+
+    // Who is signed in on the Wix page. The site's own code keeps an entry in
+    // localStorage ({ wixLocalStorage: "true", userAuthenticated,
+    // loggedInUserId }); the v2 embed reads the same entry. With it the coach
+    // gets the member's briefing, quiz reports included, instead of the guest
+    // one (Varsha's review, 29 Oct 2026). Unsigned, as in v2: the signed pass
+    // (#28) replaces it once the Wix side mints tokens.
+    var currentMember = null;
+    function readWixMember() {
+        try {
+            for (var i = 0; i < window.localStorage.length; i++) {
+                var raw = window.localStorage.getItem(window.localStorage.key(i));
+                if (!raw || raw.indexOf('wixLocalStorage') === -1) continue;
+                var parsed;
+                try { parsed = JSON.parse(raw); } catch (_) { continue; }
+                if (!parsed || parsed.wixLocalStorage !== 'true') continue;
+                var signedIn = parsed.userAuthenticated === true || parsed.userAuthenticated === 'true';
+                return signedIn && parsed.loggedInUserId ? String(parsed.loggedInUserId) : null;
+            }
+        } catch (_) { /* storage blocked: a guest */ }
+        return null;
+    }
+    function coachSrc(userId) {
+        return IFRAME_SRC + (userId ? '&userId=' + encodeURIComponent(userId) : '');
+    }
+    // Signing in or out on the page reloads the coach with the new identity.
+    function syncMember() {
+        var next = readWixMember();
+        if (next === currentMember) return;
+        currentMember = next;
+        var iframe = document.getElementById(IFRAME_ID);
+        if (iframe) iframe.src = coachSrc(next);
+        console.log('[CTBridge] ' + (next ? 'Member signed in' : 'Signed out') + ': coach reloaded.');
+    }
     // The icon shows the active persona: Erica until the iframe announces
     // another one (CT_ICON_PERSONA). 84p is actually the HIGHEST resolution
     // we have for the webm clips (base /companions/idle/<name>.webm is
@@ -771,7 +805,9 @@
 
         var iframe = document.createElement('iframe');
         iframe.id = IFRAME_ID;
-        iframe.src = IFRAME_SRC;
+        currentMember = readWixMember();
+        iframe.src = coachSrc(currentMember);
+        setInterval(syncMember, 2000);
         iframe.setAttribute('allow', 'microphone; autoplay; fullscreen');
         iframe.setAttribute('allowfullscreen', '');
         // Iframe fills the container — the container is what enforces the
@@ -913,6 +949,7 @@
             containerInjected: !!document.getElementById(CONTAINER_ID),
             iframeInjected: !!document.getElementById(IFRAME_ID),
             iframeSrc: IFRAME_SRC,
+            member: !!currentMember,
             iconPersona: iconPersona
         };
     };

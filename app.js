@@ -6697,6 +6697,7 @@ class VoiceChatBot {
                     'Speak naturally and warmly; keep replies concise (2-4 sentences) unless asked for more. ' +
                     'Never say the word "score" — say "result" or "pattern" instead. ' +
                     this._languageRule() + ' ' +
+                    this._privacyRule() + ' ' +
                     'Delegate substantive reasoning, knowledge lookups, and tool use to your backend — it has ' +
                     'your full coaching instructions and the tools you need. ' +
                     'Your backend can see the page the user is on: when they mention this page, this report or ' +
@@ -7032,7 +7033,7 @@ class VoiceChatBot {
             {
                 type: 'function',
                 name: 'deep_think',
-                description: 'Delegate careful step-by-step reasoning to a dedicated reasoning model (o4-mini). Use this ONLY when the question genuinely needs it: complex ethical trade-offs, weighing multiple options against the user\'s values, tracing a chain of consequences, deciding between coaching approaches for a nuanced situation, or when the user explicitly asks you to think this through. Do NOT use for simple factual, empathic, or acknowledgment turns. Include any grounding chunks you already retrieved via search_knowledge in the context field so the reasoner has real material. The tool returns reasoning + a suggested answer; use them to shape your reply but do not read the reasoning aloud.',
+                description: 'Delegate careful step-by-step reasoning to a dedicated reasoning model. Use this ONLY when the question genuinely needs it: complex ethical trade-offs, weighing multiple options against the user\'s values, tracing a chain of consequences, deciding between coaching approaches for a nuanced situation, or when the user explicitly asks you to think this through. Do NOT use for simple factual, empathic, or acknowledgment turns. Include any grounding chunks you already retrieved via search_knowledge in the context field so the reasoner has real material. The tool returns reasoning + a suggested answer; use them to shape your reply but do not read the reasoning aloud.',
                 parameters: {
                     type: 'object',
                     properties: {
@@ -7137,6 +7138,13 @@ class VoiceChatBot {
         return rule || '';
     }
 
+    // The privacy answer every prompt carries (lib/coachUiRules.js).
+    _privacyRule() {
+        const rule = window.coachUiRules && window.coachUiRules.PRIVACY_RULE;
+        if (!rule) console.error('[Erica] PRIVACY_RULE missing — prompts go out without the privacy answer');
+        return rule || '';
+    }
+
     _buildComposedInstructions() {
         // Build instructions using SANDWICH approach:
         //   [1] Persona identity block (primacy — "who am I")
@@ -7198,6 +7206,8 @@ class VoiceChatBot {
 
         // [3] LANGUAGE (one rule, shared with the Live short instructions)
         instructions += '\n\n' + this._languageRule();
+        // [3b] PRIVACY (one rule, shared with the Live short instructions)
+        instructions += '\n\n' + this._privacyRule();
 
         // A first conversation, no name chosen yet: the greeting may say, once
         // and only if natural, that the person can call the coach anything.
@@ -8039,14 +8049,14 @@ class VoiceChatBot {
                     window.uiLayout.setWaitingState(this, false);
                 }
             } else if (functionName === 'deep_think') {
-                // AI-Coach-v3 reasoning layer. Delegates to o4-mini via
+                // AI-Coach-v3 reasoning layer. Delegates to the reasoning model via
                 // /api/deep-think for step-by-step reasoning; returns
                 // { reasoning, answer, model } which the Realtime model uses
                 // to compose (but does not read verbatim) its response.
                 const query = typeof safeArgs.query === 'string' ? safeArgs.query.trim() : '';
                 const context = typeof safeArgs.context === 'string' ? safeArgs.context : '';
 
-                // Show typing indicator while o4-mini reasons (often 3-8s — heavier
+                // Show typing indicator while the reasoning model reasons (often 3-8s — heavier
                 // than search_knowledge because it's a full reasoning call).
                 if (window.uiLayout && typeof window.uiLayout.setWaitingState === 'function') {
                     window.uiLayout.setWaitingState(this, true);
