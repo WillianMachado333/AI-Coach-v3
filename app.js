@@ -3421,6 +3421,12 @@ class VoiceChatBot {
             return;
         }
 
+        // A text-mode Live session lives ~29 s (it expires without inbound
+        // audio) and a turn with tools can take ~25 s, so a message never goes
+        // into a session already part-way through its life: that session
+        // closes and the message takes the standby path to a fresh one.
+        if (this._staleTextSession()) this._onSessionEnd('stale');
+
         // Detect dead connection: isConnected may be true but dataChannel degraded
         // (common after on-hold period where WebRTC silently drops)
         const channelDead = !this.dataChannel || this.dataChannel.readyState !== 'open';
@@ -10203,6 +10209,15 @@ class VoiceChatBot {
 
     _channelOpen() {
         return !!(this.isConnected && this.dataChannel && this.dataChannel.readyState === 'open');
+    }
+
+    // A chat (not a call) GPT-Live session older than a few seconds, with no
+    // turn open on it. Staging, 3 Nov 2026: a send into a ~30 s old session
+    // expired at once and its one recovery ran out before the answer.
+    _staleTextSession() {
+        if (this.voiceApiMode !== 'live' || this._inCall() || !this._channelOpen()) return false;
+        if (this._turns().isOpen() || !this._liveSessionStartedAt) return false;
+        return Date.now() - this._liveSessionStartedAt > 6000;
     }
 
     // A fetch that gives up: a tool or a session create that hangs left the
