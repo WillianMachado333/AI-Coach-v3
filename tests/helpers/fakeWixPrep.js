@@ -55,16 +55,24 @@ https.request = function fakeRequest(options, cb) {
                     usage: { input_tokens: 420, input_tokens_details: { cached_tokens: 0 }, output_tokens: 40, output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 460 },
                 }));
             }
+            // Which Wix site was asked, and whether the API secret went with it (#61).
+            const host = options && (options.hostname || options.host) || '';
+            const hdrs = (options && options.headers) || {};
+            const auth = hdrs.Authorization || hdrs.authorization ? 'yes' : 'no';
+            if (/^\/_functions\/ericaConversationHistory(Fetch|Save)$/.test(p)) {
+                process.stdout.write(`[fake-wix] ${p.split('/').pop()} host=${host} auth=${auth}\n`);
+                return respond(req, cb, 200, JSON.stringify({ ok: true, host }));
+            }
             if (p !== prepPath) { req.emit('error', new Error('network disabled in test')); return; }
             const step = script[Math.min(calls, script.length - 1)];
             calls++;
-            process.stdout.write(`[fake-wix] prep call ${calls}: ${step}\n`);
+            process.stdout.write(`[fake-wix] prep call ${calls}: ${step} host=${host} auth=${auth}\n`);
             if (step === 'error') { req.emit('error', new Error('ECONNRESET (fake)')); return; }
             let body = '';
             if (Number(step) === 200) {
                 let sent = {};
                 try { sent = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch (_) { /* keep {} */ }
-                body = JSON.stringify({ message: 'REAL-PREP for ' + (sent.userId || 'guest') });
+                body = JSON.stringify({ message: 'REAL-PREP for ' + (sent.userId || 'guest') + ' from ' + host });
             }
             respond(req, cb, Number(step), body);
         });

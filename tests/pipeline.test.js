@@ -169,7 +169,8 @@ test('Studio: the pipeline page shows the funnel; the timeline shows milestones 
 
 test('client: the preparation sends the host page (address only); a picker switch logs style_overridden', () => {
     const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
-    assert.match(app, /context: \{ hostPage: \(\(\) => \{ try \{ const r = new URL\(document\.referrer\); return r\.origin \+ r\.pathname;/);
+    assert.match(app, /context: \{ hostPage: this\._hostPage\(\) \}/);
+    assert.match(app, /_hostPage\(\) \{\s*try \{ const r = new URL\(document\.referrer\); return r\.origin \+ r\.pathname;/);
     const ui = fs.readFileSync(path.join(root, 'uiLayout.js'), 'utf8');
     assert.match(ui, /app\._logSessionEvent\('style_overridden', \{ from: \(app\.styleOverride && app\.styleOverride\.styleId\) \|\| prevCompanionId \|\| null, to: companionId \|\| null, via: 'picker' \}\)/);
 });

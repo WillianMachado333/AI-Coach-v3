@@ -57,6 +57,7 @@ const { createHealthPayload } = require('./lib/health');
 const { resolvePublicPath, publicRelativePath, looksLikeProbe } = require('./lib/staticPath');
 const brandIcons = require('./lib/brandIcons');
 const { liveSessionInput } = require('./lib/liveSessionInput');
+const wixSite = require('./lib/wixSite');
 const { revalidationHeaders, iconHeaders, isNotModified } = require('./lib/staticCache');
 
 /**
@@ -625,11 +626,18 @@ const mimeTypes = {
 };
 
 // === External API host (sandbox / production) ===
-// All calls to the Wix backend use this single host variable.
+// The configured Wix site: guests, and pages that are none of our Wix sites.
 // Production: talenttransformation.com  |  Sandbox: awav.com
 // Override via env var:  ERICA_API_HOST=awav.com
 const ERICA_API_HOST = process.env.ERICA_API_HOST || process.env.PREP_HOST || 'talenttransformation.com';
-const ERICA_API_ORIGIN = `https://www.${ERICA_API_HOST}`;
+// #61: a Wix member id only means something on the site that issued it, so
+// a person's preparation and history come from the Wix site of the page the
+// coach sits on (talenttransformation.com or awav.com; anything else: the
+// host above). The API secret goes to the configured host only.
+function wixTarget(pageUrl) {
+    const host = wixSite.wixHostFor(pageUrl, ERICA_API_HOST);
+    return { host, origin: `https://www.${host}`, auth: host === ERICA_API_HOST ? wixAuthHeader() : {} };
+}
 
 // === Preparation response cache (server-side) ===
 // Cache guest preparation responses to reduce Wix API load and improve speed
@@ -2387,7 +2395,10 @@ const server = http.createServer(async (req, res) => {
                 prepSessionId = sessionId;
 
                 // Check cache first
-                const cacheKey = getPrepCacheKey(userId, email);
+                // #61: the person's own Wix site answers; a guest's preparation
+                // is generic and keeps the configured site.
+                const wix = wixTarget(userId || email ? requestData.context && requestData.context.hostPage : null);
+                const cacheKey = (wix.host === ERICA_API_HOST ? '' : wix.host + '|') + getPrepCacheKey(userId, email);
                 const cached = prepCache.get(cacheKey);
                 const now = Date.now();
                 const ttl = cacheKey === '__guest__' ? PREP_CACHE_GUEST_TTL_MS : PREP_CACHE_AUTH_TTL_MS;
@@ -2451,12 +2462,12 @@ const server = http.createServer(async (req, res) => {
                 const postData = JSON.stringify(payload);
 
                 const options = {
-                    hostname: ERICA_API_HOST,
+                    hostname: wix.host,
                     port: 443,
                     path: PREP_PATH,
                     method: 'POST',
                     headers: {
-                        ...wixAuthHeader(),
+                        ...wix.auth,
                         'Content-Type': 'application/json',
                         'Content-Length': Buffer.byteLength(postData, 'utf8'),
                         // Emulate a standard browser to avoid aggressive WAF/bot blocking (429s)
@@ -2464,8 +2475,8 @@ const server = http.createServer(async (req, res) => {
                         'Accept': 'application/json, text/plain, */*',
                         'Accept-Language': 'en-US,en;q=0.9',
                         'Connection': 'keep-alive',
-                        'Origin': ERICA_API_ORIGIN,
-                        'Referer': ERICA_API_ORIGIN + '/'
+                        'Origin': wix.origin,
+                        'Referer': wix.origin + '/'
                     }
                 };
 
@@ -2635,6 +2646,7 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
 
+                const wix = wixTarget(requestData.hostPage);
                 const https = require('https');
                 const postData = JSON.stringify({
                     userId: userId,
@@ -2642,12 +2654,12 @@ const server = http.createServer(async (req, res) => {
                 });
 
                 const options = {
-                    hostname: ERICA_API_HOST,
+                    hostname: wix.host,
                     port: 443,
                     path: '/_functions/ericaConversationHistorySave',
                     method: 'POST',
                     headers: {
-                        ...wixAuthHeader(),
+                        ...wix.auth,
                         'Content-Type': 'application/json',
                         'Content-Length': Buffer.byteLength(postData, 'utf8'),
                         // Emulate a standard browser to avoid aggressive WAF/bot blocking (429s)
@@ -2655,8 +2667,8 @@ const server = http.createServer(async (req, res) => {
                         'Accept': 'application/json, text/plain, */*',
                         'Accept-Language': 'en-US,en;q=0.9',
                         'Connection': 'keep-alive',
-                        'Origin': ERICA_API_ORIGIN,
-                        'Referer': ERICA_API_ORIGIN + '/'
+                        'Origin': wix.origin,
+                        'Referer': wix.origin + '/'
                     }
                 };
 
@@ -2756,18 +2768,19 @@ const server = http.createServer(async (req, res) => {
                     logAt('debug', '[SERVER] /api/conversation-history-fetch - Request for userId:', { reqId, userId });
                 }
 
+                const wix = wixTarget(requestData.hostPage);
                 const https = require('https');
                 const postData = JSON.stringify({
                     userId: userId
                 });
 
                 const options = {
-                    hostname: ERICA_API_HOST,
+                    hostname: wix.host,
                     port: 443,
                     path: '/_functions/ericaConversationHistoryFetch',
                     method: 'POST',
                     headers: {
-                        ...wixAuthHeader(),
+                        ...wix.auth,
                         'Content-Type': 'application/json',
                         'Content-Length': Buffer.byteLength(postData, 'utf8')
                     }
