@@ -1841,10 +1841,15 @@
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
 
-        // 2. Clickable links — exclude trailing punctuation like ] ) . ,
-        html = html.replace(/https?:\/\/[^\s<>"[\]()]+/g, url => {
+        // 2. Clickable links — brackets and parentheses end the URL, and the
+        //    sentence's own punctuation (. , ! ? : ' …) stays after the link:
+        //    "…Privacy Policy: https://…/privacy-policy." linked the full stop
+        //    and opened a 404 (Willian, 3 Nov 2026).
+        html = html.replace(/https?:\/\/[^\s<>"[\]()]+/g, match => {
+            const trail = (match.match(/[.,!?:'…]+$/) || [''])[0];
+            const url = trail ? match.slice(0, -trail.length) : match;
             const href = url.replace(/&amp;/g, '&');
-            return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="font-medium underline">${url}</a>`;
+            return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="font-medium underline">${url}</a>${trail}`;
         });
 
         // 3. Bold: **text**
@@ -3320,6 +3325,7 @@
 
     // Export helpers
     global.uiLayout = {
+        formatText,
         showCallEnded,
         hideCallEnded,
         renderTurnIndicator,
