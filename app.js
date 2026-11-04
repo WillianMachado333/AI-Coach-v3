@@ -1866,7 +1866,7 @@ class VoiceChatBot {
                         headers: {
                             'Content-Type': 'application/json',
                         },
-                        body: JSON.stringify({ userId })
+                        body: JSON.stringify({ userId, hostPage: this._hostPage() })
                     },
                     { label: 'history fetch', retries: 4 }
                 );
@@ -2399,7 +2399,7 @@ class VoiceChatBot {
                 {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userId, text: historyText })
+                    body: JSON.stringify({ userId, text: historyText, hostPage: this._hostPage() })
                 },
                 // Keep retries low to avoid amplifying throttling storms
                 { label: 'history save', retries: 2 }
@@ -5759,6 +5759,13 @@ class VoiceChatBot {
         return null;
     }
 
+    // The page hosting the coach (address only), from this frame's referrer.
+    // The server asks that page's Wix site for the person's preparation and
+    // history: a member id only means something on the site that issued it (#61).
+    _hostPage() {
+        try { const r = new URL(document.referrer); return r.origin + r.pathname; } catch (_) { return null; }
+    }
+
     async fetchEricaPreparation(prepId, { force = false } = {}) {
         try {
             // console.log('[Erica] Fetching preparation for identifier:', prepId, 'Force:', force);
@@ -5820,7 +5827,7 @@ class VoiceChatBot {
                                     // Onboarding pipeline context: the page hosting the coach
                                     // (address only; the server also reads this frame's own
                                     // URL parameters). lib/pipeline.js keeps a short whitelist.
-                                    context: { hostPage: (() => { try { const r = new URL(document.referrer); return r.origin + r.pathname; } catch (_) { return null; } })() },
+                                    context: { hostPage: this._hostPage() },
                                     ...(prepId && typeof prepId === 'string' && prepId.includes('@')
                                         ? { email: prepId }
                                         : prepId

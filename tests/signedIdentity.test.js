@@ -152,5 +152,7 @@ test('HTTP, ERICA_REQUIRE_SIGNED_IDENTITY=on: A\'s raw id opens nothing; A\'s to
 test('server → Wix HTTP functions carry the bearer when ERICA_WIX_API_SECRET is set (the Wix side can then require it)', () => {
     const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
     assert.match(server, /const wixAuthHeader = \(\) => \(process\.env\.ERICA_WIX_API_SECRET \? \{ Authorization: 'Bearer ' \+ process\.env\.ERICA_WIX_API_SECRET \} : \{\}\);/);
-    assert.equal((server.match(/headers: \{\s*\.\.\.wixAuthHeader\(\),/g) || []).length, 3, 'preparation, history save, history fetch');
+    // #61: each call goes to the person's Wix site; the secret goes with it when that is the configured host.
+    assert.equal((server.match(/headers: \{\s*\.\.\.wix\.auth,/g) || []).length, 3, 'preparation, history save, history fetch');
+    assert.match(server, /auth: host === ERICA_API_HOST \? wixAuthHeader\(\) : \{\}/);
 });
