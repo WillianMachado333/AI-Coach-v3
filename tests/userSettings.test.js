@@ -242,7 +242,8 @@ test('client voice step: shown on the first call only; Skip or the same voice st
 });
 
 test('client wiring: the step gates the first call; settings apply before the session opens; a guest\'s coach is not kept on the device', () => {
-    assert.match(src, /toggleMicTrack\(\) \{\s*\/\/ First voice-mode entry[^\n]*\n[^\n]*\n\s*if \(!this\.isRecording && !this\._voiceStepChecked\) \{ this\._voiceStepChecked = true; this\._voiceStepGate\(\); return; \}/);
+    // After the voice rule (tests/voiceLimit.test.js): a refused start never reaches the step.
+    assert.match(src, /toggleMicTrack\(\) \{\s*(\/\/[^\n]*\n\s*)*if \(!this\.isRecording && this\._refuseVoiceStart\('tap'\)\) return;\s*\/\/ First voice-mode entry[^\n]*\n[^\n]*\n\s*if \(!this\.isRecording && !this\._voiceStepChecked\) \{ this\._voiceStepChecked = true; this\._voiceStepGate\(\); return; \}/);
     assert.match(src, /if \(this\._voiceStepNeeded\(\)\) this\._showVoiceStep\(\);\s*else this\.toggleMicTrack\(\);/, 'the gate shows the step or starts the call');
     assert.ok(src.indexOf('await this._applyStoredCoachSettings();') < src.indexOf('const reportCtx = await this.requestReportContextFromParent();'));
     assert.match(src, /selectedCoach: signedIn \? \{/);
