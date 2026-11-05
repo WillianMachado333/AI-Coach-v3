@@ -56,6 +56,19 @@ test('"Yes, I want personalized guidance": the chat folds and the site\'s visibl
     assert.equal(b.win.__ctBridgeStatus().state, 'icon', 'Wix\'s login window must not open under the chat');
 });
 
+test('awav.com\'s header: the visible handle-button is the menu; the hidden "Login" inside it is the one pressed', () => {
+    const b = openCoach();
+    const [menu, login, signUp] = hostPage(b, [
+        { attrs: { 'data-testid': 'handle-button' }, text: '' },
+        { attrs: { 'data-testid': 'handle-button' }, text: 'Login', visible: false },
+        { tag: 'a', text: 'Sign Up' },
+    ]);
+    b.postToBridge({ action: 'ericaRequestLogin' }, COACH);
+    assert.equal(login.clicks, 1, 'Login, found by what it says');
+    assert.equal(menu.clicks, 0, 'never the menu');
+    assert.equal(signUp.clicks, 0, 'Log In wins over Sign Up');
+});
+
 test('"Yep, upgrade me": the site\'s Upgrade Membership button; without one, the plans page', () => {
     const b = openCoach();
     const [upgrade] = hostPage(b, [{ attrs: { 'aria-label': 'Upgrade Membership' } }]);
