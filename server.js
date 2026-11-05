@@ -50,15 +50,42 @@ function refuseIdentity(res, idn) {
     res.writeHead(401, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ error: 'identity refused', reason: idn.reason || 'signed identity required' }));
 }
+
+// Preparation + history (V2 ac93495): per-IP rate limit, and an unsigned
+// userId's history only from the IP that prepared it. lib/historyGuard.js.
+const historyGuard = require('./lib/historyGuard').fromEnv();
+const clientIp = (req) => signedIdentity.ipOf(req) || 'unknown';
+/** Count the request; false (429 sent) when this IP is over the limit. */
+function passRateLimit(req, res, endpoint) {
+    const ip = clientIp(req);
+    const r = historyGuard.hit(ip);
+    if (r.ok) return true;
+    // Once per IP per window: a flood must not flood the log too.
+    if (r.first) console.warn(`[SERVER] 🚦 ${endpoint} - rate limit exceeded (${r.limit}/min) for ip#${signedIdentity.ipHash(ip)}`);
+    res.writeHead(429, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Too many requests. Please try again later.', reason: 'rate_limited' }));
+    return false;
+}
+/** An unsigned userId not prepared from this IP: false (403 sent). A signed identity always passes. */
+function passHistoryBinding(req, res, endpoint, idn) {
+    if (!idn.userId || idn.source === 'signed') return true;
+    const ip = clientIp(req);
+    if (historyGuard.admit(ip, idn.userId)) return true;
+    console.warn(`[SERVER] ⛔ ${endpoint} - userId not prepared from this ip (ip#${signedIdentity.ipHash(ip)}, identity ${idn.source}) → 403`);
+    res.writeHead(403, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Unauthorized', reason: 'not_prepared_from_this_address' }));
+    return false;
+}
 // Server → Wix HTTP functions: the bearer those functions should require
 // (the Wix side of #28). Sent whenever the secret is configured.
 const wixAuthHeader = () => (process.env.ERICA_WIX_API_SECRET ? { Authorization: 'Bearer ' + process.env.ERICA_WIX_API_SECRET } : {});
 const { createHealthPayload } = require('./lib/health');
+const goLive = require('./lib/goLive');
 const { resolvePublicPath, publicRelativePath, looksLikeProbe } = require('./lib/staticPath');
 const brandIcons = require('./lib/brandIcons');
 const { liveSessionInput } = require('./lib/liveSessionInput');
 const wixSite = require('./lib/wixSite');
-const { revalidationHeaders, iconHeaders, isNotModified } = require('./lib/staticCache');
+const { revalidationHeaders, iconHeaders, isNotModified, negotiate } = require('./lib/staticCache');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -2302,7 +2329,7 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        const payload = JSON.stringify(createHealthPayload());
+        const payload = JSON.stringify({ ...createHealthPayload(), goLive: goLive.isOn() });
         res.writeHead(200, {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',
@@ -2315,6 +2342,7 @@ const server = http.createServer(async (req, res) => {
     // Handle Erica preparation API requests
     if (req.url.startsWith('/api/erica-preparation')) {
         logAt('info', '[SERVER] /api/erica-preparation - Request received:', req.method, req.url);
+        if (!passRateLimit(req, res, '/api/erica-preparation')) return;
 
         if (req.method !== 'POST') {
             res.writeHead(405, {
@@ -2364,6 +2392,9 @@ const server = http.createServer(async (req, res) => {
                 const email = idn.email;
                 const objectId = idn.objectId;
                 if (idn.source === 'unsigned') logAt('info', '[SERVER] /api/erica-preparation - identity is UNSIGNED (loose userId/email; ERICA_REQUIRE_SIGNED_IDENTITY off)');
+                // This IP may now read / save this userId's history (lib/historyGuard.js).
+                // Signed too: if a later history call arrives without its token, it still passes.
+                if (userId) historyGuard.bind(clientIp(req), userId);
 
                 if (!userId && !email) {
                     logAt('info', '[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
@@ -2614,6 +2645,7 @@ const server = http.createServer(async (req, res) => {
 
     // Handle conversation history save API requests
     if (req.url.startsWith('/api/conversation-history-save')) {
+        if (!passRateLimit(req, res, '/api/conversation-history-save')) return;
         if (req.method !== 'POST') {
             res.writeHead(405, {
                 'Content-Type': 'application/json',
@@ -2634,6 +2666,7 @@ const server = http.createServer(async (req, res) => {
                 const idn = signedIdentity.resolve(req, { userId: requestData.userId }, { endpoint: 'conversation-history-save', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
                 if (signedIdentity.status().required && idn.source !== 'signed') return refuseIdentity(res, { reason: 'signed identity required' });
+                if (!passHistoryBinding(req, res, '/api/conversation-history-save', idn)) return;
                 const userId = idn.userId;
                 const text = requestData.text;
 
@@ -2728,6 +2761,7 @@ const server = http.createServer(async (req, res) => {
         const reqId = makeReqId('histfetch');
         const startMs = Date.now();
         logAt('info', '[SERVER] /api/conversation-history-fetch - Request received:', { reqId, method: req.method, url: req.url });
+        if (!passRateLimit(req, res, '/api/conversation-history-fetch')) return;
 
         if (req.method !== 'POST') {
             res.writeHead(405, {
@@ -2752,6 +2786,7 @@ const server = http.createServer(async (req, res) => {
                 const idn = signedIdentity.resolve(req, { userId: requestData.userId }, { endpoint: 'conversation-history-fetch', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
                 if (signedIdentity.status().required && idn.source !== 'signed') return refuseIdentity(res, { reason: 'signed identity required' });
+                if (!passHistoryBinding(req, res, '/api/conversation-history-fetch', idn)) return;
                 const userId = idn.userId;
 
                 if (!userId) {
@@ -3475,16 +3510,21 @@ const server = http.createServer(async (req, res) => {
             }
             return;
         }
+        // The go-live switch rides inside bridge.js (lib/goLive.js); the ETag
+        // below is computed after, so flipping the flag changes it.
+        if (publicRelativePath(req.url) === 'bridge.js') content = goLive.bridgeSource(content);
         // .html/.js/.css revalidate on every load (lib/staticCache.js); the
         // Wix embed kept stale versions after deploys without this. The brand
         // icons are cached for a day.
         fs.stat(filePath, (statError, stat) => {
             const mtime = statError ? null : stat.mtime;
-            const cache = brandIcons.isBrandIcon(publicRelativePath(req.url))
+            // Our own text goes out gzipped when the browser takes it (its own ETag).
+            const { headers: cache, body } = negotiate(req.headers, brandIcons.isBrandIcon(publicRelativePath(req.url))
                 ? iconHeaders(content, mtime)
-                : revalidationHeaders(extname, content, mtime);
+                : revalidationHeaders(extname, content, mtime), content);
             if (isNotModified(req.headers, cache)) {
-                res.writeHead(304, { ...cache, 'Access-Control-Allow-Origin': '*' });
+                const { 'Content-Encoding': _encoding, ...notModified } = cache;
+                res.writeHead(304, { ...notModified, 'Access-Control-Allow-Origin': '*' });
                 res.end();
                 return;
             }
@@ -3493,7 +3533,7 @@ const server = http.createServer(async (req, res) => {
                 'Access-Control-Allow-Origin': '*',
                 ...cache
             });
-            res.end(content, 'utf-8');
+            res.end(body);
         });
     });
 });
@@ -3505,10 +3545,19 @@ server.listen(PORT, () => {
         ? ` (model gpt-live-1, backend ${LIVE_BACKEND_MODEL})`
         : ` (model ${REALTIME_MODEL})`));
 
+    // Go-live switch: say which way it is set; loudly if bridge.js lost its marker.
+    try {
+        const gl = goLive.status(fs.readFileSync(path.join(__dirname, 'bridge.js'), 'utf8'));
+        if (gl.on && !gl.markerFound) console.error(`[SERVER] 🔴 ${goLive.FLAG}=on but bridge.js has no "${goLive.MARKER}" line — V3 stays behind the preview gate`);
+        else console.log(`[SERVER] Go-live (${goLive.FLAG}): ${gl.on ? 'ON — V3 on talenttransformation.com, V2 Ask Erica hidden' : 'off — preview gate only'}`);
+    } catch (e) { console.error('[SERVER] 🔴 Go-live check could not read bridge.js:', e.message); }
+
     // Signed identity (#28): say which mode this server is in, loudly if misconfigured.
     const idStatus = signedIdentity.status();
     if (idStatus.required && !idStatus.secretConfigured) console.error('[SERVER] 🔴 ERICA_REQUIRE_SIGNED_IDENTITY=on but WIX_IDENTITY_SECRET is not set — every signed-in identity will be refused');
     else console.log(`[SERVER] Identity: signed tokens ${idStatus.secretConfigured ? 'verified' : 'NOT verifiable (no WIX_IDENTITY_SECRET)'}; unsigned userId/email ${idStatus.required ? 'REFUSED' : 'accepted (ERICA_REQUIRE_SIGNED_IDENTITY off)'}`);
+    const hg = historyGuard.config;
+    console.log(`[SERVER] History guard: ${hg.rateLimitMax} req/${Math.round(hg.rateWindowMs / 1000)}s per IP on preparation + history (ERICA_RATE_LIMIT_MAX); unsigned history only from the IP that prepared it, ${Math.round(hg.bindingTtlMs / 1000)}s window (ERICA_HISTORY_BINDING_TTL_MS)`);
 
     // Coach settings: a guest's record lasts one visit (30 min after last use).
     try { userSettings.sweepExpiredGuests(); } catch (_) { /* logged inside */ }

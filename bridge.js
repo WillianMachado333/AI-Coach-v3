@@ -9,6 +9,10 @@
  * After that, ALL changes to bridge behaviour happen here — just push, deploy,
  * next page load picks it up. Zero Wix editor round-trips.
  *
+ * The coach it opens is served by the same host as this file: the bridge
+ * reads its own <script src>, so a production service's bridge opens the
+ * production coach and staging's opens staging.
+ *
  * Architecture (v2 — corner-icon-first):
  *   - Resting state is a small circular icon in the corner (60px). Iframe
  *     sits INSIDE a container that is scaled down to 0×0 by default but
@@ -27,7 +31,42 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-03-member-id';
+    var VERSION = '2026-11-04-light';
+
+    // The coach lives on the host that served this file. document.currentScript
+    // is only set while this script first runs, so read it now. Fallbacks: a
+    // <script> whose src ends in /bridge.js, then staging.
+    var STAGING_ORIGIN = 'https://web-staging-2c7ff.up.railway.app';
+    function originOf(src) {
+        try {
+            var u = new URL(src); // a script's .src is always absolute
+            if (u.protocol === 'https:' || u.hostname === 'localhost' || u.hostname === '127.0.0.1') return u.origin;
+        } catch (_) { /* not a URL */ }
+        return null;
+    }
+    function coachOrigin() {
+        try {
+            var own = document.currentScript && document.currentScript.src;
+            var found = own ? originOf(own) : null;
+            if (found) return found;
+            var scripts = document.scripts || [];
+            for (var i = scripts.length - 1; i >= 0; i--) {
+                var src = scripts[i] && scripts[i].src;
+                if (src && /\/bridge\.js(?:[?#]|$)/.test(src)) {
+                    found = originOf(src);
+                    if (found) return found;
+                }
+            }
+        } catch (_) { /* no DOM access: fall through */ }
+        return STAGING_ORIGIN;
+    }
+    var COACH_ORIGIN = coachOrigin();
+
+    // Go-live switch: ERICA_GO_LIVE on the server that serves this file
+    // (lib/goLive.js writes true into the next line when it is on; keep the
+    // line exactly as it is). On: V3 shows on talenttransformation.com for
+    // everyone and V2's "Ask Erica" button is hidden. Off: the preview gate.
+    var GO_LIVE = false;
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -57,9 +96,63 @@
             return false;
         }
     }
-    if (!isPreviewActivated()) {
-        console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground, not awav.com) — skipping injection.');
+    // The My Talents app opens site pages with ?minimal=yes: the app stays on
+    // V2, so V3 never shows there. Stamped for the tab, like the preview flag,
+    // so later pages in the same webview stay V2; ?minimal=no clears it.
+    function isAppView() {
+        var search = (window.location && window.location.search) || '';
+        try {
+            if (/[?&]minimal=(no|false)\b/i.test(search)) { window.sessionStorage.removeItem('ctAppView'); return false; }
+            if (/[?&]minimal=yes\b/i.test(search)) { window.sessionStorage.setItem('ctAppView', '1'); return true; }
+            return window.sessionStorage.getItem('ctAppView') === '1';
+        } catch (_) {
+            return /[?&]minimal=yes\b/i.test(search);
+        }
+    }
+    function isTalentTransformation() {
+        return /^(www\.)?talenttransformation\.com$/i.test((window.location && window.location.hostname) || '');
+    }
+
+    // V2's floating "Ask Erica" button (#askEricaMain in the Wix editor) is a
+    // fixed <section> holding button[aria-label="askErica"] and its greeting.
+    // A CSS rule hides it whenever Wix renders it; browsers without :has()
+    // get the same through a light DOM check.
+    var V2_HIDE_STYLE_ID = 'ct-bridge-hide-v2';
+    var V2_HIDE_CSS = '#askEricaMain, section:has(button[aria-label="askErica"]) { display: none !important; }';
+    function hideV2AskErica() {
+        try {
+            if (!document.getElementById(V2_HIDE_STYLE_ID)) {
+                var style = document.createElement('style');
+                style.id = V2_HIDE_STYLE_ID;
+                style.textContent = V2_HIDE_CSS;
+                (document.head || document.body || document.documentElement).appendChild(style);
+            }
+        } catch (_) { /* fallback below */ }
+        var hasSupported = false;
+        try { hasSupported = !!(window.CSS && CSS.supports && CSS.supports('selector(:has(a))')); } catch (_) {}
+        if (hasSupported) return;
+        setInterval(function () {
+            try {
+                var btn = document.querySelector('button[aria-label="askErica"]');
+                var box = btn && btn.closest ? btn.closest('section') : null;
+                if (box && box.style.display !== 'none') box.style.setProperty('display', 'none', 'important');
+            } catch (_) { /* never break the page */ }
+        }, 1000);
+        console.log('[CTBridge] V2 Ask Erica hidden (no :has() support: DOM check every 1 s).');
+    }
+
+    var LIVE_HERE = GO_LIVE && isTalentTransformation();
+    if (isAppView()) {
+        console.log('[CTBridge] App view (minimal=yes): the app stays on V2 — skipping injection.');
         return;
+    }
+    if (!LIVE_HERE && !isPreviewActivated()) {
+        console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground, not awav.com, not live) — skipping injection.');
+        return;
+    }
+    if (LIVE_HERE) {
+        hideV2AskErica();
+        console.log('[CTBridge] Live on this site (ERICA_GO_LIVE): V3 shown, V2 Ask Erica hidden.');
     }
     // Base coach URL. When the HOST page is running under the Coach Studio
     // simulator (?simulator=1), forward that flag to the coach iframe so it
@@ -67,7 +160,7 @@
     // pollute v2 dashboards.
     var _hostSearch = (window.location && window.location.search) || '';
     var _isSimHost = /[?&]simulator=1\b/i.test(_hostSearch);
-    var IFRAME_SRC = 'https://web-staging-2c7ff.up.railway.app/index.html?caller='
+    var IFRAME_SRC = COACH_ORIGIN + '/index.html?caller='
         + (_isSimHost ? 'admin-simulator&simulator=1' : 'web');
 
     // Who is signed in on the Wix page. The site's own code keeps an entry in
@@ -109,7 +202,7 @@
     // smaller than the 84p variant — odd naming). PNG thumb is higher-res
     // than any video and is used as the resting background layer so the
     // icon reads crisp when idle.
-    var COMPANIONS_BASE = 'https://web-staging-2c7ff.up.railway.app/companions/';
+    var COMPANIONS_BASE = COACH_ORIGIN + '/companions/';
     var PERSONA_KEY_RE = /^[A-Z][A-Za-z]{1,23}$/;
     var THUMB_FILE_RE = /^[A-Za-z]{2,24}-thumb\.png$/;
     // `thumb` is the still's exact file name when the iframe knows it:
@@ -119,11 +212,25 @@
             still: COMPANIONS_BASE + (thumb && THUMB_FILE_RE.test(thumb) ? thumb : key + '-thumb.png'),
             idle: COMPANIONS_BASE + 'idle/84p/' + key + '.webm',
             speaking: COMPANIONS_BASE + 'speaking/84p/' + key + '.webm',
-            waving: COMPANIONS_BASE + 'waving/' + key + '.mp4'
+            // The 84p webm (~46 KB), as the coach uses; the old waving/*.mp4 was 6 MB.
+            waving: COMPANIONS_BASE + 'waving/84p/' + key + '.webm'
         };
     }
     var iconPersona = 'Erica';
     var iconThumb = null;
+    // The coach loads only on interaction, so the resting icon would always
+    // be Erica: remember the persona the coach last announced on this site.
+    var ICON_PERSONA_KEY = 'ctIconPersona';
+    try {
+        var savedPersona = JSON.parse(window.localStorage.getItem(ICON_PERSONA_KEY) || 'null');
+        if (savedPersona && PERSONA_KEY_RE.test(savedPersona.key)) {
+            iconPersona = savedPersona.key;
+            iconThumb = typeof savedPersona.thumb === 'string' && THUMB_FILE_RE.test(savedPersona.thumb) ? savedPersona.thumb : null;
+        }
+    } catch (_) { /* storage blocked or junk: Erica */ }
+    function rememberIconPersona() {
+        try { window.localStorage.setItem(ICON_PERSONA_KEY, JSON.stringify({ key: iconPersona, thumb: iconThumb })); } catch (_) {}
+    }
     var ICON_ID = 'ct-bridge-icon';
     var HOVER_PILLS_ID = 'ct-bridge-hover-pills';
     var IDLE_VIDEO_ID = 'ct-bridge-icon-video-idle';
@@ -299,6 +406,7 @@
         // same animation state machine.
         if (event.data.type === 'CT_ICON_PERSONA' && typeof event.data.key === 'string') {
             setIconPersona(event.data.key, typeof event.data.thumb === 'string' ? event.data.thumb : null);
+            rememberIconPersona();
             return;
         }
 
@@ -521,6 +629,7 @@
     // fixed children of body. transform: scale is layout-free and safe.
     function expandToChat() {
         if (state === 'expanded') return;
+        wakeCoach(); // any way of opening loads the coach first
         state = 'expanded';
         var container = document.getElementById(CONTAINER_ID);
         mergeStyle(container, {
@@ -715,6 +824,7 @@
     // + wave with opacity crossfade + 500ms hide-delay) — this replicates
     // that on the corner icon.
     function setIconAnimation(name) {
+        ensureIconVideos(); // the coach is talking: its clips must exist
         var idleV = document.getElementById(IDLE_VIDEO_ID);
         var speakV = document.getElementById(SPEAKING_VIDEO_ID);
         var waveV = document.getElementById(WAVING_VIDEO_ID);
@@ -765,6 +875,95 @@
     }
 
     // --- UI injection ---
+    // A page view costs this file and the icon's still image, nothing more
+    // (V3 production prep, 4 Nov 2026: the site is under a Wix performance
+    // alert). The coach iframe, and with it the coach's scripts, styles,
+    // photos and clips, loads on the first hover, touch, focus or click of the
+    // icon; the icon's own clips load at the same moment.
+    var coachLoaded = false;
+    function ensureCoach() {
+        if (coachLoaded) return;
+        var container = document.getElementById(CONTAINER_ID);
+        if (!container) return;
+        coachLoaded = true;
+        var iframe = document.createElement('iframe');
+        iframe.id = IFRAME_ID;
+        currentMember = readWixMember();
+        iframe.src = coachSrc(currentMember);
+        setInterval(syncMember, 2000);
+        iframe.setAttribute('allow', 'microphone; autoplay; fullscreen');
+        iframe.setAttribute('allowfullscreen', '');
+        // Iframe fills the container — the container is what enforces the
+        // 420×640 target size PLUS the viewport caps (max-width: 100vw-40,
+        // max-height: 100vh-128), so on a short viewport the coach's flex
+        // layout reflows and its composer stays reachable.
+        applyStyle(iframe, {
+            width: '100%',
+            height: '100%',
+            border: '0',
+            display: 'block'
+        });
+        container.appendChild(iframe);
+        setConnectionState('connecting');
+        console.log('[CTBridge] Coach loading (first interaction):', IFRAME_SRC);
+    }
+
+    // Three stacked <video> layers inside the corner icon: idle (bottom,
+    // always looping), speaking (mid, fades in on voice), wave (top, pops on
+    // demand). Same pattern the previous in-chat mini-player used.
+    function makeVideoLayer(id, src, opts) {
+        var v = document.createElement('video');
+        v.id = id;
+        v.muted = true;
+        v.autoplay = !!opts.autoplay;
+        v.loop = !!opts.loop;
+        v.playsInline = true;
+        v.setAttribute('playsinline', '');
+        v.setAttribute('muted', '');
+        v.setAttribute('preload', 'auto');
+        v.setAttribute('src', src);
+        applyStyle(v, {
+            position: 'absolute',
+            inset: '0',
+            width: '100%',
+            height: '100%',
+            'object-fit': 'cover',
+            // Slight upscale (10%) hides the letterbox band the source clips
+            // carry; the icon's overflow:hidden crops the black edge.
+            transform: 'scale(1.1)',
+            'transform-origin': 'center 40%',
+            display: opts.display || 'block',
+            'pointer-events': 'none',
+            'z-index': String(opts.z || 0),
+            opacity: opts.opacity != null ? String(opts.opacity) : '1',
+            transition: 'opacity 300ms ease'
+        });
+        v.addEventListener('error', function () {
+            console.warn('[CTBridge] Icon video failed to load:', v.getAttribute('src'));
+            v.style.display = 'none';
+        });
+        return v;
+    }
+    function ensureIconVideos() {
+        var icon = document.getElementById(ICON_ID);
+        if (!icon || document.getElementById(IDLE_VIDEO_ID)) return;
+        var assets = personaAssets(iconPersona, iconThumb);
+        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, assets.idle,
+            { autoplay: true, loop: true, z: 10, opacity: 1 });
+        icon.appendChild(idleVideo);
+        icon.appendChild(makeVideoLayer(SPEAKING_VIDEO_ID, assets.speaking,
+            { autoplay: true, loop: true, z: 20, opacity: 0, display: 'none' }));
+        icon.appendChild(makeVideoLayer(WAVING_VIDEO_ID, assets.waving,
+            { autoplay: false, loop: false, z: 30, opacity: 1, display: 'none' }));
+        // Kick off idle playback (some browsers require an explicit call).
+        try { idleVideo.play().catch(function () {}); } catch (_) {}
+    }
+    // The first sign of interest loads everything the open chat needs.
+    function wakeCoach() {
+        ensureIconVideos();
+        ensureCoach();
+    }
+
     function injectUI() {
         if (document.getElementById(ICON_ID)) return;
         if (!document.body) {
@@ -772,15 +971,11 @@
             return;
         }
 
-        // Chat container (renders full-size iframe, clipped to 0×0 while in
-        // 'icon' state so the coach app keeps pre-warming in the background).
+        // Chat container: scaled to 0 while in 'icon' state. Empty until the
+        // first interaction (ensureCoach). Semi-transparent with a backdrop
+        // blur so the page reads through in gutter areas.
         var container = document.createElement('div');
         container.id = CONTAINER_ID;
-        // Container floats ABOVE the persistent corner icon. Semi-transparent
-        // background with a backdrop-blur so the parent page reads through
-        // in gutter areas — the coach is contextual to what you're
-        // reading, not a wall on top of it. The iframe itself sets its
-        // body to transparent so this glass effect comes through.
         applyStyle(container, {
             position: 'fixed',
             right: '20px',
@@ -802,34 +997,10 @@
             'transform-origin': '100% 100%',
             transition: 'transform 260ms cubic-bezier(0.2,0.9,0.3,1), opacity 200ms ease'
         });
-
-        var iframe = document.createElement('iframe');
-        iframe.id = IFRAME_ID;
-        currentMember = readWixMember();
-        iframe.src = coachSrc(currentMember);
-        setInterval(syncMember, 2000);
-        iframe.setAttribute('allow', 'microphone; autoplay; fullscreen');
-        iframe.setAttribute('allowfullscreen', '');
-        // Iframe fills the container — the container is what enforces the
-        // 420×640 target size PLUS the viewport caps (max-width: 100vw-40, max-height: 100vh-128).
-        // Older code pinned the iframe to a literal 420×640, which meant on a
-        // short viewport the container's overflow:hidden cropped the coach's
-        // composer at the bottom, leaving the user with no way to type. Now
-        // the iframe follows the container size and the coach's internal
-        // flex layout reflows correctly (chat area shrinks, composer stays
-        // pinned to the bottom via its position:fixed).
-        applyStyle(iframe, {
-            width: '100%',
-            height: '100%',
-            border: '0',
-            display: 'block'
-        });
-        container.appendChild(iframe);
         document.body.appendChild(container);
 
-        // Icon: always visible, click TOGGLES expand/collapse. Contains a
-        // real <video> playing Erica's idle clip on loop; source is swapped
-        // by setIconAnimation on speaking/waving events from the iframe.
+        // Icon: always visible, click TOGGLES expand/collapse. At rest it is
+        // the persona's still; the clips arrive with the coach.
         var icon = document.createElement('button');
         icon.id = ICON_ID;
         icon.type = 'button';
@@ -847,83 +1018,27 @@
             padding: '0',
             cursor: 'pointer',
             background: '#e5e7eb center/cover no-repeat url("' + personaAssets(iconPersona, iconThumb).still + '")',
-            // Two-part box-shadow: inner ring encodes connection state
-            // (green connected / amber connecting / grey offline), outer
-            // shadow is the elevation. Starts amber ("connecting").
-            'box-shadow': '0 0 0 3px #f59e0b, 0 6px 18px rgba(0,0,0,0.18)',
+            // Inner ring encodes connection state; at rest the coach is not
+            // loaded on purpose: the standby grey, not "connecting".
+            'box-shadow': '0 0 0 3px #94a3b8, 0 6px 18px rgba(0,0,0,0.18)',
             overflow: 'hidden',
             transition: 'opacity 200ms ease, transform 200ms ease, box-shadow 300ms ease',
             opacity: '1',
-            // Hint to the browser to render pixel-perfect over the video —
-            // marginal but visible at retina 72px on top of 84p source.
             'image-rendering': '-webkit-optimize-contrast'
         });
 
-        // Three stacked <video> layers inside the icon: idle (bottom,
-        // always looping), speaking (mid, fades in on voice), wave (top,
-        // pops on demand). Same pattern the previous in-chat mini-player
-        // used — replicated here so the corner icon reads as her actually
-        // speaking, not a metronomic pulse.
-        function makeVideoLayer(id, src, opts) {
-            var v = document.createElement('video');
-            v.id = id;
-            v.muted = true;
-            v.autoplay = !!opts.autoplay;
-            v.loop = !!opts.loop;
-            v.playsInline = true;
-            v.setAttribute('playsinline', '');
-            v.setAttribute('muted', '');
-            v.setAttribute('preload', 'auto');
-            v.setAttribute('src', src);
-            var style = {
-                position: 'absolute',
-                inset: '0',
-                width: '100%',
-                height: '100%',
-                'object-fit': 'cover',
-                // Slight upscale (10%) hides the letterbox band the source
-                // clips carry (character centred on a small black frame).
-                // Combined with the icon's overflow:hidden this crops the
-                // black edge without visibly shrinking the character.
-                transform: 'scale(1.1)',
-                'transform-origin': 'center 40%',
-                display: opts.display || 'block',
-                'pointer-events': 'none',
-                'z-index': String(opts.z || 0),
-                opacity: opts.opacity != null ? String(opts.opacity) : '1',
-                transition: 'opacity 300ms ease'
-            };
-            applyStyle(v, style);
-            v.addEventListener('error', function () {
-                console.warn('[CTBridge] Icon video failed to load:', v.getAttribute('src'));
-                v.style.display = 'none';
-            });
-            return v;
-        }
-
-        // Icon needs to be a positioned container for absolute children.
-        mergeStyle(icon, { position: 'fixed', overflow: 'hidden' });
-
-        var assets = personaAssets(iconPersona, iconThumb);
-        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, assets.idle,
-            { autoplay: true, loop: true, z: 10, opacity: 1 });
-        var speakingVideo = makeVideoLayer(SPEAKING_VIDEO_ID, assets.speaking,
-            { autoplay: true, loop: true, z: 20, opacity: 0, display: 'none' });
-        var wavingVideo = makeVideoLayer(WAVING_VIDEO_ID, assets.waving,
-            { autoplay: false, loop: false, z: 30, opacity: 1, display: 'none' });
-
-        icon.appendChild(idleVideo);
-        icon.appendChild(speakingVideo);
-        icon.appendChild(wavingVideo);
-
-        // Kick off idle playback (some browsers require explicit call).
-        try { idleVideo.play().catch(function () {}); } catch (_) {}
-
-        icon.addEventListener('click', toggleChat);
-        // Hover-to-glimpse: while minimised, hovering the icon requests the
-        // current pill labels from the iframe and renders them as floating
-        // hints above the icon.
+        icon.addEventListener('click', function () {
+            wakeCoach();
+            toggleChat();
+        });
+        // Touch screens have no hover: a touch starts the load a few hundred
+        // ms before the click lands. Keyboard focus counts too.
+        icon.addEventListener('touchstart', wakeCoach, { passive: true });
+        icon.addEventListener('focus', wakeCoach);
+        // Hover: load the coach, then (while minimised) ask it for the pill
+        // labels to show as floating hints above the icon.
         icon.addEventListener('mouseenter', function () {
+            wakeCoach();
             if (state !== 'icon') return;
             if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
             requestPillsFromIframe();
@@ -935,7 +1050,7 @@
         });
         document.body.appendChild(icon);
 
-        console.log('[CTBridge] UI injected (corner-icon-first). Iframe pre-warming at:', IFRAME_SRC);
+        console.log('[CTBridge] UI injected (corner-icon-first). The coach loads on the first hover, touch or click:', IFRAME_SRC);
     }
 
     // --- Debug helper (window.__ctBridgeStatus()) ---
@@ -949,6 +1064,10 @@
             containerInjected: !!document.getElementById(CONTAINER_ID),
             iframeInjected: !!document.getElementById(IFRAME_ID),
             iframeSrc: IFRAME_SRC,
+            coachOrigin: COACH_ORIGIN,
+            coachLoaded: coachLoaded,
+            goLive: GO_LIVE,
+            liveHere: LIVE_HERE,
             member: !!currentMember,
             iconPersona: iconPersona
         };
