@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const net = require('node:net');
 const { spawn } = require('node:child_process');
 const goLive = require('../lib/goLive');
 const { runBridge, BRIDGE_PATH } = require('./helpers/bridgeHarness');
@@ -91,11 +92,21 @@ function startServer(port, env) {
             cwd: root, env: { ...process.env, PORT: String(port), OPENAI_API_KEY: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'],
         });
         let out = '';
+        let done = false;
         const timer = setTimeout(() => { child.kill(); reject(new Error(`server did not start:\n${out}`)); }, 20000);
-        const onData = (c) => { out += String(c); if (/Server running at http:/.test(out)) { clearTimeout(timer); setTimeout(() => resolve({ child, out: () => out }), 100); } };
+        // Ready once it listens AND has printed its go-live line (same tick, maybe two chunks).
+        const onData = (c) => { out += String(c); if (!done && /Server running at http:/.test(out) && /Go-live \(/.test(out)) { done = true; clearTimeout(timer); resolve({ child, out: () => out }); } };
         child.stdout.on('data', onData); child.stderr.on('data', onData); child.on('error', reject);
     });
 }
+// A port the OS says is free right now (a fixed random range collided with
+// other test files running in parallel, and a server that never started left
+// its sibling running: the whole suite hung).
+const freePort = () => new Promise((resolve, reject) => {
+    const s = net.createServer();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
+});
 const get = (port, route) => new Promise((resolve, reject) => {
     http.get({ host: '127.0.0.1', port, path: route }, (res) => {
         const chunks = []; res.on('data', (c) => chunks.push(c));
@@ -106,21 +117,25 @@ const get = (port, route) => new Promise((resolve, reject) => {
 test('HTTP: the server writes the flag into bridge.js (new ETag), reports it in /api/health and at startup', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'erica-golive-'));
     const env = { SESSION_DATA_DIR: path.join(tmp, 's'), SESSION_PROMPTS_DIR: path.join(tmp, 'p'), AUDIT_DIR: path.join(tmp, 'a'), SESSION_SECRET: 'x' };
-    const base = 24000 + Math.floor(Math.random() * 800);
-    const off = await startServer(base, env);
-    const on = await startServer(base + 1, { ...env, ERICA_GO_LIVE: 'on' });
+    const children = [];
     try {
-        const a = await get(base, '/bridge.js');
-        const b = await get(base + 1, '/bridge.js');
+        const pOff = await freePort();
+        const off = await startServer(pOff, env);
+        children.push(off.child);
+        const pOn = await freePort();
+        const on = await startServer(pOn, { ...env, ERICA_GO_LIVE: 'on' });
+        children.push(on.child);
+        const a = await get(pOff, '/bridge.js');
+        const b = await get(pOn, '/bridge.js');
         assert.equal(a.status, 200); assert.equal(b.status, 200);
         assert.match(a.text, /var GO_LIVE = false;/);
         assert.match(b.text, /var GO_LIVE = true; /);
         assert.notEqual(a.headers.etag, b.headers.etag, 'browsers revalidate onto the new value');
-        assert.equal(JSON.parse((await get(base, '/api/health')).text).goLive, false);
-        assert.equal(JSON.parse((await get(base + 1, '/api/health')).text).goLive, true);
+        assert.equal(JSON.parse((await get(pOff, '/api/health')).text).goLive, false);
+        assert.equal(JSON.parse((await get(pOn, '/api/health')).text).goLive, true);
         assert.match(off.out(), /Go-live \(ERICA_GO_LIVE\): off/);
         assert.match(on.out(), /Go-live \(ERICA_GO_LIVE\): ON/);
     } finally {
-        off.child.kill(); on.child.kill();
+        children.forEach((c) => c.kill()); // every server that started, whatever failed
     }
 });
