@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-04-light';
+    var VERSION = '2026-11-04-host-actions';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -362,6 +362,55 @@
         return null;
     }
 
+    // --- Sign-up and upgrade from the coach ---
+    // "Yes, I Want Personalized Guidance" (voice needs an account) and "Yep,
+    // upgrade me" (today's voice limit) post { action: 'ericaRequestLogin' |
+    // 'ericaRequestUpgrade' } to the page; V2's Wix page code answered them.
+    // Custom Code has no Wix login API, so the bridge presses the site's own
+    // Login / Upgrade Membership buttons and Wix runs its usual flow. With no
+    // upgrade button it opens the plans page; with no login button it says so.
+    var HOST_ACTION_BUTTONS = {
+        ericaRequestLogin: ['[data-testid="handle-button"]', 'button[aria-label="Login"]', 'button[aria-label="Log In"]', 'button[aria-label="Sign Up"]'],
+        ericaRequestUpgrade: ['button[aria-label="Upgrade Membership"]']
+    };
+    var HOST_ACTION_TEXT = { ericaRequestLogin: /^(log ?in|sign ?up)$/i, ericaRequestUpgrade: /^upgrade membership$/i };
+    var HOST_ACTION_FALLBACK_URL = { ericaRequestUpgrade: '/plans-pricing' };
+    function visible(el) {
+        try { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (_) { return false; }
+    }
+    function findHostButton(action) {
+        var found = [];
+        HOST_ACTION_BUTTONS[action].forEach(function (sel) {
+            try { found = found.concat(Array.prototype.slice.call(document.querySelectorAll(sel))); } catch (_) {}
+        });
+        if (!found.length) {
+            try {
+                found = Array.prototype.slice.call(document.querySelectorAll('button, a, [role="button"]')).filter(function (el) {
+                    return HOST_ACTION_TEXT[action].test(String(el.innerText || el.textContent || '').trim());
+                });
+            } catch (_) {}
+        }
+        // Wix renders desktop and mobile headers; the one on screen first.
+        return found.filter(visible)[0] || found[0] || null;
+    }
+    function runHostAction(action) {
+        collapseToIcon(); // Wix's login window must not open under the chat
+        var button = findHostButton(action);
+        if (button) {
+            try { button.click(); } catch (_) {}
+            console.log('[CTBridge] ' + action + ': pressed the site\'s own button.');
+            return 'button';
+        }
+        var url = HOST_ACTION_FALLBACK_URL[action];
+        if (url) {
+            console.log('[CTBridge] ' + action + ': no button on this page — opening ' + url);
+            window.location.href = url;
+            return 'url';
+        }
+        console.warn('[CTBridge] 🔴 ' + action + ': no Login button on this page — nothing to press.');
+        return null;
+    }
+
     // --- Message bridge: iframe ↔ parent page ---
     window.addEventListener('message', function (event) {
         if (!event.data) return;
@@ -381,6 +430,13 @@
             } catch (e) {
                 console.warn('[CTBridge] postMessage failed:', e);
             }
+            return;
+        }
+
+        // The coach's sign-up and upgrade prompts ask the page to act.
+        if (event.data.action === 'ericaRequestLogin' || event.data.action === 'ericaRequestUpgrade') {
+            if (event.origin !== COACH_ORIGIN) return; // only the coach may press the site's buttons
+            runHostAction(event.data.action);
             return;
         }
 
