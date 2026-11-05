@@ -210,11 +210,10 @@ class VoiceChatBot {
         // console.log('[Erica] Loaded saved state:', savedState);
 
         if (savedState && savedState.mode === 'call') {
-            // Prototype phase: voice mode is open to guests. Nobody uses the
-            // product yet, so a login wall in front of the demo would kill
-            // the exact evaluation loop we need. Reintroduce a gate later
-            // once we have usage worth protecting (e.g. per-guest voice-
-            // minute cap tracked via CleverTap objectId).
+            // The voice rule (voiceRefusal), as V2 production: a guest gets
+            // the sign-up prompt instead of the call, a member past today's
+            // allowance the limit message.
+            if (this._refuseVoiceStart('restore')) return;
 
             // 1. Open Call Panel
             if (window.uiLayout && typeof window.uiLayout.setCallModePanelOpen === 'function') {
@@ -238,7 +237,8 @@ class VoiceChatBot {
             });
         } else if (this.getUrlVoiceMode()) {
             // URL param ?voiceMode=true — auto-open call panel and start
-            // recording. Prototype phase: no login gate for guests.
+            // recording, under the same voice rule.
+            if (this._refuseVoiceStart('voiceMode')) return;
             if (window.uiLayout && typeof window.uiLayout.setCallModePanelOpen === 'function') {
                 window.uiLayout.setCallModePanelOpen(this, true, true);
             }
@@ -2595,6 +2595,8 @@ class VoiceChatBot {
             // Increment ONLY if this is a BOT response AND we are in active Call Mode (Voice).
             // This ensures text-only chats don't count towards the voice limit.
             // also ensures we don't count same message multiple times (check !wasFinal)
+            // On GPT-Live a chat runs over a Live session too, but it is not a
+            // call (isRecording is set by startRecording only): never counted.
             if (role === 'bot' && this.isRecording && !wasFinal) {
                 this.incrementVoiceUsage();
             }
@@ -2937,6 +2939,11 @@ class VoiceChatBot {
     }
 
     toggleMicTrack() {
+        // A call may start only under the voice rule (voiceRefusal, V2
+        // production's): a guest gets the sign-up prompt, a member past
+        // today's allowance the upgrade prompt, and nothing starts. First,
+        // so nobody picks a voice for a call they cannot make.
+        if (!this.isRecording && this._refuseVoiceStart('tap')) return;
         // First voice-mode entry: the person picks how the coach sounds
         // (image cards). Checked once per page; skipping costs one tap.
         if (!this.isRecording && !this._voiceStepChecked) { this._voiceStepChecked = true; this._voiceStepGate(); return; }
@@ -2988,21 +2995,7 @@ class VoiceChatBot {
             return;
         }
 
-        // Prototype phase: no login gate for voice — guests may try it.
-        // (see equivalent comment in the restoreMode() and voiceMode branches)
-
-        // If we don't have a stream (or not recording), treat this as "Start"
-        // Voice Limit Check (redundant but safe)
-        if (!this.checkVoiceLimit()) {
-            // User clicked mic manually but limit is reached -> Show Upgrade Modal
-            if (typeof this.showVoiceLimitUpgradeModal === 'function') {
-                this.showVoiceLimitUpgradeModal();
-            } else {
-                this.showVoiceLimitAlert(); // Fallback
-            }
-            return;
-        }
-
+        // Connected: start. (The voice rule ran at the top, connected or not.)
         this.startRecording().catch(err => console.error('[Erica] startRecording failed:', err));
     }
 
@@ -5153,57 +5146,76 @@ class VoiceChatBot {
         }
     }
 
-    /*checkVoiceLimit() {
-        if (!this.questionsLimit) return true; // No limit enforced (or not yet loaded)
+    // The voice rule — V2 production's (AgentErica app.js checkVoiceLimit,
+    // toggleMicTrack, incrementVoiceUsage), one function for every question
+    // "may this person talk to the coach now?": a call's start (the call
+    // button, a restored call, ?voiceMode=true) and the count after each of
+    // the coach's answers in a call (AFAZERES #15: the count used to stop
+    // calls under a rule the start no longer applied). Text is never limited.
+    //   'login'  a guest (no member id in the URL): voice needs an account.
+    //   'limit'  a member who has used today's allowance: questionsLimit
+    //            coach answers in calls per UTC day, from the preparation
+    //            (Wix: 25, or 200000 on a paid plan). Not loaded: no limit.
+    //   null     allowed.
+    // Used today: the larger of this device's count and the member's voice
+    // questions today in their saved history (_serverVoiceUsageCount).
+    voiceRefusal() {
+        if (!this.getUserIdFromURL()) return 'login';
+        if (!this.questionsLimit) return null;
+        return this._voiceUsedToday() >= this.questionsLimit ? 'limit' : null;
+    }
 
-        const usage = this._loadVoiceUsage();
-        // Check if limit reached
-        if (usage.count >= this.questionsLimit) {
-            console.warn(`[Erica] Voice limit reached: ${usage.count}/${this.questionsLimit}`);
-            return false;
-        }
-        return true;
-    }*/
+    _voiceUsedToday() {
+        return Math.max(this._loadVoiceUsage().count || 0, this._serverVoiceUsageCount || 0);
+    }
+
     checkVoiceLimit() {
-        // Prototype phase: no daily voice-mode limit. Same reasoning as the
-        // login-gate removal — a cap here right now would kill the exact
-        // evaluation loop we need. Reintroduce once we see real usage,
-        // ideally as a per-guest cap keyed off the CleverTap objectId.
+        return !this.voiceRefusal();
+    }
+
+    // The voice rule at a call's start: true when refused, after showing why
+    // (V2's prompts). Nothing starts. A member at the limit who taps the call
+    // button gets the upgrade prompt, as on V2's mic button; a start the
+    // person did not tap for (a restored call, ?voiceMode=true) gets the
+    // limit message, as V2's connect()/startRecording(). A refused start is
+    // not a call: no silent-call alarm for it (#32).
+    _refuseVoiceStart(via) {
+        if (this.checkVoiceLimit()) return false;
+        this._silentCallDisarm();
+        const why = this.voiceRefusal() || 'limit';
+        const used = this._voiceUsedToday();
+        console.warn(`[Erica] 🎙️ Voice refused (${via}): ${why === 'login' ? 'a guest — voice needs an account' : `today's voice limit reached, ${used}/${this.questionsLimit}`}`);
+        this._logSessionEvent('voice_refused', { why, via, used, limit: this.questionsLimit || null });
+        if (why === 'login') {
+            if (typeof this.showLoginPrompt === 'function') this.showLoginPrompt();
+        } else if (via === 'tap' && typeof this.showVoiceLimitUpgradeModal === 'function') {
+            this.showVoiceLimitUpgradeModal();
+        } else {
+            this.showVoiceLimitAlert();
+        }
         return true;
     }
 
+    // One of the coach's answers in a call (upsertMessage): counted, then the
+    // same rule. Past it the call ends like a hang-up, with V2's message.
     async incrementVoiceUsage() {
         const usage = this._loadVoiceUsage();
         usage.count += 1;
         this._saveVoiceUsage(usage);
-        // console.log(`[Erica] Voice usage incremented: ${usage.count}/${this.questionsLimit || '?'}`);
 
-        if (this.questionsLimit && usage.count >= this.questionsLimit) {
-            console.log('[Erica] Voice limit reached during active session. Stopping.');
-            
-            // Analytics: voice limit reached
-            this.trackCoachEvent('Voice Limit Reached', {
-                VoiceQuestionCount: usage.count,
-                DailyLimit: this.questionsLimit
-            });
-            
-            if (this.isRecording) {
-                // Stop the session first
-                if (typeof this.stopRecording === 'function') {
-                    this.stopRecording(true); // Force stop to ensure cleanup
-                } else {
-                    // Fallback if stopRecording is missing (safeguard)
-                    this.isRecording = false;
-                    if (this.localStream) {
-                        this.localStream.getTracks().forEach(t => t.stop());
-                        this.localStream = null;
-                    }
-                    if (window.uiLayout && typeof window.uiLayout.setMicToggleUI === 'function') {
-                        window.uiLayout.setMicToggleUI(false);
-                    }
-                    this.saveCurrentState('chat');
-                }
-            }
+        const why = this.voiceRefusal();
+        if (!why) return;
+        const used = this._voiceUsedToday();
+        console.warn(`[Erica] 🎙️ Voice limit reached during the call (${why}, ${used}/${this.questionsLimit || '-'}) — ending the call`);
+        this.trackCoachEvent('Voice Limit Reached', {
+            VoiceQuestionCount: usage.count,
+            DailyLimit: this.questionsLimit
+        });
+        this._logSessionEvent('voice_limit_reached', { why, used, limit: this.questionsLimit || null });
+        if (this.isRecording) this.stopRecording(true);
+        if (why === 'login') {
+            if (typeof this.showLoginPrompt === 'function') this.showLoginPrompt();
+        } else {
             this.showVoiceLimitAlert();
         }
     }
@@ -5499,11 +5511,11 @@ class VoiceChatBot {
         // A call's automatic reconnect (_autoReconnectCall follows it up).
         const automatic = this._reconnectKind === 'auto';
         await this.stopActivePreview({ clearPreview: false });
-        // Voice Limit Check
-        if (!this.checkVoiceLimit()) {
-            this.showVoiceLimitAlert();
-            return;
-        }
+        // The voice rule applies to a session opened for a call only: the
+        // same connect serves text, which is never limited (V2's connect()
+        // checked every connect, and so could turn text away at the limit,
+        // against its own "You can keep chatting by text").
+        if (this._connectForCall && this._refuseVoiceStart('connect')) return;
 
         // Prevent overlapping connect attempts (they hammer preparation/history endpoints).
         if (this.isConnected || this.isConnecting) {
@@ -11725,11 +11737,8 @@ class VoiceChatBot {
     }
 
     async startRecording() {
-        // Voice limit check
-        if (!this.checkVoiceLimit()) {
-            this.showVoiceLimitAlert();
-            throw new Error('Voice limit reached');
-        }
+        // The voice rule, last stop before the mic.
+        if (this._refuseVoiceStart('start')) throw new Error('Voice not allowed (voice rule)');
 
         // Auto-reconnect if the session dropped (e.g. after 30-min inactivity timeout)
         if (!this.isConnected) {
