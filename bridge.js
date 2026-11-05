@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-04-host-actions';
+    var VERSION = '2026-11-04-login-by-text';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -369,29 +369,33 @@
     // Custom Code has no Wix login API, so the bridge presses the site's own
     // Login / Upgrade Membership buttons and Wix runs its usual flow. With no
     // upgrade button it opens the plans page; with no login button it says so.
-    var HOST_ACTION_BUTTONS = {
-        ericaRequestLogin: ['[data-testid="handle-button"]', 'button[aria-label="Login"]', 'button[aria-label="Log In"]', 'button[aria-label="Sign Up"]'],
-        ericaRequestUpgrade: ['button[aria-label="Upgrade Membership"]']
+    // Buttons are found by what they say (text or aria-label), never by Wix's
+    // generic test ids: on awav.com the visible data-testid="handle-button" is
+    // the menu, and the "Login" one sits hidden inside it. A hidden button's
+    // click still runs Wix's handler (it opened "Custom Signup" there).
+    var HOST_ACTION_WORDS = {
+        // Most specific first: a "Log In" button wins over a "Sign Up" one.
+        ericaRequestLogin: [/^log ?in$/i, /^sign ?up$/i],
+        ericaRequestUpgrade: [/^upgrade membership$/i]
     };
-    var HOST_ACTION_TEXT = { ericaRequestLogin: /^(log ?in|sign ?up)$/i, ericaRequestUpgrade: /^upgrade membership$/i };
     var HOST_ACTION_FALLBACK_URL = { ericaRequestUpgrade: '/plans-pricing' };
     function visible(el) {
         try { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (_) { return false; }
     }
     function findHostButton(action) {
-        var found = [];
-        HOST_ACTION_BUTTONS[action].forEach(function (sel) {
-            try { found = found.concat(Array.prototype.slice.call(document.querySelectorAll(sel))); } catch (_) {}
-        });
-        if (!found.length) {
-            try {
-                found = Array.prototype.slice.call(document.querySelectorAll('button, a, [role="button"]')).filter(function (el) {
-                    return HOST_ACTION_TEXT[action].test(String(el.innerText || el.textContent || '').trim());
-                });
-            } catch (_) {}
+        var candidates = [];
+        try { candidates = Array.prototype.slice.call(document.querySelectorAll('button, a, [role="button"]')); } catch (_) {}
+        var label = function (el) {
+            var text = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+            return text || String((el.getAttribute && el.getAttribute('aria-label')) || '').trim();
+        };
+        var words = HOST_ACTION_WORDS[action];
+        for (var i = 0; i < words.length; i++) {
+            var found = candidates.filter(function (el) { return words[i].test(label(el)); });
+            // Wix renders desktop and mobile headers: the one on screen first.
+            if (found.length) return found.filter(visible)[0] || found[0];
         }
-        // Wix renders desktop and mobile headers; the one on screen first.
-        return found.filter(visible)[0] || found[0] || null;
+        return null;
     }
     function runHostAction(action) {
         collapseToIcon(); // Wix's login window must not open under the chat
