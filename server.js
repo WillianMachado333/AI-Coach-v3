@@ -80,6 +80,7 @@ function passHistoryBinding(req, res, endpoint, idn) {
 // (the Wix side of #28). Sent whenever the secret is configured.
 const wixAuthHeader = () => (process.env.ERICA_WIX_API_SECRET ? { Authorization: 'Bearer ' + process.env.ERICA_WIX_API_SECRET } : {});
 const { createHealthPayload } = require('./lib/health');
+const goLive = require('./lib/goLive');
 const { resolvePublicPath, publicRelativePath, looksLikeProbe } = require('./lib/staticPath');
 const brandIcons = require('./lib/brandIcons');
 const { liveSessionInput } = require('./lib/liveSessionInput');
@@ -2328,7 +2329,7 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        const payload = JSON.stringify(createHealthPayload());
+        const payload = JSON.stringify({ ...createHealthPayload(), goLive: goLive.isOn() });
         res.writeHead(200, {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',
@@ -3509,6 +3510,9 @@ const server = http.createServer(async (req, res) => {
             }
             return;
         }
+        // The go-live switch rides inside bridge.js (lib/goLive.js); the ETag
+        // below is computed after, so flipping the flag changes it.
+        if (publicRelativePath(req.url) === 'bridge.js') content = goLive.bridgeSource(content);
         // .html/.js/.css revalidate on every load (lib/staticCache.js); the
         // Wix embed kept stale versions after deploys without this. The brand
         // icons are cached for a day.
@@ -3538,6 +3542,13 @@ server.listen(PORT, () => {
     console.log(`[SERVER] Voice API: ${VOICE_API}` + (VOICE_API === 'live'
         ? ` (model gpt-live-1, backend ${LIVE_BACKEND_MODEL})`
         : ` (model ${REALTIME_MODEL})`));
+
+    // Go-live switch: say which way it is set; loudly if bridge.js lost its marker.
+    try {
+        const gl = goLive.status(fs.readFileSync(path.join(__dirname, 'bridge.js'), 'utf8'));
+        if (gl.on && !gl.markerFound) console.error(`[SERVER] 🔴 ${goLive.FLAG}=on but bridge.js has no "${goLive.MARKER}" line — V3 stays behind the preview gate`);
+        else console.log(`[SERVER] Go-live (${goLive.FLAG}): ${gl.on ? 'ON — V3 on talenttransformation.com, V2 Ask Erica hidden' : 'off — preview gate only'}`);
+    } catch (e) { console.error('[SERVER] 🔴 Go-live check could not read bridge.js:', e.message); }
 
     // Signed identity (#28): say which mode this server is in, loudly if misconfigured.
     const idStatus = signedIdentity.status();

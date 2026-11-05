@@ -9,6 +9,10 @@
  * After that, ALL changes to bridge behaviour happen here — just push, deploy,
  * next page load picks it up. Zero Wix editor round-trips.
  *
+ * The coach it opens is served by the same host as this file: the bridge
+ * reads its own <script src>, so a production service's bridge opens the
+ * production coach and staging's opens staging.
+ *
  * Architecture (v2 — corner-icon-first):
  *   - Resting state is a small circular icon in the corner (60px). Iframe
  *     sits INSIDE a container that is scaled down to 0×0 by default but
@@ -27,7 +31,42 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-03-member-id';
+    var VERSION = '2026-11-04-go-live';
+
+    // The coach lives on the host that served this file. document.currentScript
+    // is only set while this script first runs, so read it now. Fallbacks: a
+    // <script> whose src ends in /bridge.js, then staging.
+    var STAGING_ORIGIN = 'https://web-staging-2c7ff.up.railway.app';
+    function originOf(src) {
+        try {
+            var u = new URL(src); // a script's .src is always absolute
+            if (u.protocol === 'https:' || u.hostname === 'localhost' || u.hostname === '127.0.0.1') return u.origin;
+        } catch (_) { /* not a URL */ }
+        return null;
+    }
+    function coachOrigin() {
+        try {
+            var own = document.currentScript && document.currentScript.src;
+            var found = own ? originOf(own) : null;
+            if (found) return found;
+            var scripts = document.scripts || [];
+            for (var i = scripts.length - 1; i >= 0; i--) {
+                var src = scripts[i] && scripts[i].src;
+                if (src && /\/bridge\.js(?:[?#]|$)/.test(src)) {
+                    found = originOf(src);
+                    if (found) return found;
+                }
+            }
+        } catch (_) { /* no DOM access: fall through */ }
+        return STAGING_ORIGIN;
+    }
+    var COACH_ORIGIN = coachOrigin();
+
+    // Go-live switch: ERICA_GO_LIVE on the server that serves this file
+    // (lib/goLive.js writes true into the next line when it is on; keep the
+    // line exactly as it is). On: V3 shows on talenttransformation.com for
+    // everyone and V2's "Ask Erica" button is hidden. Off: the preview gate.
+    var GO_LIVE = false;
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -57,9 +96,63 @@
             return false;
         }
     }
-    if (!isPreviewActivated()) {
-        console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground, not awav.com) — skipping injection.');
+    // The My Talents app opens site pages with ?minimal=yes: the app stays on
+    // V2, so V3 never shows there. Stamped for the tab, like the preview flag,
+    // so later pages in the same webview stay V2; ?minimal=no clears it.
+    function isAppView() {
+        var search = (window.location && window.location.search) || '';
+        try {
+            if (/[?&]minimal=(no|false)\b/i.test(search)) { window.sessionStorage.removeItem('ctAppView'); return false; }
+            if (/[?&]minimal=yes\b/i.test(search)) { window.sessionStorage.setItem('ctAppView', '1'); return true; }
+            return window.sessionStorage.getItem('ctAppView') === '1';
+        } catch (_) {
+            return /[?&]minimal=yes\b/i.test(search);
+        }
+    }
+    function isTalentTransformation() {
+        return /^(www\.)?talenttransformation\.com$/i.test((window.location && window.location.hostname) || '');
+    }
+
+    // V2's floating "Ask Erica" button (#askEricaMain in the Wix editor) is a
+    // fixed <section> holding button[aria-label="askErica"] and its greeting.
+    // A CSS rule hides it whenever Wix renders it; browsers without :has()
+    // get the same through a light DOM check.
+    var V2_HIDE_STYLE_ID = 'ct-bridge-hide-v2';
+    var V2_HIDE_CSS = '#askEricaMain, section:has(button[aria-label="askErica"]) { display: none !important; }';
+    function hideV2AskErica() {
+        try {
+            if (!document.getElementById(V2_HIDE_STYLE_ID)) {
+                var style = document.createElement('style');
+                style.id = V2_HIDE_STYLE_ID;
+                style.textContent = V2_HIDE_CSS;
+                (document.head || document.body || document.documentElement).appendChild(style);
+            }
+        } catch (_) { /* fallback below */ }
+        var hasSupported = false;
+        try { hasSupported = !!(window.CSS && CSS.supports && CSS.supports('selector(:has(a))')); } catch (_) {}
+        if (hasSupported) return;
+        setInterval(function () {
+            try {
+                var btn = document.querySelector('button[aria-label="askErica"]');
+                var box = btn && btn.closest ? btn.closest('section') : null;
+                if (box && box.style.display !== 'none') box.style.setProperty('display', 'none', 'important');
+            } catch (_) { /* never break the page */ }
+        }, 1000);
+        console.log('[CTBridge] V2 Ask Erica hidden (no :has() support: DOM check every 1 s).');
+    }
+
+    var LIVE_HERE = GO_LIVE && isTalentTransformation();
+    if (isAppView()) {
+        console.log('[CTBridge] App view (minimal=yes): the app stays on V2 — skipping injection.');
         return;
+    }
+    if (!LIVE_HERE && !isPreviewActivated()) {
+        console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground, not awav.com, not live) — skipping injection.');
+        return;
+    }
+    if (LIVE_HERE) {
+        hideV2AskErica();
+        console.log('[CTBridge] Live on this site (ERICA_GO_LIVE): V3 shown, V2 Ask Erica hidden.');
     }
     // Base coach URL. When the HOST page is running under the Coach Studio
     // simulator (?simulator=1), forward that flag to the coach iframe so it
@@ -67,7 +160,7 @@
     // pollute v2 dashboards.
     var _hostSearch = (window.location && window.location.search) || '';
     var _isSimHost = /[?&]simulator=1\b/i.test(_hostSearch);
-    var IFRAME_SRC = 'https://web-staging-2c7ff.up.railway.app/index.html?caller='
+    var IFRAME_SRC = COACH_ORIGIN + '/index.html?caller='
         + (_isSimHost ? 'admin-simulator&simulator=1' : 'web');
 
     // Who is signed in on the Wix page. The site's own code keeps an entry in
@@ -109,7 +202,7 @@
     // smaller than the 84p variant — odd naming). PNG thumb is higher-res
     // than any video and is used as the resting background layer so the
     // icon reads crisp when idle.
-    var COMPANIONS_BASE = 'https://web-staging-2c7ff.up.railway.app/companions/';
+    var COMPANIONS_BASE = COACH_ORIGIN + '/companions/';
     var PERSONA_KEY_RE = /^[A-Z][A-Za-z]{1,23}$/;
     var THUMB_FILE_RE = /^[A-Za-z]{2,24}-thumb\.png$/;
     // `thumb` is the still's exact file name when the iframe knows it:
@@ -949,6 +1042,9 @@
             containerInjected: !!document.getElementById(CONTAINER_ID),
             iframeInjected: !!document.getElementById(IFRAME_ID),
             iframeSrc: IFRAME_SRC,
+            coachOrigin: COACH_ORIGIN,
+            goLive: GO_LIVE,
+            liveHere: LIVE_HERE,
             member: !!currentMember,
             iconPersona: iconPersona
         };
