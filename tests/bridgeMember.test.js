@@ -6,55 +6,9 @@
 // the same entry. bridge.js runs here against a fake DOM and clock.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const vm = require('node:vm');
-const fs = require('node:fs');
-const path = require('node:path');
-const { createDocument } = require('./helpers/fakeDom');
+const { runBridge: run } = require('./helpers/bridgeHarness');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'bridge.js'), 'utf8');
-const WIX_KEY = '__wix_member_state';
-
-function runBridge(entry) {
-    const doc = createDocument();
-    const store = new Map();
-    if (entry) store.set(WIX_KEY, JSON.stringify(entry));
-    store.set('unrelated', '{"x":1}');
-    const localStorage = {
-        get length() { return store.size; },
-        key: (i) => [...store.keys()][i] ?? null,
-        getItem: (k) => (store.has(k) ? store.get(k) : null),
-        setItem: (k, v) => store.set(k, String(v)),
-        removeItem: (k) => store.delete(k),
-    };
-    let now = 0;
-    const timers = [];
-    const win = {
-        document: doc, localStorage, sessionStorage: localStorage, console: { log() {}, warn() {}, error() {} },
-        location: { hostname: 'www.awav.com', search: '', pathname: '/', href: 'https://www.awav.com/' },
-        navigator: { userAgent: 'node' }, innerWidth: 1280, innerHeight: 800,
-        matchMedia: () => ({ matches: false, addEventListener() {} }),
-        addEventListener() {}, removeEventListener() {},
-        setTimeout: (fn, ms = 0) => { timers.push({ fn, at: now + ms }); return timers.length; },
-        setInterval: (fn, ms = 0) => { timers.push({ fn, at: now + ms, every: ms }); return timers.length; },
-        clearTimeout() {}, clearInterval() {},
-    };
-    win.window = win; win.self = win; win.top = win;
-    vm.runInContext(source, vm.createContext(win));
-    const advance = (ms) => {
-        const end = now + ms;
-        for (;;) {
-            const due = timers.filter((t) => t.at <= end).sort((a, b) => a.at - b.at)[0];
-            if (!due) break;
-            now = due.at;
-            if (due.every) due.at += due.every; else timers.splice(timers.indexOf(due), 1);
-            try { due.fn(); } catch (_) { /* UI helpers the fake DOM lacks */ }
-        }
-        now = end;
-    };
-    const iframe = () => doc.getElementById('ct-bridge-iframe');
-    const setEntry = (e) => (e ? store.set(WIX_KEY, JSON.stringify(e)) : store.delete(WIX_KEY));
-    return { advance, iframe, setEntry };
-}
+const runBridge = (entry) => run({ entry });
 
 test('a signed-in member: the coach iframe carries their Wix member id', () => {
     const b = runBridge({ wixLocalStorage: 'true', userAuthenticated: true, loggedInUserId: 'member-123' });

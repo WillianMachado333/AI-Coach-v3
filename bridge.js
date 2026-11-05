@@ -9,6 +9,10 @@
  * After that, ALL changes to bridge behaviour happen here — just push, deploy,
  * next page load picks it up. Zero Wix editor round-trips.
  *
+ * The coach it opens is served by the same host as this file: the bridge
+ * reads its own <script src>, so a production service's bridge opens the
+ * production coach and staging's opens staging.
+ *
  * Architecture (v2 — corner-icon-first):
  *   - Resting state is a small circular icon in the corner (60px). Iframe
  *     sits INSIDE a container that is scaled down to 0×0 by default but
@@ -27,7 +31,36 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-03-member-id';
+    var VERSION = '2026-11-04-own-origin';
+
+    // The coach lives on the host that served this file. document.currentScript
+    // is only set while this script first runs, so read it now. Fallbacks: a
+    // <script> whose src ends in /bridge.js, then staging.
+    var STAGING_ORIGIN = 'https://web-staging-2c7ff.up.railway.app';
+    function originOf(src) {
+        try {
+            var u = new URL(src); // a script's .src is always absolute
+            if (u.protocol === 'https:' || u.hostname === 'localhost' || u.hostname === '127.0.0.1') return u.origin;
+        } catch (_) { /* not a URL */ }
+        return null;
+    }
+    function coachOrigin() {
+        try {
+            var own = document.currentScript && document.currentScript.src;
+            var found = own ? originOf(own) : null;
+            if (found) return found;
+            var scripts = document.scripts || [];
+            for (var i = scripts.length - 1; i >= 0; i--) {
+                var src = scripts[i] && scripts[i].src;
+                if (src && /\/bridge\.js(?:[?#]|$)/.test(src)) {
+                    found = originOf(src);
+                    if (found) return found;
+                }
+            }
+        } catch (_) { /* no DOM access: fall through */ }
+        return STAGING_ORIGIN;
+    }
+    var COACH_ORIGIN = coachOrigin();
 
     // --- Preview gate ---
     // The bridge can be loaded site-wide via Wix Custom Code without showing
@@ -67,7 +100,7 @@
     // pollute v2 dashboards.
     var _hostSearch = (window.location && window.location.search) || '';
     var _isSimHost = /[?&]simulator=1\b/i.test(_hostSearch);
-    var IFRAME_SRC = 'https://web-staging-2c7ff.up.railway.app/index.html?caller='
+    var IFRAME_SRC = COACH_ORIGIN + '/index.html?caller='
         + (_isSimHost ? 'admin-simulator&simulator=1' : 'web');
 
     // Who is signed in on the Wix page. The site's own code keeps an entry in
@@ -109,7 +142,7 @@
     // smaller than the 84p variant — odd naming). PNG thumb is higher-res
     // than any video and is used as the resting background layer so the
     // icon reads crisp when idle.
-    var COMPANIONS_BASE = 'https://web-staging-2c7ff.up.railway.app/companions/';
+    var COMPANIONS_BASE = COACH_ORIGIN + '/companions/';
     var PERSONA_KEY_RE = /^[A-Z][A-Za-z]{1,23}$/;
     var THUMB_FILE_RE = /^[A-Za-z]{2,24}-thumb\.png$/;
     // `thumb` is the still's exact file name when the iframe knows it:
@@ -949,6 +982,7 @@
             containerInjected: !!document.getElementById(CONTAINER_ID),
             iframeInjected: !!document.getElementById(IFRAME_ID),
             iframeSrc: IFRAME_SRC,
+            coachOrigin: COACH_ORIGIN,
             member: !!currentMember,
             iconPersona: iconPersona
         };
