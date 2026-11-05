@@ -50,6 +50,32 @@ function refuseIdentity(res, idn) {
     res.writeHead(401, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ error: 'identity refused', reason: idn.reason || 'signed identity required' }));
 }
+
+// Preparation + history (V2 ac93495): per-IP rate limit, and an unsigned
+// userId's history only from the IP that prepared it. lib/historyGuard.js.
+const historyGuard = require('./lib/historyGuard').fromEnv();
+const clientIp = (req) => signedIdentity.ipOf(req) || 'unknown';
+/** Count the request; false (429 sent) when this IP is over the limit. */
+function passRateLimit(req, res, endpoint) {
+    const ip = clientIp(req);
+    const r = historyGuard.hit(ip);
+    if (r.ok) return true;
+    // Once per IP per window: a flood must not flood the log too.
+    if (r.first) console.warn(`[SERVER] 🚦 ${endpoint} - rate limit exceeded (${r.limit}/min) for ip#${signedIdentity.ipHash(ip)}`);
+    res.writeHead(429, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Too many requests. Please try again later.', reason: 'rate_limited' }));
+    return false;
+}
+/** An unsigned userId not prepared from this IP: false (403 sent). A signed identity always passes. */
+function passHistoryBinding(req, res, endpoint, idn) {
+    if (!idn.userId || idn.source === 'signed') return true;
+    const ip = clientIp(req);
+    if (historyGuard.admit(ip, idn.userId)) return true;
+    console.warn(`[SERVER] ⛔ ${endpoint} - userId not prepared from this ip (ip#${signedIdentity.ipHash(ip)}, identity ${idn.source}) → 403`);
+    res.writeHead(403, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Unauthorized', reason: 'not_prepared_from_this_address' }));
+    return false;
+}
 // Server → Wix HTTP functions: the bearer those functions should require
 // (the Wix side of #28). Sent whenever the secret is configured.
 const wixAuthHeader = () => (process.env.ERICA_WIX_API_SECRET ? { Authorization: 'Bearer ' + process.env.ERICA_WIX_API_SECRET } : {});
@@ -2316,6 +2342,7 @@ const server = http.createServer(async (req, res) => {
     // Handle Erica preparation API requests
     if (req.url.startsWith('/api/erica-preparation')) {
         logAt('info', '[SERVER] /api/erica-preparation - Request received:', req.method, req.url);
+        if (!passRateLimit(req, res, '/api/erica-preparation')) return;
 
         if (req.method !== 'POST') {
             res.writeHead(405, {
@@ -2365,6 +2392,9 @@ const server = http.createServer(async (req, res) => {
                 const email = idn.email;
                 const objectId = idn.objectId;
                 if (idn.source === 'unsigned') logAt('info', '[SERVER] /api/erica-preparation - identity is UNSIGNED (loose userId/email; ERICA_REQUIRE_SIGNED_IDENTITY off)');
+                // This IP may now read / save this userId's history (lib/historyGuard.js).
+                // Signed too: if a later history call arrives without its token, it still passes.
+                if (userId) historyGuard.bind(clientIp(req), userId);
 
                 if (!userId && !email) {
                     logAt('info', '[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
@@ -2615,6 +2645,7 @@ const server = http.createServer(async (req, res) => {
 
     // Handle conversation history save API requests
     if (req.url.startsWith('/api/conversation-history-save')) {
+        if (!passRateLimit(req, res, '/api/conversation-history-save')) return;
         if (req.method !== 'POST') {
             res.writeHead(405, {
                 'Content-Type': 'application/json',
@@ -2635,6 +2666,7 @@ const server = http.createServer(async (req, res) => {
                 const idn = signedIdentity.resolve(req, { userId: requestData.userId }, { endpoint: 'conversation-history-save', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
                 if (signedIdentity.status().required && idn.source !== 'signed') return refuseIdentity(res, { reason: 'signed identity required' });
+                if (!passHistoryBinding(req, res, '/api/conversation-history-save', idn)) return;
                 const userId = idn.userId;
                 const text = requestData.text;
 
@@ -2729,6 +2761,7 @@ const server = http.createServer(async (req, res) => {
         const reqId = makeReqId('histfetch');
         const startMs = Date.now();
         logAt('info', '[SERVER] /api/conversation-history-fetch - Request received:', { reqId, method: req.method, url: req.url });
+        if (!passRateLimit(req, res, '/api/conversation-history-fetch')) return;
 
         if (req.method !== 'POST') {
             res.writeHead(405, {
@@ -2753,6 +2786,7 @@ const server = http.createServer(async (req, res) => {
                 const idn = signedIdentity.resolve(req, { userId: requestData.userId }, { endpoint: 'conversation-history-fetch', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
                 if (signedIdentity.status().required && idn.source !== 'signed') return refuseIdentity(res, { reason: 'signed identity required' });
+                if (!passHistoryBinding(req, res, '/api/conversation-history-fetch', idn)) return;
                 const userId = idn.userId;
 
                 if (!userId) {
@@ -3520,6 +3554,8 @@ server.listen(PORT, () => {
     const idStatus = signedIdentity.status();
     if (idStatus.required && !idStatus.secretConfigured) console.error('[SERVER] 🔴 ERICA_REQUIRE_SIGNED_IDENTITY=on but WIX_IDENTITY_SECRET is not set — every signed-in identity will be refused');
     else console.log(`[SERVER] Identity: signed tokens ${idStatus.secretConfigured ? 'verified' : 'NOT verifiable (no WIX_IDENTITY_SECRET)'}; unsigned userId/email ${idStatus.required ? 'REFUSED' : 'accepted (ERICA_REQUIRE_SIGNED_IDENTITY off)'}`);
+    const hg = historyGuard.config;
+    console.log(`[SERVER] History guard: ${hg.rateLimitMax} req/${Math.round(hg.rateWindowMs / 1000)}s per IP on preparation + history (ERICA_RATE_LIMIT_MAX); unsigned history only from the IP that prepared it, ${Math.round(hg.bindingTtlMs / 1000)}s window (ERICA_HISTORY_BINDING_TTL_MS)`);
 
     // Coach settings: a guest's record lasts one visit (30 min after last use).
     try { userSettings.sweepExpiredGuests(); } catch (_) { /* logged inside */ }
