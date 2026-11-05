@@ -33,12 +33,12 @@ test('the flag: off unless 1/true/on/yes; bridge.js carries the marker exactly o
 test('off (default): talenttransformation.com stays behind the preview gate, V2 untouched', () => {
     const closed = runBridge({ location: tt(), elements: ['askEricaMain'] });
     closed.advance(1000);
-    assert.equal(closed.iframe(), null, 'no V3 for a normal visitor');
+    assert.equal(closed.icon(), null, 'no V3 for a normal visitor');
     assert.equal(closed.byId('ct-bridge-hide-v2'), null, 'V2 not hidden');
 
     const preview = runBridge({ location: tt('?erica=preview') });
     preview.advance(1000);
-    assert.ok(preview.iframe(), 'preview still opens V3');
+    assert.ok(preview.icon(), 'preview still opens V3');
     assert.equal(preview.byId('ct-bridge-hide-v2'), null, 'preview does not hide V2 (as today)');
 });
 
@@ -46,7 +46,7 @@ test('on: V3 on every talenttransformation.com page, and V2 Ask Erica hidden', (
     for (const loc of [tt(), tt('', '/journeys/my-journey'), { ...tt(), hostname: 'talenttransformation.com' }]) {
         const b = runBridge({ source: ON, location: loc });
         b.advance(1000);
-        assert.ok(b.iframe(), 'V3 shown at ' + loc.hostname + loc.pathname);
+        assert.ok(b.icon(), 'V3 shown at ' + loc.hostname + loc.pathname);
         const style = b.byId('ct-bridge-hide-v2');
         assert.ok(style, 'the hide rule is on the page');
         assert.match(style.textContent, /section:has\(button\[aria-label="askErica"\]\)/);
@@ -58,30 +58,30 @@ test('on: V3 on every talenttransformation.com page, and V2 Ask Erica hidden', (
 test('on: other sites keep their own rule (awav always on, V2 not hidden; anything else closed)', () => {
     const awav = runBridge({ source: ON });
     awav.advance(1000);
-    assert.ok(awav.iframe());
+    assert.ok(awav.icon());
     assert.equal(awav.byId('ct-bridge-hide-v2'), null);
     assert.equal(awav.win.__ctBridgeStatus().liveHere, false);
 
     const other = runBridge({ source: ON, location: { hostname: 'evil-talenttransformation.com', search: '', pathname: '/', href: 'https://evil-talenttransformation.com/' } });
     other.advance(1000);
-    assert.equal(other.iframe(), null);
+    assert.equal(other.icon(), null);
 });
 
 test('the My Talents app (?minimal=yes) stays on V2, on or off, for the rest of the tab; ?minimal=no clears it', () => {
     for (const source of [ON, BRIDGE]) {
         const app = runBridge({ source, location: tt('?minimal=yes&erica=preview') });
         app.advance(1000);
-        assert.equal(app.iframe(), null, 'no V3 in the app');
+        assert.equal(app.icon(), null, 'no V3 in the app');
         assert.equal(app.byId('ct-bridge-hide-v2'), null, 'V2 stays visible in the app');
         assert.equal(app.session.get('ctAppView'), '1');
     }
     const nextPage = runBridge({ source: ON, location: tt('', '/report'), session: { ctAppView: '1' } });
     nextPage.advance(1000);
-    assert.equal(nextPage.iframe(), null, 'a later page in the same webview stays V2');
+    assert.equal(nextPage.icon(), null, 'a later page in the same webview stays V2');
 
     const cleared = runBridge({ source: ON, location: tt('?minimal=no'), session: { ctAppView: '1' } });
     cleared.advance(1000);
-    assert.ok(cleared.iframe());
+    assert.ok(cleared.icon());
     assert.equal(cleared.session.has('ctAppView'), false);
 });
 
