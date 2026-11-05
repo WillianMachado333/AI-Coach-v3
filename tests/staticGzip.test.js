@@ -56,7 +56,12 @@ const get = (port, route, headers = {}) => new Promise((resolve, reject) => {
 
 test('HTTP: bridge.js and app.js gzipped on request; a revalidation with the gzip ETag is a 304; plain clients unchanged', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'erica-gzip-'));
-    const port = 24900 + Math.floor(Math.random() * 90);
+    // A port the OS says is free (a fixed random range can collide with test files running in parallel).
+    const port = await new Promise((resolve, reject) => {
+        const s = require('node:net').createServer();
+        s.on('error', reject);
+        s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+    });
     const server = await startServer(port, { SESSION_DATA_DIR: path.join(tmp, 's'), SESSION_PROMPTS_DIR: path.join(tmp, 'p'), AUDIT_DIR: path.join(tmp, 'a'), SESSION_SECRET: 'x' });
     try {
         for (const file of ['/bridge.js', '/app.js']) {
