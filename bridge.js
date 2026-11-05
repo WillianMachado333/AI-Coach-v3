@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-04-go-live';
+    var VERSION = '2026-11-04-light';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -212,11 +212,25 @@
             still: COMPANIONS_BASE + (thumb && THUMB_FILE_RE.test(thumb) ? thumb : key + '-thumb.png'),
             idle: COMPANIONS_BASE + 'idle/84p/' + key + '.webm',
             speaking: COMPANIONS_BASE + 'speaking/84p/' + key + '.webm',
-            waving: COMPANIONS_BASE + 'waving/' + key + '.mp4'
+            // The 84p webm (~46 KB), as the coach uses; the old waving/*.mp4 was 6 MB.
+            waving: COMPANIONS_BASE + 'waving/84p/' + key + '.webm'
         };
     }
     var iconPersona = 'Erica';
     var iconThumb = null;
+    // The coach loads only on interaction, so the resting icon would always
+    // be Erica: remember the persona the coach last announced on this site.
+    var ICON_PERSONA_KEY = 'ctIconPersona';
+    try {
+        var savedPersona = JSON.parse(window.localStorage.getItem(ICON_PERSONA_KEY) || 'null');
+        if (savedPersona && PERSONA_KEY_RE.test(savedPersona.key)) {
+            iconPersona = savedPersona.key;
+            iconThumb = typeof savedPersona.thumb === 'string' && THUMB_FILE_RE.test(savedPersona.thumb) ? savedPersona.thumb : null;
+        }
+    } catch (_) { /* storage blocked or junk: Erica */ }
+    function rememberIconPersona() {
+        try { window.localStorage.setItem(ICON_PERSONA_KEY, JSON.stringify({ key: iconPersona, thumb: iconThumb })); } catch (_) {}
+    }
     var ICON_ID = 'ct-bridge-icon';
     var HOVER_PILLS_ID = 'ct-bridge-hover-pills';
     var IDLE_VIDEO_ID = 'ct-bridge-icon-video-idle';
@@ -392,6 +406,7 @@
         // same animation state machine.
         if (event.data.type === 'CT_ICON_PERSONA' && typeof event.data.key === 'string') {
             setIconPersona(event.data.key, typeof event.data.thumb === 'string' ? event.data.thumb : null);
+            rememberIconPersona();
             return;
         }
 
@@ -614,6 +629,7 @@
     // fixed children of body. transform: scale is layout-free and safe.
     function expandToChat() {
         if (state === 'expanded') return;
+        wakeCoach(); // any way of opening loads the coach first
         state = 'expanded';
         var container = document.getElementById(CONTAINER_ID);
         mergeStyle(container, {
@@ -808,6 +824,7 @@
     // + wave with opacity crossfade + 500ms hide-delay) — this replicates
     // that on the corner icon.
     function setIconAnimation(name) {
+        ensureIconVideos(); // the coach is talking: its clips must exist
         var idleV = document.getElementById(IDLE_VIDEO_ID);
         var speakV = document.getElementById(SPEAKING_VIDEO_ID);
         var waveV = document.getElementById(WAVING_VIDEO_ID);
@@ -858,6 +875,95 @@
     }
 
     // --- UI injection ---
+    // A page view costs this file and the icon's still image, nothing more
+    // (V3 production prep, 4 Nov 2026: the site is under a Wix performance
+    // alert). The coach iframe, and with it the coach's scripts, styles,
+    // photos and clips, loads on the first hover, touch, focus or click of the
+    // icon; the icon's own clips load at the same moment.
+    var coachLoaded = false;
+    function ensureCoach() {
+        if (coachLoaded) return;
+        var container = document.getElementById(CONTAINER_ID);
+        if (!container) return;
+        coachLoaded = true;
+        var iframe = document.createElement('iframe');
+        iframe.id = IFRAME_ID;
+        currentMember = readWixMember();
+        iframe.src = coachSrc(currentMember);
+        setInterval(syncMember, 2000);
+        iframe.setAttribute('allow', 'microphone; autoplay; fullscreen');
+        iframe.setAttribute('allowfullscreen', '');
+        // Iframe fills the container — the container is what enforces the
+        // 420×640 target size PLUS the viewport caps (max-width: 100vw-40,
+        // max-height: 100vh-128), so on a short viewport the coach's flex
+        // layout reflows and its composer stays reachable.
+        applyStyle(iframe, {
+            width: '100%',
+            height: '100%',
+            border: '0',
+            display: 'block'
+        });
+        container.appendChild(iframe);
+        setConnectionState('connecting');
+        console.log('[CTBridge] Coach loading (first interaction):', IFRAME_SRC);
+    }
+
+    // Three stacked <video> layers inside the corner icon: idle (bottom,
+    // always looping), speaking (mid, fades in on voice), wave (top, pops on
+    // demand). Same pattern the previous in-chat mini-player used.
+    function makeVideoLayer(id, src, opts) {
+        var v = document.createElement('video');
+        v.id = id;
+        v.muted = true;
+        v.autoplay = !!opts.autoplay;
+        v.loop = !!opts.loop;
+        v.playsInline = true;
+        v.setAttribute('playsinline', '');
+        v.setAttribute('muted', '');
+        v.setAttribute('preload', 'auto');
+        v.setAttribute('src', src);
+        applyStyle(v, {
+            position: 'absolute',
+            inset: '0',
+            width: '100%',
+            height: '100%',
+            'object-fit': 'cover',
+            // Slight upscale (10%) hides the letterbox band the source clips
+            // carry; the icon's overflow:hidden crops the black edge.
+            transform: 'scale(1.1)',
+            'transform-origin': 'center 40%',
+            display: opts.display || 'block',
+            'pointer-events': 'none',
+            'z-index': String(opts.z || 0),
+            opacity: opts.opacity != null ? String(opts.opacity) : '1',
+            transition: 'opacity 300ms ease'
+        });
+        v.addEventListener('error', function () {
+            console.warn('[CTBridge] Icon video failed to load:', v.getAttribute('src'));
+            v.style.display = 'none';
+        });
+        return v;
+    }
+    function ensureIconVideos() {
+        var icon = document.getElementById(ICON_ID);
+        if (!icon || document.getElementById(IDLE_VIDEO_ID)) return;
+        var assets = personaAssets(iconPersona, iconThumb);
+        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, assets.idle,
+            { autoplay: true, loop: true, z: 10, opacity: 1 });
+        icon.appendChild(idleVideo);
+        icon.appendChild(makeVideoLayer(SPEAKING_VIDEO_ID, assets.speaking,
+            { autoplay: true, loop: true, z: 20, opacity: 0, display: 'none' }));
+        icon.appendChild(makeVideoLayer(WAVING_VIDEO_ID, assets.waving,
+            { autoplay: false, loop: false, z: 30, opacity: 1, display: 'none' }));
+        // Kick off idle playback (some browsers require an explicit call).
+        try { idleVideo.play().catch(function () {}); } catch (_) {}
+    }
+    // The first sign of interest loads everything the open chat needs.
+    function wakeCoach() {
+        ensureIconVideos();
+        ensureCoach();
+    }
+
     function injectUI() {
         if (document.getElementById(ICON_ID)) return;
         if (!document.body) {
@@ -865,15 +971,11 @@
             return;
         }
 
-        // Chat container (renders full-size iframe, clipped to 0×0 while in
-        // 'icon' state so the coach app keeps pre-warming in the background).
+        // Chat container: scaled to 0 while in 'icon' state. Empty until the
+        // first interaction (ensureCoach). Semi-transparent with a backdrop
+        // blur so the page reads through in gutter areas.
         var container = document.createElement('div');
         container.id = CONTAINER_ID;
-        // Container floats ABOVE the persistent corner icon. Semi-transparent
-        // background with a backdrop-blur so the parent page reads through
-        // in gutter areas — the coach is contextual to what you're
-        // reading, not a wall on top of it. The iframe itself sets its
-        // body to transparent so this glass effect comes through.
         applyStyle(container, {
             position: 'fixed',
             right: '20px',
@@ -895,34 +997,10 @@
             'transform-origin': '100% 100%',
             transition: 'transform 260ms cubic-bezier(0.2,0.9,0.3,1), opacity 200ms ease'
         });
-
-        var iframe = document.createElement('iframe');
-        iframe.id = IFRAME_ID;
-        currentMember = readWixMember();
-        iframe.src = coachSrc(currentMember);
-        setInterval(syncMember, 2000);
-        iframe.setAttribute('allow', 'microphone; autoplay; fullscreen');
-        iframe.setAttribute('allowfullscreen', '');
-        // Iframe fills the container — the container is what enforces the
-        // 420×640 target size PLUS the viewport caps (max-width: 100vw-40, max-height: 100vh-128).
-        // Older code pinned the iframe to a literal 420×640, which meant on a
-        // short viewport the container's overflow:hidden cropped the coach's
-        // composer at the bottom, leaving the user with no way to type. Now
-        // the iframe follows the container size and the coach's internal
-        // flex layout reflows correctly (chat area shrinks, composer stays
-        // pinned to the bottom via its position:fixed).
-        applyStyle(iframe, {
-            width: '100%',
-            height: '100%',
-            border: '0',
-            display: 'block'
-        });
-        container.appendChild(iframe);
         document.body.appendChild(container);
 
-        // Icon: always visible, click TOGGLES expand/collapse. Contains a
-        // real <video> playing Erica's idle clip on loop; source is swapped
-        // by setIconAnimation on speaking/waving events from the iframe.
+        // Icon: always visible, click TOGGLES expand/collapse. At rest it is
+        // the persona's still; the clips arrive with the coach.
         var icon = document.createElement('button');
         icon.id = ICON_ID;
         icon.type = 'button';
@@ -940,83 +1018,27 @@
             padding: '0',
             cursor: 'pointer',
             background: '#e5e7eb center/cover no-repeat url("' + personaAssets(iconPersona, iconThumb).still + '")',
-            // Two-part box-shadow: inner ring encodes connection state
-            // (green connected / amber connecting / grey offline), outer
-            // shadow is the elevation. Starts amber ("connecting").
-            'box-shadow': '0 0 0 3px #f59e0b, 0 6px 18px rgba(0,0,0,0.18)',
+            // Inner ring encodes connection state; at rest the coach is not
+            // loaded on purpose: the standby grey, not "connecting".
+            'box-shadow': '0 0 0 3px #94a3b8, 0 6px 18px rgba(0,0,0,0.18)',
             overflow: 'hidden',
             transition: 'opacity 200ms ease, transform 200ms ease, box-shadow 300ms ease',
             opacity: '1',
-            // Hint to the browser to render pixel-perfect over the video —
-            // marginal but visible at retina 72px on top of 84p source.
             'image-rendering': '-webkit-optimize-contrast'
         });
 
-        // Three stacked <video> layers inside the icon: idle (bottom,
-        // always looping), speaking (mid, fades in on voice), wave (top,
-        // pops on demand). Same pattern the previous in-chat mini-player
-        // used — replicated here so the corner icon reads as her actually
-        // speaking, not a metronomic pulse.
-        function makeVideoLayer(id, src, opts) {
-            var v = document.createElement('video');
-            v.id = id;
-            v.muted = true;
-            v.autoplay = !!opts.autoplay;
-            v.loop = !!opts.loop;
-            v.playsInline = true;
-            v.setAttribute('playsinline', '');
-            v.setAttribute('muted', '');
-            v.setAttribute('preload', 'auto');
-            v.setAttribute('src', src);
-            var style = {
-                position: 'absolute',
-                inset: '0',
-                width: '100%',
-                height: '100%',
-                'object-fit': 'cover',
-                // Slight upscale (10%) hides the letterbox band the source
-                // clips carry (character centred on a small black frame).
-                // Combined with the icon's overflow:hidden this crops the
-                // black edge without visibly shrinking the character.
-                transform: 'scale(1.1)',
-                'transform-origin': 'center 40%',
-                display: opts.display || 'block',
-                'pointer-events': 'none',
-                'z-index': String(opts.z || 0),
-                opacity: opts.opacity != null ? String(opts.opacity) : '1',
-                transition: 'opacity 300ms ease'
-            };
-            applyStyle(v, style);
-            v.addEventListener('error', function () {
-                console.warn('[CTBridge] Icon video failed to load:', v.getAttribute('src'));
-                v.style.display = 'none';
-            });
-            return v;
-        }
-
-        // Icon needs to be a positioned container for absolute children.
-        mergeStyle(icon, { position: 'fixed', overflow: 'hidden' });
-
-        var assets = personaAssets(iconPersona, iconThumb);
-        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, assets.idle,
-            { autoplay: true, loop: true, z: 10, opacity: 1 });
-        var speakingVideo = makeVideoLayer(SPEAKING_VIDEO_ID, assets.speaking,
-            { autoplay: true, loop: true, z: 20, opacity: 0, display: 'none' });
-        var wavingVideo = makeVideoLayer(WAVING_VIDEO_ID, assets.waving,
-            { autoplay: false, loop: false, z: 30, opacity: 1, display: 'none' });
-
-        icon.appendChild(idleVideo);
-        icon.appendChild(speakingVideo);
-        icon.appendChild(wavingVideo);
-
-        // Kick off idle playback (some browsers require explicit call).
-        try { idleVideo.play().catch(function () {}); } catch (_) {}
-
-        icon.addEventListener('click', toggleChat);
-        // Hover-to-glimpse: while minimised, hovering the icon requests the
-        // current pill labels from the iframe and renders them as floating
-        // hints above the icon.
+        icon.addEventListener('click', function () {
+            wakeCoach();
+            toggleChat();
+        });
+        // Touch screens have no hover: a touch starts the load a few hundred
+        // ms before the click lands. Keyboard focus counts too.
+        icon.addEventListener('touchstart', wakeCoach, { passive: true });
+        icon.addEventListener('focus', wakeCoach);
+        // Hover: load the coach, then (while minimised) ask it for the pill
+        // labels to show as floating hints above the icon.
         icon.addEventListener('mouseenter', function () {
+            wakeCoach();
             if (state !== 'icon') return;
             if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
             requestPillsFromIframe();
@@ -1028,7 +1050,7 @@
         });
         document.body.appendChild(icon);
 
-        console.log('[CTBridge] UI injected (corner-icon-first). Iframe pre-warming at:', IFRAME_SRC);
+        console.log('[CTBridge] UI injected (corner-icon-first). The coach loads on the first hover, touch or click:', IFRAME_SRC);
     }
 
     // --- Debug helper (window.__ctBridgeStatus()) ---
@@ -1043,6 +1065,7 @@
             iframeInjected: !!document.getElementById(IFRAME_ID),
             iframeSrc: IFRAME_SRC,
             coachOrigin: COACH_ORIGIN,
+            coachLoaded: coachLoaded,
             goLive: GO_LIVE,
             liveHere: LIVE_HERE,
             member: !!currentMember,

@@ -12,6 +12,7 @@ const STAGING = 'https://web-staging-2c7ff.up.railway.app';
 test('the coach and the icon videos come from the host that served bridge.js', () => {
     const b = runBridge({ currentScript: PROD + '/bridge.js' });
     b.advance(1000);
+    b.wake(); // the coach loads on the first hover
     assert.ok(b.iframe(), 'the coach iframe is injected');
     assert.equal(b.iframe().src, PROD + '/index.html?caller=web');
     assert.match(b.icon().getAttribute('style'), new RegExp(PROD.replace(/\./g, '\\.') + '/companions/Erica-thumb\\.png'));
@@ -23,6 +24,7 @@ test('the coach and the icon videos come from the host that served bridge.js', (
 test('without document.currentScript: the <script> that loaded bridge.js decides', () => {
     const b = runBridge({ currentScript: null, scripts: ['https://static.parastorage.com/x.js', PROD + '/bridge.js?v=1'] });
     b.advance(1000);
+    b.wake(); // the coach loads on the first hover
     assert.equal(b.iframe().src, PROD + '/index.html?caller=web');
 });
 
@@ -30,6 +32,7 @@ test('nothing to read, or a non-https script: staging, as before', () => {
     for (const opts of [{}, { currentScript: 'http://evil.example/bridge.js' }, { currentScript: 'not a url at all %%' }]) {
         const b = runBridge(opts);
         b.advance(1000);
+        b.wake(); // the coach loads on the first hover
         assert.equal(b.iframe().src, STAGING + '/index.html?caller=web', JSON.stringify(opts));
     }
 });
@@ -41,6 +44,7 @@ test('the Studio simulator flag and the member id still ride on the production c
         entry: { wixLocalStorage: 'true', userAuthenticated: true, loggedInUserId: 'member-1' },
     });
     b.advance(1000);
+    b.wake(); // the coach loads on the first hover
     assert.equal(b.iframe().src, PROD + '/index.html?caller=admin-simulator&simulator=1&userId=member-1');
 });
 

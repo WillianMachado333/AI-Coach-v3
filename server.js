@@ -85,7 +85,7 @@ const { resolvePublicPath, publicRelativePath, looksLikeProbe } = require('./lib
 const brandIcons = require('./lib/brandIcons');
 const { liveSessionInput } = require('./lib/liveSessionInput');
 const wixSite = require('./lib/wixSite');
-const { revalidationHeaders, iconHeaders, isNotModified } = require('./lib/staticCache');
+const { revalidationHeaders, iconHeaders, isNotModified, negotiate } = require('./lib/staticCache');
 
 /**
  * Fire-and-forget helper that extracts the user report body from an
@@ -3518,11 +3518,13 @@ const server = http.createServer(async (req, res) => {
         // icons are cached for a day.
         fs.stat(filePath, (statError, stat) => {
             const mtime = statError ? null : stat.mtime;
-            const cache = brandIcons.isBrandIcon(publicRelativePath(req.url))
+            // Our own text goes out gzipped when the browser takes it (its own ETag).
+            const { headers: cache, body } = negotiate(req.headers, brandIcons.isBrandIcon(publicRelativePath(req.url))
                 ? iconHeaders(content, mtime)
-                : revalidationHeaders(extname, content, mtime);
+                : revalidationHeaders(extname, content, mtime), content);
             if (isNotModified(req.headers, cache)) {
-                res.writeHead(304, { ...cache, 'Access-Control-Allow-Origin': '*' });
+                const { 'Content-Encoding': _encoding, ...notModified } = cache;
+                res.writeHead(304, { ...notModified, 'Access-Control-Allow-Origin': '*' });
                 res.end();
                 return;
             }
@@ -3531,7 +3533,7 @@ const server = http.createServer(async (req, res) => {
                 'Access-Control-Allow-Origin': '*',
                 ...cache
             });
-            res.end(content, 'utf-8');
+            res.end(body);
         });
     });
 });
