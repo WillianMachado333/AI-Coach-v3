@@ -1,24 +1,66 @@
-// A page view with the bridge costs bridge.js and the icon's still image,
+// While the site loads, the bridge costs bridge.js and the icon's still image,
 // nothing more (V3 production prep, 4 Nov 2026: the live site is under a Wix
 // performance alert, Login opening 6-10 s after the click). The coach iframe
-// (its scripts, Tailwind, photos, clips) and the icon's clips load on the
-// first hover, touch, focus or click. The waving clip is the 84p webm the
+// (its scripts, Tailwind, photos, clips) and the speaking/waving clips load on
+// the first hover, touch, focus or click. The waving clip is the 84p webm the
 // coach uses (~46 KB), not the 6 MB mp4 the icon preloaded on every page.
+// At rest the icon must still look available (Willian, 10 Nov 2026: "it
+// looked disconnected until I clicked"): the ring is green, and the idle clip
+// starts once the page has finished loading and the browser is idle.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { runBridge } = require('./helpers/bridgeHarness');
 
 const STAGING = 'https://web-staging-2c7ff.up.railway.app';
+const GREEN = /0 0 0 3px #22c55e/;
 
-test('a page view: the icon (still image only), no coach iframe, no clips, standby ring', () => {
+test('while the page loads: the still image and the available (green) ring; no coach, no clips', () => {
     const b = runBridge();
     b.advance(5000);
     assert.ok(b.icon(), 'the icon is there');
     assert.match(b.icon().getAttribute('style'), /companions\/Erica-thumb\.png/);
-    assert.match(b.icon().getAttribute('style'), /0 0 0 3px #94a3b8/, 'standby grey, not "connecting"');
+    assert.match(b.icon().getAttribute('style'), GREEN, 'available, not grey "offline"');
+    assert.equal(b.icon().getAttribute('title'), 'Your AI coach is available');
     assert.equal(b.iframe(), null, 'no coach until the person shows interest');
-    assert.equal(b.videos().length, 0, 'no clips at rest');
+    assert.equal(b.videos().length, 0, 'no clips before the page has loaded');
     assert.equal(b.win.__ctBridgeStatus().coachLoaded, false);
+});
+
+test('once the page has loaded and the browser is idle: the idle clip breathes in the corner; still no coach', () => {
+    const b = runBridge();
+    b.advance(1000);
+    b.pageLoaded();
+    b.advance(1000);
+    assert.equal(b.videos().length, 0, 'waits for the browser to be idle');
+    b.advance(1000);
+    const clips = b.videos();
+    assert.equal(clips.length, 1, 'the idle clip only');
+    assert.equal(clips[0].id, 'ct-bridge-icon-video-idle');
+    assert.equal(clips[0].getAttribute('src'), STAGING + '/companions/idle/84p/Erica.webm', 'the same file hover would load: no second download');
+    assert.equal(b.iframe(), null, 'the coach still waits for interest');
+    b.wake();
+    assert.equal(b.videos().length, 3, 'hover adds speaking and waving, never a second idle');
+});
+
+test('people who ask for less motion or less data: the still image and the green ring, no clip at rest', () => {
+    for (const opts of [{ reducedMotion: true }, { saveData: true }]) {
+        const b = runBridge(opts);
+        b.advance(1000);
+        b.pageLoaded();
+        b.advance(5000);
+        assert.equal(b.videos().length, 0, JSON.stringify(opts));
+        assert.match(b.icon().getAttribute('style'), GREEN);
+    }
+});
+
+test('the coach\'s standby (GPT-Live before its first session) shows green too; connecting amber, disconnected red', () => {
+    const b = runBridge();
+    b.advance(1000);
+    b.wake();
+    for (const [state, colour] of [['connecting', '#f59e0b'], ['standby', '#22c55e'], ['connected', '#22c55e'], ['disconnected', '#ef4444']]) {
+        b.postToBridge({ type: 'CT_CONNECTION_STATE', state });
+        assert.match(b.icon().getAttribute('style'), new RegExp('0 0 0 3px ' + colour), state);
+    }
 });
 
 for (const [how, act] of [

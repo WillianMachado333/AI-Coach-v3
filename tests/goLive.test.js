@@ -31,16 +31,38 @@ test('the flag: off unless 1/true/on/yes; bridge.js carries the marker exactly o
     assert.deepEqual(goLive.status('no marker here', { ERICA_GO_LIVE: 'on' }), { on: true, markerFound: false });
 });
 
-test('off (default): talenttransformation.com stays behind the preview gate, V2 untouched', () => {
-    const closed = runBridge({ location: tt(), elements: ['askEricaMain'] });
-    closed.advance(1000);
-    assert.equal(closed.icon(), null, 'no V3 for a normal visitor');
-    assert.equal(closed.byId('ct-bridge-hide-v2'), null, 'V2 not hidden');
+// Go-live off (production today) on talenttransformation.com: the three cases
+// (Willian, 10 Nov 2026: the preview must show the launch experience).
+test('off: a normal visitor gets V2 only; the preview shows the launch (V3, V2 hidden); the app stays on V2', () => {
+    const visitor = runBridge({ location: tt(), elements: ['askEricaMain'] });
+    visitor.advance(1000);
+    assert.equal(visitor.icon(), null, 'no V3 for a normal visitor');
+    assert.equal(visitor.byId('ct-bridge-hide-v2'), null, 'V2 visible');
 
-    const preview = runBridge({ location: tt('?erica=preview') });
-    preview.advance(1000);
-    assert.ok(preview.icon(), 'preview still opens V3');
-    assert.equal(preview.byId('ct-bridge-hide-v2'), null, 'preview does not hide V2 (as today)');
+    for (const loc of [tt('?erica=preview'), tt('', '/journeys/my-journey')]) {
+        // The second page: same tab, the preview flag carried in sessionStorage.
+        const preview = runBridge({ location: loc, session: loc.search ? {} : { ericaPreview: '1' } });
+        preview.advance(1000);
+        assert.ok(preview.icon(), 'preview shows V3 at ' + loc.pathname);
+        const style = preview.byId('ct-bridge-hide-v2');
+        assert.ok(style, 'and hides V2, exactly as at launch');
+        assert.match(style.textContent, /section:has\(button\[aria-label="askErica"\]\)/);
+        assert.equal(preview.win.__ctBridgeStatus().liveHere, false, 'still the preview, not live');
+    }
+
+    for (const search of ['?minimal=yes', '?minimal=yes&erica=preview']) {
+        const app = runBridge({ location: tt(search) });
+        app.advance(1000);
+        assert.equal(app.icon(), null, 'no V3 in the app (' + search + ')');
+        assert.equal(app.byId('ct-bridge-hide-v2'), null, 'V2 visible in the app');
+    }
+});
+
+test('the preview on the sandbox (awav.com) and on /playground pages leaves V2 alone, as before', () => {
+    const awav = runBridge();
+    awav.advance(1000);
+    assert.ok(awav.icon());
+    assert.equal(awav.byId('ct-bridge-hide-v2'), null);
 });
 
 test('on: V3 on every talenttransformation.com page, and V2 Ask Erica hidden', () => {
