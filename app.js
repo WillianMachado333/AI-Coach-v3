@@ -1141,18 +1141,17 @@ class VoiceChatBot {
             console.warn('[Erica] 🔗 Still refused right after preparing again — this call stays refused');
             return Promise.resolve(false);
         }
-        const userId = this.getUserIdFromURL ? this.getUserIdFromURL() : null;
-        const email = !userId && this.getEmailFromURL ? this.getEmailFromURL() : null;
-        const objectId = window.__ttCleverTapId ? String(window.__ttCleverTapId) : null;
-        if (!userId && !email && !objectId) return Promise.resolve(false);
+        // The same identity the refused calls send (settings, notes), so the
+        // binding is made for exactly the ids that were refused.
+        const ident = this._coachIdentity();
+        if (!ident.userId && !ident.objectId) return Promise.resolve(false);
         this._rebindInFlight = fetch(this.apiUrl('/api/erica-preparation'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 caller: new URLSearchParams(window.location.search).get('caller') || 'app',
                 bindOnly: true,
-                ...(userId ? { userId } : email ? { email } : {}),
-                ...(objectId ? { objectId } : {})
+                ...ident
             })
         })
             .then((r) => {

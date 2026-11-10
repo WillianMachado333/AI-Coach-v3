@@ -117,6 +117,7 @@ function fakeCoach({ userId = 'member-R', cleverTapId = null, routes = {} } = {}
         return list.length > 1 ? list.shift() : list[0];
     };
     const app = { apiUrl: (p) => p, getUserIdFromURL: () => userId, getEmailFromURL: () => null, sleep: async () => {} };
+    app._coachIdentity = method('_coachIdentity()').bind(app);
     app._notPreparedRefusal = method('_notPreparedRefusal(res, inBody = false)').bind(app);
     app._rebindPreparation = method('_rebindPreparation(sentAt)').bind(app);
     app._withRebind = method('_withRebind(send, { inBody = false } = {})').bind(app);
@@ -198,6 +199,13 @@ test('client: history save and fetch (fetchWithBackoff) are repaired the same wa
         assert.equal(r.status, 200);
         assert.deepEqual(calls.map((c) => c.url), ['/api/conversation-history-save', '/api/erica-preparation', '/api/conversation-history-save']);
     } finally { restore(); }
+});
+
+test('the bind-only preparation binds the same identity the refused calls send (_coachIdentity)', () => {
+    const body = src.slice(src.indexOf('    _rebindPreparation(sentAt) {'), src.indexOf('    async _withRebind('));
+    assert.match(body, /const ident = this\._coachIdentity\(\);/);
+    assert.match(body, /bindOnly: true,\s*\.\.\.ident/);
+    assert.ok(src.includes("let ident = this._coachIdentity();") && src.includes("this.memberFetch(this.apiUrl('/api/user-settings'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ident) })"), 'settings send _coachIdentity too');
 });
 
 test('wiring: every call for the person\'s own data goes through the repair', () => {
