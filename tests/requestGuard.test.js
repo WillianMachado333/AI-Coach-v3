@@ -299,10 +299,10 @@ test('HTTP, the real server: an error after the route answered is "after the res
     } finally { srv.child.kill(); }
 });
 
-test('HTTP, the real server (C): a data listener that throws on every chunk of a 6 MB body: one red line, the process lives', async () => {
+test('HTTP, the real server (C): a data listener that throws on every chunk of a 4 MB body: one red line, the process lives', async () => {
     const srv = await startRealServer();
     try {
-        const r = await post(srv.port, '/api/session-log', 'x'.repeat(6 * 1024 * 1024), { 'x-test-throw-in-end': 'data' });
+        const r = await post(srv.port, '/api/session-log', 'x'.repeat(4 * 1024 * 1024), { 'x-test-throw-in-end': 'data' }); // under the 5 MB body limit
         assert.ok(r.status === 500 || String(r.status).startsWith('error:'), `500 or a closed socket, got ${r.status}`);
         await pause(200);
         assert.equal(srv.exited(), null);
@@ -313,7 +313,7 @@ test('HTTP, the real server (C): a data listener that throws on every chunk of a
 
 test('server.js wires the guard, the counters and the health payload', () => {
     const src = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-    assert.match(src, /const server = http\.createServer\(\(req, res\) => \{\s*guardRequest\(req, res\);\s*handleRequest\(req, res\)\.catch\(\(err\) => failRequest\(req, res, err\)\);/);
+    assert.match(src, /const server = http\.createServer\(\(req, res\) => \{\s*guardRequest\(req, res\);\s*(?:if \(!enforceBodyLimit\(req, res\)\) return;\s*)?handleRequest\(req, res\)\.catch\(\(err\) => failRequest\(req, res, err\)\);/);
     assert.match(src, /process\.on\('unhandledRejection', \(reason\) => \{\s*failureStats\.note\('unhandledRejection'\);/);
     assert.match(src, /createHealthPayload\(\{ failures: failureStats\.snapshot\(\) \}\)/);
 });
