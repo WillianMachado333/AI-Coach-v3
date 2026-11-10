@@ -76,17 +76,24 @@ test('Studio person page shows the settings (and that a guest\'s last one visit)
 // --- HTTP ---
 function startServer(port, env) {
     return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, PORT: String(port), OPENAI_API_KEY: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+        // The fake Wix preload: the test prepares ids (the binding the route now needs) without leaving the machine.
+        const child = spawn(process.execPath, ['-r', path.join(__dirname, 'helpers', 'fakeWixPrep.js'), 'server.js'], { cwd: root, env: { ...process.env, PORT: String(port), OPENAI_API_KEY: '', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
         let out = '';
         const timer = setTimeout(() => { child.kill(); reject(new Error(`server did not start:\n${out}`)); }, 20000);
         const onData = (c) => { out += String(c); if (/Server running at http:/.test(out)) { clearTimeout(timer); resolve({ child, out: () => out }); } };
         child.stdout.on('data', onData); child.stderr.on('data', onData); child.on('error', reject);
     });
 }
-function post(port, body, headers = {}) {
+// A port the OS says is free (a fixed random range collided across parallel test files).
+const freePort = () => new Promise((resolve, reject) => {
+    const s = require('node:net').createServer();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
+});
+function post(port, body, headers = {}, route = '/api/user-settings') {
     return new Promise((resolve, reject) => {
         const data = JSON.stringify(body);
-        const req = http.request({ host: '127.0.0.1', port, path: '/api/user-settings', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...headers } }, (res) => {
+        const req = http.request({ host: '127.0.0.1', port, path: route, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...headers } }, (res) => {
             const chunks = []; res.on('data', (c) => chunks.push(c));
             res.on('end', () => { let j = null; try { j = JSON.parse(Buffer.concat(chunks).toString()); } catch (_) {} resolve({ status: res.statusCode, json: j }); });
         });
@@ -94,12 +101,19 @@ function post(port, body, headers = {}) {
     });
 }
 
-test('HTTP /api/user-settings: own settings only; account vs one-visit guest scope; a signed token wins over the body; a forged one is refused', async () => {
+test('HTTP /api/user-settings: own settings only, for an id prepared from this address (SEC-01); account vs one-visit guest scope; a signed token wins over the body; a forged one is refused', async () => {
     const SECRET = 'settings-secret-' + 'y'.repeat(32);
     const dir = path.join(tmp, 'http-settings');
-    const port = 23000 + Math.floor(Math.random() * 900);
-    const { child } = await startServer(port, { USER_SETTINGS_DIR: dir, SESSION_DATA_DIR: path.join(tmp, 'http-sessions'), WIX_IDENTITY_SECRET: SECRET, SESSION_SECRET: 'x' });
+    const port = await freePort();
+    const { child } = await startServer(port, { USER_SETTINGS_DIR: dir, SESSION_DATA_DIR: path.join(tmp, 'http-sessions'), SESSION_PROMPTS_DIR: path.join(tmp, 'http-prompts'), AUDIT_DIR: path.join(tmp, 'http-audit'), WIX_IDENTITY_SECRET: SECRET, SESSION_SECRET: 'x', FAKE_WIX_PREP: '200' });
     try {
+        // Not prepared from this address: refused, read and write alike, and nothing written.
+        assert.deepEqual((await post(port, { userId: 'member-H' })).json, { error: 'Unauthorized', reason: 'not_prepared_from_this_address' });
+        assert.equal((await post(port, { objectId: 'ct-guest', set: { voiceStepDone: true } })).status, 403);
+        assert.equal(fs.existsSync(path.join(dir, 'ctid-ct-guest.json')), false);
+        // The coach's own flow: the preparation first (it carries the CleverTap id when there is one).
+        assert.equal((await post(port, { userId: 'member-H', objectId: 'ct-h', caller: 'web' }, {}, '/api/erica-preparation')).status, 200);
+        assert.equal((await post(port, { objectId: 'ct-guest', caller: 'web' }, {}, '/api/erica-preparation')).status, 200);
         const w = await post(port, { userId: 'member-H', objectId: 'ct-h', set: { companionId: 'Guidance', voice: 'coral', voiceStepDone: true, junk: 1 }, by: 'voice_step' });
         assert.deepEqual([w.status, w.json.scope, w.json.changed], [200, 'account', ['companionId', 'voice', 'voiceStepDone']]);
         const r = await post(port, { userId: 'member-H' });

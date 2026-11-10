@@ -66,15 +66,54 @@ function passRateLimit(req, res, endpoint) {
     res.end(JSON.stringify({ error: 'Too many requests. Please try again later.', reason: 'rate_limited' }));
     return false;
 }
+/** 403: `which` id ('userId' | 'objectId') was not prepared from this IP. */
+function refuseNotPrepared(req, res, endpoint, idn, which) {
+    console.warn(`[SERVER] ⛔ ${endpoint} - ${which} not prepared from this ip (ip#${signedIdentity.ipHash(clientIp(req))}, identity ${idn.source}) → 403`);
+    res.writeHead(403, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Unauthorized', reason: 'not_prepared_from_this_address' }));
+}
 /** An unsigned userId not prepared from this IP: false (403 sent). A signed identity always passes. */
 function passHistoryBinding(req, res, endpoint, idn) {
     if (!idn.userId || idn.source === 'signed') return true;
-    const ip = clientIp(req);
-    if (historyGuard.admit(ip, idn.userId)) return true;
-    console.warn(`[SERVER] ⛔ ${endpoint} - userId not prepared from this ip (ip#${signedIdentity.ipHash(ip)}, identity ${idn.source}) → 403`);
-    res.writeHead(403, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ error: 'Unauthorized', reason: 'not_prepared_from_this_address' }));
+    if (historyGuard.admit(clientIp(req), idn.userId)) return true;
+    refuseNotPrepared(req, res, endpoint, idn, 'userId');
     return false;
+}
+// Member data (SEC-01/02, production QA 10 Nov 2026): coach settings, the
+// clipboard, the activity timeline and the person's own vector store were
+// served to ANY loose id. Until the Wix side mints signed tokens, the rule
+// history follows: an unsigned userId, or a guest's CleverTap objectId
+// (unsigned by design), passes only when the preparation for it came from
+// this IP within the binding window. Guest ids bind in their own map, so an
+// objectId can never stand in for a userId, nor the reverse.
+const guestBindings = require('./lib/historyGuard').fromEnv();
+/**
+ * The member ids this request may act on: { ok, userId, objectId, refused, droppedObjectId }.
+ * The primary id (userId, else objectId) must pass, or ok is false and
+ * `refused` names it. A signed userId always passes. An objectId sent next
+ * to a userId (a guest record the account would adopt) that did not pass is
+ * dropped, not refused: the account's own data still opens.
+ */
+function memberAccess(req, idn) {
+    const ip = clientIp(req);
+    const guestOk = (id) => guestBindings.admit(ip, id);
+    if (idn.userId) {
+        if (idn.source !== 'signed' && !historyGuard.admit(ip, idn.userId)) return { ok: false, refused: 'userId' };
+        const objectId = idn.objectId && guestOk(idn.objectId) ? idn.objectId : null;
+        return { ok: true, userId: idn.userId, objectId, droppedObjectId: !!idn.objectId && !objectId };
+    }
+    if (idn.objectId) {
+        if (!guestOk(idn.objectId)) return { ok: false, refused: 'objectId' };
+        return { ok: true, userId: null, objectId: idn.objectId };
+    }
+    return { ok: true, userId: null, objectId: null };
+}
+/** memberAccess, or null with the 403 sent. */
+function passMemberBinding(req, res, endpoint, idn) {
+    const a = memberAccess(req, idn);
+    if (!a.ok) { refuseNotPrepared(req, res, endpoint, idn, a.refused); return null; }
+    if (a.droppedObjectId) logAt('info', `[SERVER] ${endpoint} - objectId not prepared from this ip: ignored (no guest record adopted)`);
+    return a;
 }
 // Server → Wix HTTP functions: the bearer those functions should require
 // (the Wix side of #28). Sent whenever the secret is configured.
@@ -120,10 +159,12 @@ function syncPreparationToVectorStore(userId, prepJsonText) {
     // system-prompt chunks that get returned instead of real user data.
     //
     // Strategy: locate the first quiz/report marker and keep everything from
-    // there onward. Fall back to a positional cut if no marker is found.
+    // there onward. No sign of one person (a report, a quiz taken, a name,
+    // goals) means no body: the generic guest text an unknown id gets must
+    // not become a "report" and a new vector store (lib/userReport.js).
     const userSpecific = extractUserSpecificReport(message);
     if (!userSpecific || userSpecific.length < 200) {
-        logAt('debug', '[SERVER] syncPreparationToVectorStore - no user-specific body found, skipping');
+        logAt('debug', '[SERVER] syncPreparationToVectorStore - no user-specific body found (generic or guest preparation), skipping; no store touched');
         return;
     }
 
@@ -277,49 +318,9 @@ function syncActivityForSession(userId, objectId) {
         });
 }
 
-/**
- * Extract the user-specific portion of an ericaPreparation `message` string.
- * Looks for well-known markers that reliably indicate the start of user data
- * (quiz report URLs, "This user has taken..." lines, name/goals footer).
- * If none match, falls back to skipping the first ~2500 chars of boilerplate.
- */
-function extractUserSpecificReport(message) {
-    if (!message) return '';
-
-    // Markers we've observed in real preparation responses that flag the
-    // transition from generic prompt to user-specific content.
-    const markers = [
-        /Report:\s*https?:\/\//i,                          // "Quiz X Report: https://..."
-        /This user has taken/i,                            // Positive assessment marker
-        /This is a list of quizzes this user has not taken/i, // Metadata footer
-        /\n[A-Z][^\n]*Quiz\s*\n/,                          // "Something Quiz" section header
-        /^Thge user Name is|^The user Name is/im,          // Name marker (typos in source preserved)
-        /The user selected the following goals/i           // Goals marker
-    ];
-
-    let earliestIndex = -1;
-    for (const re of markers) {
-        const m = message.match(re);
-        if (m && (earliestIndex === -1 || m.index < earliestIndex)) {
-            earliestIndex = m.index;
-        }
-    }
-
-    if (earliestIndex > 0) {
-        // Wrap with a small header so retrieval snippets have anchoring context
-        const header = '# User-Specific Report\n\nThe following content is drawn from this user\'s assessment reports and profile metadata. Use it to inform coaching responses.\n\n---\n\n';
-        return header + message.slice(earliestIndex).trim();
-    }
-
-    // Fallback: no marker found, skip generic prompt boilerplate positionally
-    if (message.length > 3000) {
-        const header = '# User-Specific Report (positional fallback)\n\n---\n\n';
-        return header + message.slice(2500).trim();
-    }
-
-    // Message is short and has no markers — probably guest/empty. Skip.
-    return '';
-}
+// The person-specific part of a preparation (none in Wix's generic guest
+// text, which an unknown id gets): lib/userReport.js.
+const { extractUserSpecificReport } = require('./lib/userReport');
 
 const PORT = process.env.PORT || 8002;
 
@@ -1912,8 +1913,6 @@ const server = http.createServer(async (req, res) => {
                     objectId: requestData.objectId ? String(requestData.objectId) : null
                 }, { endpoint: 'knowledge-search', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
-                const userId = idn.userId;
-                const objectId = idn.objectId;
 
                 if (!query) {
                     res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -1921,9 +1920,31 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
 
-                logAt('info', '[SERVER] /api/knowledge-search -', { scope, userId, objectId, queryPreview: safePreview(query, 120) });
+                // The person's own store (reports, activity, memory) only for
+                // an id prepared from this IP, or signed (SEC-02). 'user_data'
+                // asks for nothing else → 403. 'all' still searches the shared
+                // stores, without the person's, and says so: a 403 there would
+                // take the coach's framework grounding down with it.
+                let userId = null;
+                let objectId = null;
+                let userDataRefused = null;
+                if ((scope === 'user_data' || scope === 'all') && (idn.userId || idn.objectId)) {
+                    const access = memberAccess(req, idn);
+                    if (access.ok) {
+                        userId = access.userId;
+                        objectId = access.objectId;
+                    } else if (scope === 'user_data') {
+                        return refuseNotPrepared(req, res, '/api/knowledge-search', idn, access.refused);
+                    } else {
+                        userDataRefused = 'not_prepared_from_this_address';
+                        console.warn(`[SERVER] ⚠️ /api/knowledge-search - ${access.refused} not prepared from this ip (ip#${signedIdentity.ipHash(clientIp(req))}, identity ${idn.source}): scope 'all' searched WITHOUT the person's store`);
+                    }
+                }
+
+                logAt('info', '[SERVER] /api/knowledge-search -', { scope, userId, objectId, userDataRefused, queryPreview: safePreview(query, 120) });
 
                 const result = await vectorStore.searchKnowledge({ query, scope, userId, objectId });
+                if (userDataRefused) result.userDataRefused = userDataRefused;
 
                 logAt('info', '[SERVER] /api/knowledge-search -> chunks:', result.chunks.length, 'stores:', result.vectorStoreIds.length);
 
@@ -2032,8 +2053,16 @@ const server = http.createServer(async (req, res) => {
                 const idn = signedIdentity.resolve(req, { userId: requestData.userId, objectId: requestData.objectId },
                     { endpoint: 'user-activity', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
-                const userId = idn.userId;
-                const objectId = idn.objectId;
+                if (!idn.userId && !idn.objectId) {
+                    res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+                    res.end(JSON.stringify({ error: 'userId or objectId required' }));
+                    return;
+                }
+                // The person's activity timeline: an id prepared from this IP, or signed (SEC-01).
+                const access = passMemberBinding(req, res, '/api/user-activity', idn);
+                if (!access) return;
+                const userId = access.userId;
+                const objectId = access.objectId;
 
                 if (!userId && !objectId) {
                     res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -2093,9 +2122,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     // The coach's clipboard (#23): Erica's private notes about the person.
-    // Identity is trusted from the client here exactly as it is for
-    // conversation history (see lib/coachClipboard.js). Neither route ever
-    // returns more than the rendered block for the caller's own identity.
+    // An unsigned userId or guest objectId opens it only when the preparation
+    // for it came from this IP, exactly as for conversation history (SEC-01;
+    // memberAccess above). Neither route ever returns more than the rendered
+    // block for the caller's own identity.
     //
     //   POST /api/clipboard/block   { sessionId?, userId?, objectId?, caller? } -> { text, lines }
     //   POST /api/clipboard/distill { sessionId, userId?, objectId?, caller?, turns[], cursor, visitAt? } -> { ok, skipped?, diff? }
@@ -2120,14 +2150,17 @@ const server = http.createServer(async (req, res) => {
             const idn = signedIdentity.resolve(req, { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null },
                 { endpoint: 'user-settings', audit: auditLog, body: p });
             if (!idn.ok) return refuseIdentity(res, idn);
-            const ident = { userId: idn.userId, objectId: idn.objectId };
-            if (!userSettings.keyFor(ident)) return reply(200, { scope: 'none', settings: null });
+            if (!userSettings.keyFor({ userId: idn.userId, objectId: idn.objectId })) return reply(200, { scope: 'none', settings: null });
+            // Read and write alike: an id prepared from this IP, or signed (SEC-01).
+            const access = passMemberBinding(req, res, '/api/user-settings', idn);
+            if (!access) return;
+            const ident = { userId: access.userId, objectId: access.objectId };
             try {
                 if (p.set && typeof p.set === 'object') {
                     const { settings, changed, scope } = userSettings.update(ident, p.set, { by: typeof p.by === 'string' ? p.by : 'picker' });
                     return reply(200, { scope, settings, changed });
                 }
-                return reply(200, { scope: idn.userId ? 'account' : 'visit', settings: userSettings.read(ident) });
+                return reply(200, { scope: ident.userId ? 'account' : 'visit', settings: userSettings.read(ident) });
             } catch (e) {
                 console.error('[SERVER] /api/user-settings error:', e?.message || e);
                 return reply(500, { error: 'settings unavailable' });
@@ -2198,7 +2231,9 @@ const server = http.createServer(async (req, res) => {
             const idn = signedIdentity.resolve(req, { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null },
                 { endpoint: 'clipboard', audit: auditLog, body: p });
             if (!idn.ok) return refuseIdentity(res, idn);
-            const identity = { userId: idn.userId, objectId: idn.objectId, caller: p.caller || null };
+            const access = passMemberBinding(req, res, `/api/clipboard/${isDistill ? 'distill' : 'block'}`, idn);
+            if (!access) return;
+            const identity = { userId: access.userId, objectId: access.objectId, caller: p.caller || null };
             const sid = typeof p.sessionId === 'string' ? p.sessionId : null;
             try {
                 if (!isDistill) {
@@ -2392,9 +2427,12 @@ const server = http.createServer(async (req, res) => {
                 const email = idn.email;
                 const objectId = idn.objectId;
                 if (idn.source === 'unsigned') logAt('info', '[SERVER] /api/erica-preparation - identity is UNSIGNED (loose userId/email; ERICA_REQUIRE_SIGNED_IDENTITY off)');
-                // This IP may now read / save this userId's history (lib/historyGuard.js).
-                // Signed too: if a later history call arrives without its token, it still passes.
+                // This IP may now read / save this userId's history and member
+                // data (lib/historyGuard.js; memberAccess). Signed too: if a later
+                // call arrives without its token, it still passes. The guest's
+                // CleverTap objectId binds in its own map, for its own data.
                 if (userId) historyGuard.bind(clientIp(req), userId);
+                if (objectId) guestBindings.bind(clientIp(req), objectId);
 
                 if (!userId && !email) {
                     logAt('info', '[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
@@ -3557,7 +3595,7 @@ server.listen(PORT, () => {
     if (idStatus.required && !idStatus.secretConfigured) console.error('[SERVER] 🔴 ERICA_REQUIRE_SIGNED_IDENTITY=on but WIX_IDENTITY_SECRET is not set — every signed-in identity will be refused');
     else console.log(`[SERVER] Identity: signed tokens ${idStatus.secretConfigured ? 'verified' : 'NOT verifiable (no WIX_IDENTITY_SECRET)'}; unsigned userId/email ${idStatus.required ? 'REFUSED' : 'accepted (ERICA_REQUIRE_SIGNED_IDENTITY off)'}`);
     const hg = historyGuard.config;
-    console.log(`[SERVER] History guard: ${hg.rateLimitMax} req/${Math.round(hg.rateWindowMs / 1000)}s per IP on preparation + history (ERICA_RATE_LIMIT_MAX); unsigned history only from the IP that prepared it, ${Math.round(hg.bindingTtlMs / 1000)}s window (ERICA_HISTORY_BINDING_TTL_MS)`);
+    console.log(`[SERVER] History guard: ${hg.rateLimitMax} req/${Math.round(hg.rateWindowMs / 1000)}s per IP on preparation + history (ERICA_RATE_LIMIT_MAX); unsigned history and member data (settings, clipboard, activity, own vector store) only from the IP that prepared the id, ${Math.round(hg.bindingTtlMs / 1000)}s window (ERICA_HISTORY_BINDING_TTL_MS)`);
 
     // Coach settings: a guest's record lasts one visit (30 min after last use).
     try { userSettings.sweepExpiredGuests(); } catch (_) { /* logged inside */ }

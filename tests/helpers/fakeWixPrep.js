@@ -6,6 +6,12 @@
 // FAKE_OPENAI_RESPONSES = JSON array of output texts for the in-chat Navigator's
 // POST /v1/responses (its json_schema is named navigator_tags); the last repeats.
 // Other Responses calls fail, like any other request.
+// FAKE_WIX_PREP_MESSAGE_FILE = a file whose text is the 200 preparation's
+// `message` (e.g. Wix's generic guest text, which an unknown id gets).
+// FAKE_OPENAI_VECTOR_STORES = JSON array of the account's stores [{ id, name }],
+// oldest first. GET /v1/vector_stores pages through it (limit / after / has_more),
+// POST /v1/vector_stores creates one, and a file_search Responses call returns one
+// chunk per store searched. Each call prints a [fake-openai] line.
 // Any other https.request fails too: the test never leaves the machine.
 const https = require('https');
 const { EventEmitter } = require('events');
@@ -17,6 +23,49 @@ let openaiScript = null;
 try { openaiScript = process.env.FAKE_OPENAI_RESPONSES ? JSON.parse(process.env.FAKE_OPENAI_RESPONSES) : null; } catch (_) { openaiScript = null; }
 let calls = 0;
 let openaiCalls = 0;
+const prepMessage = process.env.FAKE_WIX_PREP_MESSAGE_FILE ? require('fs').readFileSync(process.env.FAKE_WIX_PREP_MESSAGE_FILE, 'utf8') : null;
+let stores = null;
+try { stores = process.env.FAKE_OPENAI_VECTOR_STORES ? JSON.parse(process.env.FAKE_OPENAI_VECTOR_STORES) : null; } catch (_) { stores = null; }
+
+// The vector-store calls of the OpenAI SDK (lib/vectorStore.js). null: not one of them.
+function fakeVectorStores(options, bodyText) {
+    if (!stores) return null;
+    const url = new URL(options.path || '/', 'https://api.openai.com');
+    const method = String(options.method || 'GET').toUpperCase();
+    if (url.pathname === '/v1/vector_stores' && method === 'GET') {
+        const limit = Number(url.searchParams.get('limit')) || 20;
+        const after = url.searchParams.get('after');
+        const list = url.searchParams.get('order') === 'desc' ? [...stores].reverse() : stores;
+        const start = after ? list.findIndex((s) => s.id === after) + 1 : 0;
+        const data = list.slice(start, start + limit).map((s) => ({ object: 'vector_store', ...s }));
+        process.stdout.write(`[fake-openai] vector_stores.list after=${after || '-'} order=${url.searchParams.get('order') || '-'} -> ${data.length}
+`);
+        return { object: 'list', data, first_id: data[0] ? data[0].id : null, last_id: data.length ? data[data.length - 1].id : null, has_more: start + limit < list.length };
+    }
+    if (url.pathname === '/v1/vector_stores' && method === 'POST') {
+        let name = '';
+        try { name = JSON.parse(bodyText || '{}').name || ''; } catch (_) { /* keep '' */ }
+        const s = { id: 'vs_created_' + (stores.length + 1), name };
+        stores.push(s);
+        process.stdout.write(`[fake-openai] vector_stores.create name=${name}
+`);
+        return { object: 'vector_store', ...s };
+    }
+    if (url.pathname === '/v1/responses' && method === 'POST' && bodyText.includes('"file_search"')) {
+        let ids = [];
+        try { ids = JSON.parse(bodyText).tools[0].vector_store_ids || []; } catch (_) { ids = []; }
+        process.stdout.write(`[fake-openai] file_search stores=${ids.join(',')}
+`);
+        return {
+            id: 'resp_fs', object: 'response', status: 'completed', model: 'gpt-4.1-mini',
+            output: [
+                { type: 'file_search_call', id: 'fs_1', status: 'completed', queries: [], results: ids.map((id) => ({ file_id: 'file_' + id, filename: 'from-' + id + '.md', score: 0.9, text: 'chunk from ' + id })) },
+                { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] },
+            ],
+        };
+    }
+    return null;
+}
 
 function respond(req, cb, status, body, headers = { 'content-type': 'application/json' }) {
     const res = new PassThrough();
@@ -45,6 +94,8 @@ https.request = function fakeRequest(options, cb) {
         if (c) chunks.push(Buffer.from(c));
         setImmediate(() => {
             const p = options && (options.path || options.pathname) || '';
+            const vs = fakeVectorStores(options || {}, Buffer.concat(chunks).toString());
+            if (vs) return respond(req, cb, 200, JSON.stringify(vs));
             if (openaiScript && /\/responses$/.test(p) && String(options.method || 'GET').toUpperCase() === 'POST' && Buffer.concat(chunks).toString().includes('"navigator_tags"')) {
                 const text = openaiScript[Math.min(openaiCalls, openaiScript.length - 1)];
                 openaiCalls++;
@@ -72,7 +123,7 @@ https.request = function fakeRequest(options, cb) {
             if (Number(step) === 200) {
                 let sent = {};
                 try { sent = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch (_) { /* keep {} */ }
-                body = JSON.stringify({ message: 'REAL-PREP for ' + (sent.userId || 'guest') + ' from ' + host });
+                body = JSON.stringify({ message: prepMessage !== null ? prepMessage : 'REAL-PREP for ' + (sent.userId || 'guest') + ' from ' + host });
             }
             respond(req, cb, Number(step), body);
         });
