@@ -120,6 +120,15 @@ function passMemberBinding(req, res, endpoint, idn) {
 const wixAuthHeader = () => (process.env.ERICA_WIX_API_SECRET ? { Authorization: 'Bearer ' + process.env.ERICA_WIX_API_SECRET } : {});
 const { createHealthPayload } = require('./lib/health');
 const goLive = require('./lib/goLive');
+// A request body as an object. Empty → {}; JSON that is not an object (null,
+// a number, a string, an array) → {} too, so reading a field from it can never
+// throw. A body of `null` crashed the whole process on several endpoints
+// (production retest, 10 Nov 2026, NEW-1). Invalid JSON still throws, as before.
+function bodyObject(text) {
+    if (!text || !String(text).trim()) return {};
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
 const { resolvePublicPath, publicRelativePath, looksLikeProbe } = require('./lib/staticPath');
 const brandIcons = require('./lib/brandIcons');
 const { liveSessionInput } = require('./lib/liveSessionInput');
@@ -211,6 +220,7 @@ function injectCanonicalBlocksIntoPrep(bodyText) {
     if (typeof bodyText !== 'string' || !bodyText.trim()) return bodyText;
     let parsed;
     try { parsed = JSON.parse(bodyText); } catch (_) { return bodyText; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return bodyText;
 
     const coursesBlock = injectedDataStore.computeSystemPromptBlock('canonical-courses');
     const quizzesBlock = injectedDataStore.computeSystemPromptBlock('canonical-quizzes');
@@ -687,7 +697,21 @@ function getPrepCacheKey(userId, email) {
 // Individual paths (rarely need overriding, but supported)
 const PREP_PATH = process.env.PREP_PATH || '/_functions/ericaPreparation';
 
-const server = http.createServer(async (req, res) => {
+// Every request goes through handleRequest. An error it does not catch
+// itself is answered with a 500 and a red log line, instead of becoming an
+// unhandled rejection that stops the whole process for everyone (production
+// retest, 10 Nov 2026, NEW-1: one POST with the body `null` crashed it).
+const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((err) => {
+        console.error(`[SERVER] 🔴 Request failed (process kept running): ${req.method} ${String(req.url).split('?')[0]}:`, err && err.stack || err);
+        try {
+            if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+            if (!res.writableEnded) res.end(JSON.stringify({ error: 'internal error' }));
+        } catch (_) { /* the socket is gone */ }
+    });
+});
+
+async function handleRequest(req, res) {
     // Avoid spamming logs for static assets; focus on API requests.
     const isApi = typeof req.url === 'string' && req.url.startsWith('/api/');
     if (ERICA_LOG_ALL_REQUESTS || isApi) {
@@ -743,7 +767,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (c) => { body += c.toString(); });
         req.on('end', () => {
             try {
-                const p = body ? JSON.parse(body) : {};
+                const p = bodyObject(body);
                 const sid = p.sessionId;
                 if (!sid) {
                     res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -999,7 +1023,7 @@ const server = http.createServer(async (req, res) => {
         });
         req.on('end', () => {
             try {
-                const p = body ? JSON.parse(body) : {};
+                const p = bodyObject(body);
                 const dataUrl = String(p.dataUrl || '');
                 const m = dataUrl.match(/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,(.+)$/i);
                 if (!m) throw new Error('bad or missing dataUrl');
@@ -1034,7 +1058,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (c) => { body += c.toString(); });
         req.on('end', async () => {
             let p = {};
-            try { p = body ? JSON.parse(body) : {}; } catch (_) { /* defaults */ }
+            try { p = bodyObject(body); } catch (_) { /* defaults */ }
             const originalUserText = String(p.message || '').trim();
             let userMessage = originalUserText;
             const page = typeof p.page === 'string' ? p.page : null;
@@ -1139,7 +1163,7 @@ const server = http.createServer(async (req, res) => {
                     res.end(JSON.stringify({ suggestions: [] }));
                     return;
                 }
-                const p = body ? JSON.parse(body) : {};
+                const p = bodyObject(body);
                 const items = agentHistory.readAll(historyKey(sess), { limit: 4 });
                 const last = items[items.length - 1] || null;
                 const suggestions = await studioAgent.suggestFollowups({
@@ -1396,7 +1420,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (c) => { body += c.toString(); });
         req.on('end', async () => {
             try {
-                const p = body ? JSON.parse(body) : {};
+                const p = bodyObject(body);
                 const userMessage = String(p.message || '').trim();
                 if (!userMessage) {
                     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1436,7 +1460,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (c) => { body += c.toString(); });
         req.on('end', async () => {
             try {
-                const p = body ? JSON.parse(body) : {};
+                const p = bodyObject(body);
                 let userMessage = p.userMessage;
                 let priorTurns = Array.isArray(p.priorTurns) ? p.priorTurns : [];
                 let originalResponse = null;
@@ -1551,7 +1575,7 @@ const server = http.createServer(async (req, res) => {
             try {
                 if (!openAIKey) { try { await fetchOpenAIKey(); } catch (_) {} }
                 if (!openAIKey) { send({ type: 'error', message: 'OpenAI key unavailable' }); return; }
-                const p = body ? JSON.parse(body) : {};
+                const p = bodyObject(body);
                 await simulator.simulateConversation({
                     coach: {
                         name: p.coachName || 'Erica',
@@ -1587,7 +1611,7 @@ const server = http.createServer(async (req, res) => {
             req.on('end', () => {
                 try {
                     if (body && body.trim() !== '') {
-                        const parsed = JSON.parse(body);
+                        const parsed = bodyObject(body);
                         if (!query && parsed.query) query = parsed.query;
                         // Do not accept API keys from the client
                     }
@@ -1725,7 +1749,7 @@ const server = http.createServer(async (req, res) => {
             req.on('end', () => {
                 try {
                     if (body && body.trim() !== '') {
-                        const parsed = JSON.parse(body);
+                        const parsed = bodyObject(body);
                         if (typeof parsed.query === 'string') query = parsed.query;
                         if (typeof parsed.q === 'string') query = parsed.q;
                         if (typeof parsed.type === 'string') type = parsed.type;
@@ -1789,7 +1813,7 @@ const server = http.createServer(async (req, res) => {
             // Basic parsing
             let messages = [];
             try {
-                const parsed = JSON.parse(body);
+                const parsed = bodyObject(body);
                 messages = parsed.messages || [];
             } catch (e) {
                 console.warn('[SERVER] /api/summarize - Failed to parse body:', e);
@@ -1905,7 +1929,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (chunk) => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const requestData = body ? JSON.parse(body) : {};
+                const requestData = bodyObject(body);
                 const query = String(requestData.query || '').trim();
                 const scope = String(requestData.scope || 'all');
                 const idn = signedIdentity.resolve(req, {
@@ -2049,7 +2073,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (chunk) => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const requestData = body ? JSON.parse(body) : {};
+                const requestData = bodyObject(body);
                 const idn = signedIdentity.resolve(req, { userId: requestData.userId, objectId: requestData.objectId },
                     { endpoint: 'user-activity', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
@@ -2146,7 +2170,7 @@ const server = http.createServer(async (req, res) => {
         req.on('end', () => {
             if (tooBig) return;
             let p;
-            try { p = body ? JSON.parse(body) : {}; } catch (_) { return reply(400, { error: 'invalid JSON' }); }
+            try { p = bodyObject(body); } catch (_) { return reply(400, { error: 'invalid JSON' }); }
             const idn = signedIdentity.resolve(req, { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null },
                 { endpoint: 'user-settings', audit: auditLog, body: p });
             if (!idn.ok) return refuseIdentity(res, idn);
@@ -2184,7 +2208,7 @@ const server = http.createServer(async (req, res) => {
         req.on('end', async () => {
             if (tooBig) return;
             let p;
-            try { p = body ? JSON.parse(body) : {}; } catch (_) { return reply(400, { error: 'invalid JSON' }); }
+            try { p = bodyObject(body); } catch (_) { return reply(400, { error: 'invalid JSON' }); }
             const idn = signedIdentity.resolve(req, { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null },
                 { endpoint: 'navigator-infer', audit: auditLog, body: p });
             if (!idn.ok) return refuseIdentity(res, idn);
@@ -2227,7 +2251,7 @@ const server = http.createServer(async (req, res) => {
                 res.end(JSON.stringify(obj));
             };
             let p;
-            try { p = body ? JSON.parse(body) : {}; } catch (_) { return reply(400, { error: 'invalid JSON' }); }
+            try { p = bodyObject(body); } catch (_) { return reply(400, { error: 'invalid JSON' }); }
             const idn = signedIdentity.resolve(req, { userId: typeof p.userId === 'string' ? p.userId : null, objectId: typeof p.objectId === 'string' ? p.objectId : null },
                 { endpoint: 'clipboard', audit: auditLog, body: p });
             if (!idn.ok) return refuseIdentity(res, idn);
@@ -2270,7 +2294,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (chunk) => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const requestData = body ? JSON.parse(body) : {};
+                const requestData = bodyObject(body);
                 const messages = Array.isArray(requestData.messages) ? requestData.messages : [];
                 const persona = String(requestData.persona || '');
                 // Optional live activity context so starter pills reference
@@ -2311,7 +2335,7 @@ const server = http.createServer(async (req, res) => {
         req.on('data', (chunk) => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const requestData = body ? JSON.parse(body) : {};
+                const requestData = bodyObject(body);
                 const query = String(requestData.query || '').trim();
                 const context = String(requestData.context || '');
 
@@ -2410,7 +2434,7 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
 
-                const requestData = JSON.parse(body);
+                const requestData = bodyObject(body);
                 console.log('[SERVER] /api/erica-preparation - Parsed data:', requestData);
 
                 // Who this is (#28): from the Wix-signed token when there is one;
@@ -2700,7 +2724,7 @@ const server = http.createServer(async (req, res) => {
 
         req.on('end', () => {
             try {
-                const requestData = JSON.parse(body);
+                const requestData = bodyObject(body);
                 const idn = signedIdentity.resolve(req, { userId: requestData.userId }, { endpoint: 'conversation-history-save', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
                 if (signedIdentity.status().required && idn.source !== 'signed') return refuseIdentity(res, { reason: 'signed identity required' });
@@ -2820,7 +2844,7 @@ const server = http.createServer(async (req, res) => {
                 if (ERICA_DEBUG_HISTORY) {
                     logAt('debug', '[SERVER] /api/conversation-history-fetch - Body received:', safePreview(body, 400));
                 }
-                const requestData = JSON.parse(body);
+                const requestData = bodyObject(body);
                 const idn = signedIdentity.resolve(req, { userId: requestData.userId }, { endpoint: 'conversation-history-fetch', audit: auditLog, body: requestData });
                 if (!idn.ok) return refuseIdentity(res, idn);
                 if (signedIdentity.status().required && idn.source !== 'signed') return refuseIdentity(res, { reason: 'signed identity required' });
@@ -2961,7 +2985,7 @@ const server = http.createServer(async (req, res) => {
 
         req.on('end', () => {
             try {
-                const payload = JSON.parse(body || '{}');
+                const payload = bodyObject(body);
                 const text = typeof payload.text === 'string' ? payload.text.trim() : '';
                 const voice = typeof payload.voice === 'string' ? payload.voice.trim() : '';
                 const instructions = typeof payload.instructions === 'string' ? payload.instructions.trim() : '';
@@ -3119,7 +3143,7 @@ const server = http.createServer(async (req, res) => {
 
         req.on('end', () => {
             try {
-                const payload = JSON.parse(body || '{}');
+                const payload = bodyObject(body);
                 const text = typeof payload.text === 'string' ? payload.text : '';
                 logAt('info', '[SERVER] /api/message-qc - Payload', {
                     hasText: typeof payload.text === 'string',
@@ -3362,7 +3386,7 @@ const server = http.createServer(async (req, res) => {
             let input = [];
             if (String(req.headers['content-type'] || '').toLowerCase().includes('application/json')) {
                 try {
-                    const parsed = JSON.parse(body);
+                    const parsed = bodyObject(body);
                     sdp = String(parsed.sdp || '');
                     input = liveSessionInput(parsed.input);
                 } catch (_) {
@@ -3574,7 +3598,7 @@ const server = http.createServer(async (req, res) => {
             res.end(body);
         });
     });
-});
+}
 
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}/`);
