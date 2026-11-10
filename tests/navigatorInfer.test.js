@@ -151,7 +151,7 @@ function method(sig) {
 function fakeApp(answers) {
     const events = []; const refreshes = []; const sent = []; const calls = [];
     const strengths = JSON.parse(fs.readFileSync(path.join(root, 'voiceProfiles.json'), 'utf8')).find((p) => p.companionId === 'Strengths').configuration;
-    global.window = { coachUiRules: { splitForLiveAppend: (t) => [t] } };
+    global.window = { coachUiRules: { splitForLiveAppend: (t) => [t], crisisSignal: require('../lib/coachUiRules').crisisSignal } };
     global.fetch = async (url, init) => { calls.push(JSON.parse(init.body)); const a = answers.shift(); return { ok: true, json: async () => a }; };
     const app = {
         _NAV_FIRST_TURN: 2, _NAV_MAX_CALLS: 3, sessionId: 's-vClient', voiceApiMode: 'live', isConnected: true,
@@ -165,6 +165,7 @@ function fakeApp(answers) {
     };
     app._navNoteTurn = method('_navNoteTurn(role, text, turnIndexHint)').bind(app);
     app._navInfer = method('_navInfer(st)').bind(app);
+    app._noteCrisis = method('_noteCrisis(text, turnIndex)').bind(app);
     app._applyInferredStyle = method("_applyInferredStyle(styleId, { turnIndex = null, ready = false, reason = 'navigator' } = {})").bind(app);
     app.getEffectiveVoiceProfile = method('getEffectiveVoiceProfile()').bind(app);
     return { app, events, refreshes, sent, calls };
