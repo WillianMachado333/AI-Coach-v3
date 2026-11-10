@@ -120,7 +120,8 @@ function passMemberBinding(req, res, endpoint, idn) {
 const wixAuthHeader = () => (process.env.ERICA_WIX_API_SECRET ? { Authorization: 'Bearer ' + process.env.ERICA_WIX_API_SECRET } : {});
 const { createHealthPayload } = require('./lib/health');
 const goLive = require('./lib/goLive');
-const { guardRequest } = require('./lib/requestGuard');
+const { guardRequest, failRequest } = require('./lib/requestGuard');
+const failureStats = require('./lib/failureStats');
 // A request body as an object. Empty → {}; JSON that is not an object (null,
 // a number, a string, an array) → {} too, so reading a field from it can never
 // throw. A body of `null` crashed the whole process on several endpoints
@@ -702,26 +703,21 @@ const PREP_PATH = process.env.PREP_PATH || '/_functions/ericaPreparation';
 // itself is answered with a 500 and a red log line, instead of becoming an
 // unhandled rejection that stops the whole process for everyone (production
 // retest, 10 Nov 2026, NEW-1: one POST with the body `null` crashed it).
-function failRequest(req, res, err) {
-    console.error(`[SERVER] 🔴 Request failed (process kept running): ${req.method} ${String(req.url).split('?')[0]}:`, err && err.stack || err);
-    try {
-        if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-        if (!res.writableEnded) res.end(JSON.stringify({ error: 'internal error' }));
-    } catch (_) { /* the socket is gone */ }
-}
-
+// The body listeners (req.on('data'/'end')) run outside that promise, so
+// guardRequest sends their errors to the same failRequest. Every failure is
+// counted, and /api/health says "degraded" for a while after one
+// (lib/requestGuard.js, lib/failureStats.js).
 const server = http.createServer((req, res) => {
-    // The body listeners (req.on('data'/'end')) run outside the promise
-    // below, so guardRequest sends their errors to the same 500 + red log.
-    guardRequest(req, (err) => failRequest(req, res, err));
+    guardRequest(req, res);
     handleRequest(req, res).catch((err) => failRequest(req, res, err));
 });
 
 // Last line of defence for a promise nobody awaited (an upstream call, a
-// timer): logged in red, never swallowed silently, and the process keeps
-// serving everyone else.
+// timer): logged in red and counted (health turns "degraded"), never
+// swallowed silently, and the process keeps serving everyone else.
 process.on('unhandledRejection', (reason) => {
-    console.error('[SERVER] 🔴 Unhandled promise rejection (process kept running):', reason && reason.stack || reason);
+    failureStats.note('unhandledRejection');
+    console.error('[SERVER] 🔴 Unhandled promise rejection (process kept running; /api/health degraded):', reason && reason.stack || reason);
 });
 
 async function handleRequest(req, res) {
@@ -2401,7 +2397,7 @@ async function handleRequest(req, res) {
             return;
         }
 
-        const payload = JSON.stringify({ ...createHealthPayload(), goLive: goLive.isOn() });
+        const payload = JSON.stringify({ ...createHealthPayload({ failures: failureStats.snapshot() }), goLive: goLive.isOn() });
         res.writeHead(200, {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',

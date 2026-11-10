@@ -77,7 +77,11 @@ test('HTTP: null, a number, an array, a string or {} as the body never stops the
         for (const r of ['/api/user-settings', '/api/clipboard/block', '/api/clipboard/distill', '/api/navigator/infer']) {
             assert.ok(!fiveHundreds.some((x) => x.startsWith(r + ' null')), `${r} answers null without a 500`);
         }
-        assert.doesNotMatch(server.out(), /Request failed \(process kept running\)/, 'no handler needed the safety net for these bodies');
+        assert.doesNotMatch(server.out(), /🔴 (Request failed|Error after the response|Unhandled promise rejection)/, 'no handler needed the safety net for these bodies');
+        const health = await new Promise((resolve) => http.get({ host: '127.0.0.1', port, path: '/api/health' }, (res) => {
+            let t = ''; res.on('data', (c) => { t += c; }); res.on('end', () => resolve(JSON.parse(t)));
+        }));
+        assert.equal(health.status, 'ok', 'bad bodies are clean refusals, not failures');
     } finally {
         server.child.kill();
     }
@@ -85,7 +89,8 @@ test('HTTP: null, a number, an array, a string or {} as the body never stops the
 
 test('the safety net: an error a handler does not catch is a 500 with a red log line, not a dead process', () => {
     assert.match(serverSrc, /handleRequest\(req, res\)\.catch\(\(err\) => failRequest\(req, res, err\)\);/);
-    assert.match(serverSrc, /function failRequest\(req, res, err\) \{[\s\S]{0,200}?🔴 Request failed \(process kept running\)/);
+    assert.match(serverSrc, /const \{ guardRequest, failRequest \} = require\('\.\/lib\/requestGuard'\);/);
+    assert.match(serverSrc, /guardRequest\(req, res\);\s*handleRequest\(req, res\)/, 'the body listeners are guarded too (lib/requestGuard.js)');
     assert.match(serverSrc, /function bodyObject\(text\) \{/);
     assert.doesNotMatch(serverSrc, /JSON\.parse\(body\)/, 'every request body goes through bodyObject');
 });
