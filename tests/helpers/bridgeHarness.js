@@ -9,7 +9,10 @@
 //   session,        // initial sessionStorage entries
 //   elements,       // ids of host-page elements that exist (e.g. 'askEricaMain')
 //   localSeed,      // extra localStorage entries
+//   reducedMotion,  // prefers-reduced-motion: reduce
+//   saveData,       // navigator.connection.saveData
 // })
+// The page's own `load` event never fires by itself: call pageLoaded().
 const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -40,6 +43,8 @@ function runBridge(opts = {}) {
         session = {},
         localSeed = {},
         elements = [],
+        reducedMotion = false,
+        saveData = false,
     } = opts;
     const doc = createDocument();
     doc.currentScript = currentScript ? { src: currentScript } : null;
@@ -58,8 +63,8 @@ function runBridge(opts = {}) {
     const win = {
         document: doc, localStorage: local, sessionStorage, URL,
         console: { log: (...a) => logs.push(a.join(' ')), warn: (...a) => logs.push(a.join(' ')), error() {} },
-        location, navigator: { userAgent: 'node' }, innerWidth: 1280, innerHeight: 800,
-        matchMedia: () => ({ matches: false, addEventListener() {} }),
+        location, navigator: { userAgent: 'node', ...(saveData ? { connection: { saveData: true } } : {}) }, innerWidth: 1280, innerHeight: 800,
+        matchMedia: (q) => ({ matches: reducedMotion && /prefers-reduced-motion:\s*reduce/.test(q), addEventListener() {} }),
         addEventListener: (type, fn) => { (winListeners[type] = winListeners[type] || []).push(fn); },
         removeEventListener() {},
         setTimeout: (fn, ms = 0) => { timers.push({ fn, at: now + ms }); return timers.length; },
@@ -91,7 +96,9 @@ function runBridge(opts = {}) {
     const postToBridge = (data, origin = 'https://web-staging-2c7ff.up.railway.app') =>
         (winListeners.message || []).forEach((fn) => fn({ data, origin, source: { postMessage() {} } }));
     const videos = () => ['ct-bridge-icon-video-idle', 'ct-bridge-icon-video-speaking', 'ct-bridge-icon-video-waving'].map(byId).filter(Boolean);
-    return { advance, iframe, icon, byId, doc, win, logs, setEntry, fire, wake, postToBridge, videos, local: local.store, session: sessionStorage.store };
+    // The host page finished loading (window `load`).
+    const pageLoaded = () => (winListeners.load || []).forEach((fn) => fn({ type: 'load' }));
+    return { advance, iframe, icon, byId, doc, win, logs, setEntry, fire, wake, postToBridge, videos, pageLoaded, local: local.store, session: sessionStorage.store };
 }
 
 module.exports = { runBridge, BRIDGE_PATH };

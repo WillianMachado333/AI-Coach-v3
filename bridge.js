@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-04-login-by-text';
+    var VERSION = '2026-11-10-launch-look';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -150,9 +150,12 @@
         console.log('[CTBridge] Preview gate closed (no ?erica=preview, no /playground, not awav.com, not live) — skipping injection.');
         return;
     }
-    if (LIVE_HERE) {
+    // V3 shows on talenttransformation.com, live or in preview: V2's "Ask
+    // Erica" hides either way, so whoever tests with ?erica=preview sees
+    // exactly what visitors will see at launch (Willian, 10 Nov 2026).
+    if (isTalentTransformation()) {
         hideV2AskErica();
-        console.log('[CTBridge] Live on this site (ERICA_GO_LIVE): V3 shown, V2 Ask Erica hidden.');
+        console.log('[CTBridge] ' + (LIVE_HERE ? 'Live on this site (ERICA_GO_LIVE)' : 'Preview') + ': V3 shown, V2 Ask Erica hidden.');
     }
     // Base coach URL. When the HOST page is running under the Coach Studio
     // simulator (?simulator=1), forward that flag to the coach iframe so it
@@ -724,18 +727,22 @@
     }
 
     // Colour the ring around the corner icon to reflect connection state.
-    // green = ready, amber = connecting, red = disconnected, blue = onhold.
+    // green = available, amber = connecting, red = disconnected, grey = onhold.
+    // "Available" is green whether or not the coach is loaded yet: at rest
+    // (it loads on the first hover) and in GPT-Live's standby (a session opens
+    // on the first message) the coach answers as soon as asked. The grey it
+    // used to show there read as "offline" (Willian, 10 Nov 2026).
+    var RING_AVAILABLE = '#22c55e';
     function setConnectionState(s) {
         var icon = document.getElementById(ICON_ID);
         if (!icon) return;
         var colour;
         switch (s) {
-            case 'connected': colour = '#22c55e'; break;
+            case 'connected': colour = RING_AVAILABLE; break;
             case 'connecting': colour = '#f59e0b'; break;
             case 'disconnected': colour = '#ef4444'; break;
             case 'onhold': colour = '#6b7280'; break;
-            // GPT-Live before its first session: ready, not connected on purpose.
-            case 'standby': colour = '#94a3b8'; break;
+            case 'standby': colour = RING_AVAILABLE; break;
             default: colour = '#f59e0b';
         }
         mergeStyle(icon, {
@@ -1004,19 +1011,48 @@
         });
         return v;
     }
-    function ensureIconVideos() {
+    // The idle clip alone: the coach breathing in the corner. It is what makes
+    // the icon look available at rest (Willian, 10 Nov 2026: with the still
+    // image only, "it looked disconnected until I clicked").
+    function ensureIdleVideo() {
         var icon = document.getElementById(ICON_ID);
         if (!icon || document.getElementById(IDLE_VIDEO_ID)) return;
-        var assets = personaAssets(iconPersona, iconThumb);
-        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, assets.idle,
+        var idleVideo = makeVideoLayer(IDLE_VIDEO_ID, personaAssets(iconPersona, iconThumb).idle,
             { autoplay: true, loop: true, z: 10, opacity: 1 });
         icon.appendChild(idleVideo);
+        // Kick off idle playback (some browsers require an explicit call).
+        try { idleVideo.play().catch(function () {}); } catch (_) {}
+    }
+    function ensureIconVideos() {
+        var icon = document.getElementById(ICON_ID);
+        if (!icon) return;
+        ensureIdleVideo();
+        if (document.getElementById(SPEAKING_VIDEO_ID)) return;
+        var assets = personaAssets(iconPersona, iconThumb);
         icon.appendChild(makeVideoLayer(SPEAKING_VIDEO_ID, assets.speaking,
             { autoplay: true, loop: true, z: 20, opacity: 0, display: 'none' }));
         icon.appendChild(makeVideoLayer(WAVING_VIDEO_ID, assets.waving,
             { autoplay: false, loop: false, z: 30, opacity: 1, display: 'none' }));
-        // Kick off idle playback (some browsers require an explicit call).
-        try { idleVideo.play().catch(function () {}); } catch (_) {}
+    }
+    // At rest the idle clip still waits for the page: it starts once the site
+    // has finished loading and the browser is idle, so it never competes with
+    // the page's own requests (the site is under a Wix performance alert).
+    // Skipped for people who ask for less motion or less data: the still image
+    // and the available ring stay.
+    function wantsLessMotionOrData() {
+        try {
+            if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
+            var conn = window.navigator && window.navigator.connection;
+            return !!(conn && conn.saveData);
+        } catch (_) { return false; }
+    }
+    function afterPageSettles(fn) {
+        var run = function () {
+            if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(fn, { timeout: 4000 });
+            else setTimeout(fn, 1500);
+        };
+        if (document.readyState === 'complete') run();
+        else window.addEventListener('load', run);
     }
     // The first sign of interest loads everything the open chat needs.
     function wakeCoach() {
@@ -1060,11 +1096,13 @@
         document.body.appendChild(container);
 
         // Icon: always visible, click TOGGLES expand/collapse. At rest it is
-        // the persona's still; the clips arrive with the coach.
+        // the persona's still with the available ring, then its idle clip once
+        // the page has settled; the other clips arrive with the coach.
         var icon = document.createElement('button');
         icon.id = ICON_ID;
         icon.type = 'button';
-        icon.setAttribute('aria-label', 'Toggle coach chat');
+        icon.setAttribute('aria-label', 'Open your AI coach');
+        icon.setAttribute('title', 'Your AI coach is available');
         applyStyle(icon, {
             position: 'fixed',
             right: '20px',
@@ -1078,9 +1116,8 @@
             padding: '0',
             cursor: 'pointer',
             background: '#e5e7eb center/cover no-repeat url("' + personaAssets(iconPersona, iconThumb).still + '")',
-            // Inner ring encodes connection state; at rest the coach is not
-            // loaded on purpose: the standby grey, not "connecting".
-            'box-shadow': '0 0 0 3px #94a3b8, 0 6px 18px rgba(0,0,0,0.18)',
+            // Inner ring encodes connection state; at rest: available.
+            'box-shadow': '0 0 0 3px ' + RING_AVAILABLE + ', 0 6px 18px rgba(0,0,0,0.18)',
             overflow: 'hidden',
             transition: 'opacity 200ms ease, transform 200ms ease, box-shadow 300ms ease',
             opacity: '1',
@@ -1109,6 +1146,7 @@
             hoverHideTimer = setTimeout(hideHoverPills, 220);
         });
         document.body.appendChild(icon);
+        if (!wantsLessMotionOrData()) afterPageSettles(ensureIdleVideo);
 
         console.log('[CTBridge] UI injected (corner-icon-first). The coach loads on the first hover, touch or click:', IFRAME_SRC);
     }
