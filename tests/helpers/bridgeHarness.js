@@ -92,9 +92,10 @@ function runBridge(opts = {}) {
     const fire = (el, type) => (el.listeners[type] || []).forEach((fn) => fn({ type, target: el, preventDefault() {}, stopPropagation() {} }));
     // The first sign of interest in the icon (hover).
     const wake = () => fire(icon(), 'mouseenter');
-    // A postMessage reaching the bridge (from the coach iframe).
-    const postToBridge = (data, origin = 'https://web-staging-2c7ff.up.railway.app') =>
-        (winListeners.message || []).forEach((fn) => fn({ data, origin, source: { postMessage() {} } }));
+    // A postMessage reaching the bridge (from the coach iframe). `replies`
+    // collects what the bridge posts back to that source.
+    const postToBridge = (data, origin = 'https://web-staging-2c7ff.up.railway.app', replies = []) =>
+        (winListeners.message || []).forEach((fn) => fn({ data, origin, source: { postMessage: (m) => replies.push(m) } }));
     const videos = () => ['ct-bridge-icon-video-idle', 'ct-bridge-icon-video-speaking', 'ct-bridge-icon-video-waving'].map(byId).filter(Boolean);
     // The host page finished loading (window `load`).
     const pageLoaded = () => (winListeners.load || []).forEach((fn) => fn({ type: 'load' }));
