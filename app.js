@@ -7170,6 +7170,18 @@ class VoiceChatBot {
         return rule || '';
     }
 
+    // The preparation as this coach should read it (lib/coachUiRules.js
+    // adaptPreparation): on the website, the app paragraph becomes web
+    // guidance; everywhere, "gently end the session" becomes "stay".
+    _adaptPreparation(text) {
+        const adapt = window.coachUiRules && window.coachUiRules.adaptPreparation;
+        if (!adapt) {
+            console.error('[Erica] adaptPreparation missing — the preparation goes out as Wix wrote it (app paragraph, end-the-session line)');
+            return text;
+        }
+        return adapt(text, { inApp: this._inNativeApp() });
+    }
+
     _buildComposedInstructions() {
         // Build instructions using SANDWICH approach:
         //   [1] Persona identity block (primacy — "who am I")
@@ -7182,9 +7194,11 @@ class VoiceChatBot {
         const fallbackPreamble =
             'You are a helpful AI assistant. Respond naturally and conversationally. When users ask about current events, information, or need to search the web, use the search_web function to get up-to-date information.';
 
+        // The Wix preparation is written for the app (and tells the coach to
+        // end the session in a crisis): adaptPreparation fixes both for here.
         const prepPreamble =
             typeof this.customInstructions === 'string' && this.customInstructions.trim().length > 0
-                ? this.customInstructions.trim()
+                ? this._adaptPreparation(this.customInstructions.trim())
                 : null;
 
         let globalBlock = prepPreamble || fallbackPreamble;
