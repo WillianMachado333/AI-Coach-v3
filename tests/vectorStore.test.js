@@ -107,20 +107,66 @@ test('a read miss creates nothing: searchKnowledge for a random userId or object
     assert.deepEqual(g.calls.responses[0].tools[0].vector_store_ids, ['vs_g']);
 });
 
-test('negative cache: an unknown name does not re-list within NEGATIVE_TTL_MS; after it, it lists again', async () => {
+test('negative cache: an unknown name does not re-list within ACCOUNT_LIST_TTL_MS; after it, it lists again', async () => {
     const { calls, now } = setup(account(250));
-    assert.equal(await vs.getUserVectorStoreId('ghost'), null);
-    assert.equal(calls.list.length, 3, 'one full listing to say "not found"');
+    // Concurrent misses on a cold cache share one listing.
+    await Promise.all([vs.getUserVectorStoreId('ghost'), vs.getUserVectorStoreId('ghost'), vs.getUserVectorStoreId('ghost')]);
+    assert.equal(calls.list.length, 3, 'three concurrent reads, one full listing (3 pages) to say "not found"');
     for (let i = 0; i < 5; i++) assert.equal(await vs.getUserVectorStoreId('ghost'), null);
     assert.equal(calls.list.length, 3, 'remembered: no listing per request');
-    // Concurrent misses share one listing.
-    const before = calls.list.length;
-    await Promise.all([vs.getUserVectorStoreId('ghost-2'), vs.getUserVectorStoreId('ghost-2'), vs.getUserVectorStoreId('ghost-2')]);
-    assert.equal(calls.list.length, before + 3, 'three concurrent reads, one listing (3 pages)');
-    now.advance(vs.NEGATIVE_TTL_MS + 1);
+    now.advance(vs.ACCOUNT_LIST_TTL_MS + 1);
     assert.equal(await vs.getUserVectorStoreId('ghost'), null);
-    assert.equal(calls.list.length, before + 6, 'expired: listed again');
+    assert.equal(calls.list.length, 6, 'expired: listed again');
     assert.deepEqual(calls.create, []);
+});
+
+// NEW-2 (QA retest, 10 Nov 2026): the miss was remembered per name, so every
+// guest or member without a store paid a whole listing (3.6 to 4.1 s on the
+// real account) on their first user_data/all search.
+test('NEW-2: after one complete listing, a DIFFERENT unknown name costs no listing either', async () => {
+    const { calls, now } = setup(account(950));
+    assert.equal(await vs.getUserVectorStoreId('guest-ct-first'), null);
+    assert.equal(calls.list.length, 10, 'the first miss lists the whole account once');
+    for (const id of ['guest-ct-2', 'guest-ct-3', 'member-no-store', 'random-id']) {
+        assert.equal(await vs.getUserVectorStoreId(id), null, id);
+    }
+    assert.equal(calls.list.length, 10, 'four other people without a store: zero more pages');
+    // Searches for them do not list the account either.
+    await vs.searchKnowledge({ query: 'my notes', scope: 'user_data', userId: 'guest-ct-5' });
+    await vs.searchKnowledge({ query: 'my notes', scope: 'all', objectId: 'member-without-store' });
+    assert.equal(calls.list.length, 10, 'searchKnowledge (user_data, all) answers from memory');
+    // People who have a store are still found (cached on the way).
+    assert.equal(await vs.getUserVectorStoreId('member-900'), 'vs_900');
+    assert.equal(calls.list.length, 10);
+    now.advance(vs.ACCOUNT_LIST_TTL_MS - 1000);
+    assert.equal(await vs.getUserVectorStoreId('guest-ct-6'), null);
+    assert.equal(calls.list.length, 10, 'still inside the window');
+    assert.deepEqual(calls.create, []);
+});
+
+test('NEW-2: a listing that stopped early (the name was found) does not vouch for other names', async () => {
+    const { calls } = setup(account(250));
+    assert.equal(await vs.getUserVectorStoreId('member-5'), 'vs_5');
+    assert.equal(calls.list.length, 1, 'found on page 1, stopped there');
+    assert.equal(await vs.getUserVectorStoreId('member-240'), 'vs_240', 'a store on page 3 is still found');
+    assert.equal(calls.list.length, 4);
+    assert.equal(await vs.getUserVectorStoreId('ghost'), null);
+    assert.equal(calls.list.length, 7, 'a miss still needs one complete listing');
+});
+
+test('NEW-2: inside the window a store made elsewhere is invisible to reads, but a write finds it (no duplicate)', async () => {
+    const stores = account(150);
+    const { calls } = setup(stores);
+    assert.equal(await vs.getUserVectorStoreId('ghost'), null);
+    // Another process (or the V2 server) creates a store for this person.
+    stores.push({ id: 'vs_elsewhere', name: 'user-member-late' });
+    assert.equal(await vs.getUserVectorStoreId('member-late'), null, 'reads trust the window (at most ACCOUNT_LIST_TTL_MS stale)');
+    const listed = calls.list.length;
+    const r = await vs.syncUserReport('member-late', '# Report');
+    assert.equal(r.storeId, 'vs_elsewhere', 'the write path lists again and reuses it');
+    assert.equal(calls.list.length, listed + 2, 'one fresh listing (2 pages)');
+    assert.deepEqual(calls.create, []);
+    assert.equal(await vs.getUserVectorStoreId('member-late'), 'vs_elsewhere', 'and reads find it from then on');
 });
 
 test('the write path still creates: syncUserReport makes the store on the first write, once, and a read then finds it', async () => {
