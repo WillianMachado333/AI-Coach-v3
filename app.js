@@ -2622,6 +2622,52 @@ class VoiceChatBot {
             onLog: (entry) => this.logIframeMessage(entry)
         });
         this.iframeMessaging.start();
+        // After iframeMessaging has stored it (window.__ttCleverTapId).
+        window.addEventListener('message', (event) => {
+            if (event.data && event.data.type === 'CLEVERTAP_ID_RESPONSE') setTimeout(() => this._bindLateCleverTapId(), 0);
+        });
+    }
+
+    // A guest's CleverTap id can arrive after the preparation went out
+    // without it (the host answers once its SDK has loaded). Since #74 the
+    // server opens a guest's own data (settings, activity, notes, own search)
+    // only for an objectId bound at preparation, so without this the whole
+    // visit gets 403s. One quiet preparation call binds it; then what was
+    // refused is fetched again. Members are bound by their userId.
+    _bindLateCleverTapId() {
+        const objectId = window.__ttCleverTapId ? String(window.__ttCleverTapId) : null;
+        if (!objectId || (this.getUserIdFromURL && this.getUserIdFromURL())) return;
+        if (!this._prepAsked || this._prepBoundObjectId === objectId) return; // the next preparation carries it
+        this._prepBoundObjectId = objectId;
+        fetch(this.apiUrl('/api/erica-preparation'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                caller: new URLSearchParams(window.location.search).get('caller') || 'app',
+                objectId,
+                ...(this.sessionId && /^s-v/.test(this.sessionId) ? { sessionId: this.sessionId } : {}),
+                context: { hostPage: this._hostPage() }
+            })
+        })
+            .then((r) => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                console.log('[Erica] 🔗 Guest id bound after the preparation (CleverTap id arrived late)');
+                // Settings: only reads and saves from now on; the card is not re-applied mid-visit.
+                if (!this._coachSettings || this._coachSettings.scope === 'none') {
+                    this._coachSettingsLoad = null;
+                    this._loadCoachSettings().then((s) => { if (s && s.scope !== 'none' && (!this._coachSettings || this._coachSettings.scope === 'none')) this._coachSettings = s; });
+                }
+                // Notes refused with 403 on this connection: fetch them again.
+                if (this._clipboardRefused) {
+                    this._clipboardRefused = false;
+                    this._clipboardInjectedFor = null;
+                    this._injectClipboardIntoSession();
+                }
+            })
+            .catch((e) => {
+                this._prepBoundObjectId = null;
+                console.warn('[Erica] 🔗 Guest id NOT bound after the preparation — settings, notes and activity stay refused this visit:', e?.message || e);
+            });
     }
 
     async _requestPageContextFromBridge(timeoutMs = 2500) {
@@ -5810,6 +5856,9 @@ class VoiceChatBot {
                 // Single-flight: share the same network call across concurrent attempts
                 if (!this._prepFetchInFlight) {
                     this._prepFetchInFlight = (async () => {
+                        // What this preparation binds for a guest (#74): see _bindLateCleverTapId.
+                        this._prepAsked = true;
+                        this._prepBoundObjectId = window.__ttCleverTapId ? String(window.__ttCleverTapId) : null;
                         const response = await this.fetchWithBackoff(
                             this.apiUrl('/api/erica-preparation'),
                             {
@@ -9111,6 +9160,14 @@ class VoiceChatBot {
                 if (!ok) this._clipboardInjectedFor = null;
             })
             .catch((err) => {
+                // 403: this identity is not bound to this address (#74). Final
+                // for this connection, not retried on every page event; a late
+                // guest binding (_bindLateCleverTapId) asks again.
+                if (/HTTP 403/.test(String(err?.message))) {
+                    this._clipboardRefused = true;
+                    console.warn('[Erica] 📋 Clipboard refused (403: identity not bound to this address) — no notes this session');
+                    return;
+                }
                 console.warn('[Erica] 📋 Clipboard fetch FAILED — Erica starts this session without her notes:', err?.message || err);
                 if (this.pc === pc) this._clipboardInjectedFor = null;
             });
