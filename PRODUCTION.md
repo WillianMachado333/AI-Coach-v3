@@ -1,6 +1,13 @@
 # AI Coach V3: production runbook
 
-Staging is the Railway service `web` (project `869d4706…`, environment `staging`). It deploys every merge to `main`, at `https://web-staging-2c7ff.up.railway.app`. Production is a separate Railway service, and **it must never deploy from `main`**.
+| | Staging | Production (live since 10 Nov 2026, 08:36 UTC) |
+|---|---|---|
+| Railway | project `869d4706…`, environment `staging`, service `web` | project `ai-coach-v3`, environment `production`, service **`coach`** |
+| Deploys from | `main`, on every merge | `release`, on push (first release: `143ae7d`) |
+| Address | `https://web-staging-2c7ff.up.railway.app` | **`https://aicoaches.talenttransformation.com`** (domain on port 8080, `PORT=8080`); also `web-production-2c7ff.up.railway.app` |
+| `ERICA_GO_LIVE` | off | off (V3 behind `?erica=preview`) |
+
+Production **must never deploy from `main`**.
 
 ## 1. Release path
 
@@ -18,10 +25,10 @@ git push origin <verified-sha>:release
 
 The push must be a fast-forward. If git refuses it, `release` has commits that `main` lacks: stop and find out why. Never force-push `release`.
 
-**Set up once, when the production service is created:**
-- Railway → production service → Settings → Source: branch `release`, auto-deploy on.
+**Set up once (production service `coach`):**
+- Railway → `coach` → Settings → Source: branch `release`, auto-deploy on. Done on 10 Nov 2026.
 - GitHub → Settings → Branches → protect `release`: no force pushes, no deletion.
-- The staging service stays on `main`.
+- The staging service `web` stays on `main`.
 
 ## 2. Environment variables
 
@@ -48,14 +55,15 @@ Copy every variable from staging, then change or create the ones below. Names on
 | Variable | Production value | Why |
 |---|---|---|
 | `NODE_ENV` | `production` | Studio cookies get the `Secure` flag. |
-| `PUBLIC_ORIGIN` | `https://<production domain>` | Builds the Studio OAuth callback (`/auth/callback`) and the MCP origin. No trailing slash. |
+| `PUBLIC_ORIGIN` | `https://aicoaches.talenttransformation.com` | Builds the Studio OAuth callback (`/auth/callback`) and the MCP origin. No trailing slash. |
+| `PORT` | `8080` | The custom domain points at port 8080. |
 | `ERICA_GO_LIVE` | `off` on the first deploy, `on` to launch | Shows V3 on talenttransformation.com and hides V2's "Ask Erica". Off = preview only. The rollback switch. |
 | `ERICA_API_HOST` | unset (defaults to `talenttransformation.com`) | Wix site for guests. A signed-in person is looked up on the Wix site of the page they are on (#61). |
 | `ERICA_REQUIRE_SIGNED_IDENTITY` | `off` until Wix mints tokens | Turning it on early refuses every member. |
 | `ERICA_RATE_LIMIT_MAX` | unset (30 per minute per IP) | Preparation and history (#64). Raise it if many people share one IP (schools, offices). |
 | `ERICA_HISTORY_BINDING_TTL_MS` | unset (30 min, sliding) | An unsigned history may be read or saved only from the IP that prepared it (#64). |
 | `ERICA_DAILY_SPEND_ALERT_USD` | set | Daily spend alert. |
-| `STORE_MESSAGE_TEXT` | **Willian decides** | Keeps conversation text on disk. A personal-data decision: never set it by copying from staging. |
+| `STORE_MESSAGE_TEXT` | **not set** (decided: conversation text is redacted in production) | Keeps conversation text on disk. A personal-data decision: never set it by copying from staging. |
 | `DEPLOY_TRIGGER` | not needed | A staging trick for manual redeploys. |
 
 ### Unchanged from staging (copy as is)
@@ -69,6 +77,8 @@ Studio: `ERICA_STUDIO_OWNERS`.
 ## 3. Persistent data (`/data` volume)
 
 Production needs a Railway volume mounted at `/data`. Every data path defaults under it. Copy the Studio's curated content from the staging volume, and **leave out everything that belongs to testers**.
+
+**Done on 10 Nov 2026.** Only four curated files existed on staging, and all four were copied: `canonical-courses`, `canonical-quizzes`, `safety-rules` (empty, `[]`) and `studio-access.json`. Nothing from the "no" rows was copied.
 
 | Path on staging | Copy? | What it is |
 |---|---|---|
@@ -87,9 +97,8 @@ Production needs a Railway volume mounted at `/data`. Every data path defaults u
 
 ## 4. Wix
 
-- **Studio sign-in:** in the Wix Headless OAuth app, add `https://<production domain>/auth/callback` to the allowed redirect URIs. It must match `PUBLIC_ORIGIN` exactly, or sign-in fails after the password with no message.
-- **Bridge tag:** site-wide Custom Code on talenttransformation.com: `<script src="https://<production domain>/bridge.js" async></script>`. The bridge opens the coach served by the same host (#62), so the tag alone chooses production.
-  ⚠️ As of 5 Nov 2026 the live site already carries a tag for `https://web-production-2c7ff.up.railway.app/bridge.js`, and that host answers 404 "Application not found". Until that host is claimed by our production service, or the tag is removed, a live script tag points at a hostname anyone could claim.
+- **Studio sign-in:** in the Wix Headless OAuth app, add `https://aicoaches.talenttransformation.com/auth/callback` to the allowed redirect URIs. It must match `PUBLIC_ORIGIN` exactly, or sign-in fails after the password with no message. ⏳ **Still pending** (10 Nov 2026): until it is added, the production Studio (`/admin`) cannot sign in.
+- **Bridge tag:** site-wide Custom Code on talenttransformation.com loads `https://web-production-2c7ff.up.railway.app/bridge.js`. Since 10 Nov 2026 that host is the production service `coach`, so the tag that was dangling (404) is now ours. The bridge opens the coach served by the same host (#62). If the tag is ever moved to `https://aicoaches.talenttransformation.com/bridge.js`, nothing else changes. Keep the `web-production-2c7ff` domain on `coach` while any tag still points at it.
 - **The My Talents app** opens pages with `?minimal=yes`, so V3 never shows there and the app stays on V2.
 - **Sign-up and upgrade from the coach:** the coach's "Yes, I Want Personalized Guidance" and "Yep, upgrade me" press the site's own buttons, found by what they say: "Login" / "Log In" (then "Sign Up") and "Upgrade Membership" (#67, #68). Without an upgrade button the bridge opens `/plans-pricing`. If the Wix header is renamed or changes language, these labels must follow.
 
@@ -112,14 +121,16 @@ Reaching the limit mid-call ends the call like a hang-up and shows V2's limit me
 | `GET /api/health` | `{"status":"ok", …, "goLive": <the flag>}` |
 | Deploy log, startup lines | `Voice API: live …`, `Go-live (ERICA_GO_LIVE): …`, `Identity: …`, `History guard: …`, and no 🔴 lines |
 | `GET /bridge.js` with `Accept-Encoding: gzip` | 200, `Content-Encoding: gzip`, the expected `VERSION = '…'` |
-| A talenttransformation.com page, flag off | no V3 icon, V2 "Ask Erica" visible; `?erica=preview` shows V3 |
-| The same page, flag on | V3 icon, V2 hidden; at rest the page loads only `bridge.js` and the icon image from the coach host |
+| A talenttransformation.com page, flag off | no V3 icon, V2 "Ask Erica" visible |
+| The same page with `?erica=preview` (flag off) | V3 icon and V2 hidden, exactly as at launch (#70) |
+| The same page, flag on | V3 icon, V2 hidden |
+| The V3 icon at rest | green ring and "Your AI coach is available" on hover. While the page loads only `bridge.js` and the icon image come from the coach host; the idle clip follows after the page's `load`; the coach loads on hover or click |
 | The page with `?minimal=yes` | no V3 |
 | Hover, then click the icon | the coach loads and opens; a typed message gets an answer |
 | Signed in as a member, from the home page | the coach knows the member's name and summarizes a quiz report |
 | A guest taps the call button | the sign-up prompt; "Yes" opens Wix's login; text chat still works |
 | "Is this conversation private?" | the privacy answer, with a Privacy Policy link that opens |
-| `/admin` | Wix sign-in works and the Studio loads |
+| `/admin` | Wix sign-in works and the Studio loads (production: needs the OAuth callback, section 4) |
 | `POST /api/conversation-history-fetch` for an id never prepared | 403 |
 
 ## 6. Rollback
@@ -127,5 +138,5 @@ Reaching the limit mid-call ends the call like a hang-up and shows V2's limit me
 Pick the first one that fits.
 
 1. **V3 misbehaves for visitors:** set `ERICA_GO_LIVE` to `off`. Railway redeploys in about a minute; `bridge.js` revalidates on the next page load, V3 disappears from talenttransformation.com and V2's "Ask Erica" comes back.
-2. **A bad build:** Railway → production service → Deployments → the previous good deployment → Redeploy. Then revert the bad commit on `main`, check staging, and promote again (section 1). `release` itself is never rewound.
+2. **A bad build:** Railway → `ai-coach-v3` → `production` → `coach` → Deployments → the previous good deployment → Redeploy. Then revert the bad commit on `main`, check staging, and promote again (section 1). `release` itself is never rewound.
 3. **The production service is down:** pages still load (the tag is `async` and fails quietly). `bridge.js` does not load, so its rule that hides V2 is never added and V2's "Ask Erica" shows by itself. Nothing to do on Wix; bring the service back, then check section 5.
