@@ -7264,7 +7264,7 @@ class VoiceChatBot {
             const style = persona.coachingStyle?.primaryObjective || persona.label || '';
             instructions += `\n\nCRITICAL COACHING STYLE REMINDER: You are ${persona.character}. ` +
                 `Your coaching approach is "${style}". ` +
-                `Your behavioral guardrails take PRIORITY over the general guidelines above. ` +
+                `Your behavioral guardrails take PRIORITY over the general guidelines above, except the mental health and safety guidance, which always comes first. ` +
                 `Stay in character at all times.`;
         }
 
@@ -9307,9 +9307,44 @@ class VoiceChatBot {
             return;
         }
         st.userTurns++;
+        // A crisis in what the person said freezes the coaching style and the
+        // onboarding question for the rest of the conversation (production QA,
+        // SAF-05: the navigator moved a person with a suicide plan to a style
+        // that forbids directive language, and asked a profiling question).
+        if (this._noteCrisis(text, st.userTurns) && st.askActive) {
+            st.askActive = false;
+            this._navigatorAsk = null;
+            this._refreshSessionInstructions('crisis: navigator question dropped', { changed: true });
+        }
+        if (this._crisisOpen) return;
         if (st.locked || st.done || st.inFlight || st.calls >= this._NAV_MAX_CALLS) return;
         if (st.userTurns < this._NAV_FIRST_TURN) return;
         this._navInfer(st).catch(() => { /* logged inside */ });
+    }
+
+    // A crisis signal in a person's turn (lib/coachUiRules.js crisisSignal).
+    // Opens the crisis state for this conversation (sticky) and logs one
+    // crisis_signal event per category, so the Studio can find these visits
+    // (SAF-07: no crisis conversation left a trace). True when this turn has one.
+    _noteCrisis(text, turnIndex) {
+        const detect = window.coachUiRules && window.coachUiRules.crisisSignal;
+        if (!detect) {
+            if (!this._crisisRuleMissingLogged) {
+                this._crisisRuleMissingLogged = true;
+                console.error('[Erica] crisisSignal missing — crisis turns are not detected (style switch not frozen, no crisis_signal event)');
+            }
+            return false;
+        }
+        const category = detect(text);
+        if (!category) return false;
+        const first = !this._crisisOpen;
+        if (first) this._crisisOpen = { turnIndex, categories: [] };
+        if (!this._crisisOpen.categories.includes(category)) {
+            this._crisisOpen.categories.push(category);
+            this._logSessionEvent('crisis_signal', { category, turnIndex, first });
+        }
+        console.warn(`[Erica] 🆘 Crisis signal (${category}) — coaching style and onboarding question frozen for this conversation`);
+        return true;
     }
 
     async _navInfer(st) {
@@ -9331,6 +9366,7 @@ class VoiceChatBot {
             if (!res.ok) { console.warn(`[Erica] 🧭 Navigator inference failed — HTTP ${res.status}; the default coaching style stays`); return; }
             const r = await res.json();
             if (st.locked) return; // the person picked a coach meanwhile
+            if (this._crisisOpen) { console.log('[Erica] 🧭 Navigator answer ignored: a crisis is open in this conversation'); return; }
             console.log('[Erica] 🧭 Navigator:', r.tags, r.confidence, '→', r.style, r.ready ? '(ready)' : '(not ready)');
             // Apply once: when the tags are clear, or on the last try with what we have.
             if ((r.ready || last) && r.style) {
