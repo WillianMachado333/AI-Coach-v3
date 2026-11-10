@@ -2475,6 +2475,17 @@ async function handleRequest(req, res) {
                 if (userId) historyGuard.bind(clientIp(req), userId);
                 if (objectId) guestBindings.bind(clientIp(req), objectId);
 
+                // NEW-3: an open coach refused after a restart or an address
+                // change asks for the binding alone. Same identity rules, same
+                // rate limit, same binding as above; none of the preparation's
+                // work (Wix, stores, a new session).
+                if (requestData.bindOnly === true) {
+                    logAt('info', `[SERVER] /api/erica-preparation - bind only (${userId ? 'userId' : ''}${userId && objectId ? ' + ' : ''}${objectId ? 'objectId' : ''}${!userId && !objectId ? 'nothing to bind' : ''})`);
+                    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+                    res.end();
+                    return;
+                }
+
                 if (!userId && !email) {
                     logAt('info', '[SERVER] /api/erica-preparation - No userId/email provided; proceeding in guest mode');
                 }
