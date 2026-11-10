@@ -120,6 +120,26 @@ test('negative cache: an unknown name does not re-list within ACCOUNT_LIST_TTL_M
     assert.deepEqual(calls.create, []);
 });
 
+// QA review of #78: when the window expires, simultaneous misses for
+// DIFFERENT names each listed the whole account (3.6 to 4.1 s apiece).
+test('one read listing at a time: simultaneous misses for different names share it (cold, and when the window expires)', async () => {
+    const { calls, now } = setup(account(250));
+    const cold = await Promise.all(['ghost-a', 'ghost-b', 'ghost-c', 'member-240'].map((id) => vs.getUserVectorStoreId(id)));
+    assert.deepEqual(cold, [null, null, null, 'vs_240']);
+    assert.equal(calls.list.length, 3, 'one listing (3 pages) answered four names');
+    now.advance(vs.ACCOUNT_LIST_TTL_MS + 1);
+    await Promise.all(['ghost-d', 'ghost-e'].map((id) => vs.getUserVectorStoreId(id)));
+    assert.equal(calls.list.length, 6, 'expired: one more listing for two names, not two');
+});
+
+test('a read listing that stopped early (its own name found) lets a waiting miss list on its own', async () => {
+    const { calls } = setup(account(250));
+    const [found, missing] = await Promise.all([vs.getUserVectorStoreId('member-5'), vs.getUserVectorStoreId('ghost-z')]);
+    assert.equal(found, 'vs_5');
+    assert.equal(missing, null);
+    assert.equal(calls.list.length, 1 + 3, 'page 1 for member-5, then a complete listing for ghost-z');
+});
+
 // NEW-2 (QA retest, 10 Nov 2026): the miss was remembered per name, so every
 // guest or member without a store paid a whole listing (3.6 to 4.1 s on the
 // real account) on their first user_data/all search.
