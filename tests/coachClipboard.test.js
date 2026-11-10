@@ -310,9 +310,10 @@ test('client: the block rides the host-event gate, as a system item with no resp
 // --- Studio routes over a real socket: unauthenticated writes are refused ---
 function startServer(port) {
     return new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, ['server.js'], {
+        // The fake Wix preload: the test prepares an id (the binding the public route needs) without leaving the machine.
+        const child = spawn(process.execPath, ['-r', path.join(__dirname, 'helpers', 'fakeWixPrep.js'), 'server.js'], {
             cwd: root,
-            env: { ...process.env, PORT: String(port), OPENAI_API_KEY: '', SESSION_SECRET: 'test-secret-for-clipboard' },
+            env: { ...process.env, PORT: String(port), OPENAI_API_KEY: '', SESSION_SECRET: 'test-secret-for-clipboard', FAKE_WIX_PREP: '200', AUDIT_DIR: path.join(tmp, 'audit') },
             stdio: ['ignore', 'pipe', 'pipe'],
         });
         let out = '';
@@ -331,9 +332,13 @@ function request(port, urlPath, { method = 'GET', headers = {}, body = null } = 
     });
 }
 
-test('HTTP: Studio clipboard routes need an admin session; the public route returns only the claimed identity block (identity is unsigned — same boundary as history)', async () => {
+test('HTTP: Studio clipboard routes need an admin session; the public route returns only the claimed identity block, for an id prepared from this address (same boundary as history, SEC-01)', async () => {
     cb.write(cb.applyOps(cb.emptyRecord('user-victim', T0), [{ op: 'add', kind: 'goal', text: 'Secret goal' }], ctx()).record);
-    const port = 19000 + Math.floor(Math.random() * 900);
+    const port = await new Promise((resolve, reject) => {
+        const s = require('node:net').createServer();
+        s.on('error', reject);
+        s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+    });
     const server = await startServer(port);
     try {
         const form = { 'Content-Type': 'application/x-www-form-urlencoded' };
@@ -345,12 +350,18 @@ test('HTTP: Studio clipboard routes need an admin session; the public route retu
         assert.ok(cb.read('user-victim'), 'still there');
         const page = await request(port, '/admin/users');
         assert.ok([302, 401].includes(page.status));
-        // Public block route: only the caller's own key, and only rendered text.
+        // Public block route: refused for an id never prepared from this address...
+        const json = { 'Content-Type': 'application/json' };
+        const cold = await request(port, '/api/clipboard/block', { method: 'POST', headers: json, body: JSON.stringify({ userId: 'victim' }) });
+        assert.deepEqual([cold.status, JSON.parse(cold.body).reason], [403, 'not_prepared_from_this_address']);
+        assert.equal((await request(port, '/api/clipboard/distill', { method: 'POST', headers: json, body: JSON.stringify({ userId: 'victim', turns: TURNS }) })).status, 403);
+        assert.equal((await request(port, '/api/erica-preparation', { method: 'POST', headers: json, body: JSON.stringify({ userId: 'victim', caller: 'web' }) })).status, 200);
+        // ...then only the caller's own key, and only rendered text.
         const own = await request(port, '/api/clipboard/block', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: 'victim' }) });
         assert.equal(own.status, 200);
         assert.match(JSON.parse(own.body).text, /Secret goal/);
         const other = await request(port, '/api/clipboard/block', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ objectId: 'someone-else' }) });
-        assert.equal(JSON.parse(other.body).text, '');
+        assert.equal(other.status, 403, 'a guest id never prepared here');
         const noKey = await request(port, '/api/clipboard/distill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ turns: TURNS }) });
         assert.equal(JSON.parse(noKey.body).skipped, 'no_identity');
     } finally {
