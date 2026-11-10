@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-10-launch-look';
+    var VERSION = '2026-11-10-full-page';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -613,15 +613,22 @@
         setInterval(function () { _lastFocusPayload = null; }, 15000);
     }
 
-    // Capture a compact snapshot of the current page. Prefers <main>/<article>
-    // for content-first pages (report / journey / quiz result pages); falls
-    // back to body innerText. Caps at ~8 KB so the postMessage stays small.
+    // Capture a snapshot of the current page. Prefers <main>/<article> for
+    // content-first pages (report / journey / quiz result pages); falls back
+    // to body innerText. The whole report, up to PAGE_TEXT_MAX: a Life
+    // Satisfaction report runs to ~20,600 characters, and the old 8,000 cap cut
+    // off its Community and Career sections, so Erica named the wrong weakest
+    // area and said the rest was not on the page (production QA, GUEST-01).
+    // `truncated` and `totalChars` say when even this is not everything.
+    var PAGE_TEXT_MAX = 40000;
     function capturePageContext() {
         var out = {
             url: (window.location && window.location.href) || '',
             title: (document && document.title) || '',
             text: '',
-            headings: []
+            headings: [],
+            totalChars: 0,
+            truncated: false
         };
         try {
             var scope = document.querySelector('main')
@@ -636,7 +643,9 @@
                     .filter(Boolean)
                     .slice(0, 30);
                 var t = (scope.innerText || '').replace(/\s+/g, ' ').trim();
-                out.text = t.slice(0, 8000);
+                out.totalChars = t.length;
+                out.text = t.slice(0, PAGE_TEXT_MAX);
+                out.truncated = t.length > PAGE_TEXT_MAX;
             }
         } catch (_) { /* non-fatal */ }
         return out;

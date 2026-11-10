@@ -3996,8 +3996,15 @@ class VoiceChatBot {
                 : '(none extracted)';
 
             // Cap text at 4 KB — enough to ground, small enough that it
-            // doesn't dominate the ~18 KB instructions budget.
+            // doesn't dominate the ~18 KB instructions budget. A report page
+            // is longer: the block says it is only the start, so Erica fetches
+            // the whole page (get_page_context) before comparing areas instead
+            // of answering from the first part (production QA, GUEST-01).
             const bodyText = (snap.text || '').slice(0, 4000);
+            const pageChars = Math.max(Number(snap.totalChars) || 0, (snap.text || '').length);
+            const visibleLabel = pageChars > bodyText.length
+                ? `Visible text (only the first ${bodyText.length} of ${pageChars} characters of this page: before comparing areas or answering about anything not shown here, call get_page_context for the whole page; never guess the rest):`
+                : 'Visible text:';
 
             const pageBlock = [
                 '',
@@ -4024,7 +4031,7 @@ class VoiceChatBot {
                 'Section outline:',
                 headingsStr,
                 '',
-                'Visible text:',
+                visibleLabel,
                 bodyText,
                 '=== END CURRENT PAGE CONTEXT ==='
             ].join('\n');
@@ -8225,12 +8232,21 @@ class VoiceChatBot {
                     if (!snapshot) {
                         result = JSON.stringify({ error: 'No page context available (no parent page or bridge did not respond).' });
                     } else {
+                        // The whole page (the bridge sends up to 40,000
+                        // characters, GUEST-01). If even that was cut, say so:
+                        // never compare areas from a part of the page.
+                        const pageText = snapshot.text || '';
+                        const totalChars = Math.max(Number(snapshot.totalChars) || 0, pageText.length);
+                        const complete = !snapshot.truncated && totalChars <= pageText.length;
                         result = JSON.stringify({
-                            instruction: 'This is what the user is looking at right now. Name its specifics in your answer (their own results: which areas stand out most and least, what the page says about them) so it is obvious you looked; say result or pattern, never score, and summarise rather than read it aloud. The page is a summary: for depth (what a trait means, why it matters, what to practise) call search_knowledge against the semantic store and connect the two ("your report shows X, and the reason that matters is [answer grounded in the store]").',
+                            instruction: 'This is what the user is looking at right now. Name its specifics in your answer (their own results: which areas stand out most and least, what the page says about them) so it is obvious you looked; say result or pattern, never score, and summarise rather than read it aloud. Read the whole text before comparing areas: the weakest or strongest area is the one the page itself describes that way. The page is a summary: for depth (what a trait means, why it matters, what to practise) call search_knowledge against the semantic store and connect the two ("your report shows X, and the reason that matters is [answer grounded in the store]").'
+                                + (complete ? '' : ` Only the first ${pageText.length} of ${totalChars} characters of this page are here: if the answer may be in the part you cannot see, say so plainly instead of guessing, and never compare areas you cannot see.`),
                             url: snapshot.url,
                             title: snapshot.title,
                             headings: snapshot.headings || [],
-                            text: snapshot.text || ''
+                            complete,
+                            totalChars,
+                            text: pageText
                         });
                     }
                 } catch (error) {
