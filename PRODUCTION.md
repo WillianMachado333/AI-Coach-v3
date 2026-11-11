@@ -118,7 +118,7 @@ Reaching the limit mid-call ends the call like a hang-up and shows V2's limit me
 
 | Check | Expect |
 |---|---|
-| `GET /api/health` | `{"status":"ok", …, "goLive": <the flag>}` |
+| `GET /api/health` | `{"status":"ok", …, "goLive": <the flag>}`. **`"degraded"`** means a request failed in the last 15 minutes while the process kept serving (#77): `failures` gives the counts and the `last` kind and time, and the red log lines (`🔴 Request failed`, `🔴 Error after the response was sent`, `🔴 Unhandled promise rejection`) give the route and the error. HTTP stays 200 either way, and **nothing alerts on it yet**: look at it after each deploy. `firstAnswers.thin` counts Live connections whose first answer read under 3,000 input tokens, i.e. made without the composed prompt (REG-16, #82): it should stay at 0, and each one logs `⚠️ REG-16 thin first answer` |
 | Deploy log, startup lines | `Voice API: live …`, `Go-live (ERICA_GO_LIVE): …`, `Identity: …`, `History guard: …`, and no 🔴 lines |
 | `GET /bridge.js` with `Accept-Encoding: gzip` | 200, `Content-Encoding: gzip`, the expected `VERSION = '…'` |
 | A talenttransformation.com page, flag off | no V3 icon, V2 "Ask Erica" visible |
