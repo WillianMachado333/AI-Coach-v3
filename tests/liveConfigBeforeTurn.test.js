@@ -72,3 +72,42 @@ test('with session.started on time nothing changes: the message goes out right a
     assert.ok(w.indexOf('update') >= 0 && w.indexOf('item:user:hello') > w.indexOf('update'), JSON.stringify(w));
     assert.equal(w.filter((x) => x === 'item:user:hello').length, 1);
 });
+
+// QA review of #82: a turn waiting for a session.started that never comes must
+// still fail visibly (it used to go out at once and fail at the 60 s cap).
+// The turn watch's cap counts from the tap (queue() opens the turn), so it does.
+test('session.started never comes: the turn fails visibly at the 60 s cap, the stuck session is closed, Try again opens a new one and the message goes out once', async () => {
+    const h = harness();
+    h.app.sendTextMessage('stuck question');
+    await h.advance(30000);
+    assert.equal(h.failedNote(), null, 'still waiting at 30 s');
+    await h.advance(31000);
+    const note = h.failedNote();
+    assert.ok(note && note.visible, 'failed, visibly, by 61 s');
+    assert.deepEqual(h.events('turn_failed').map((e) => e.meta.cause), ['cap']);
+    assert.equal(h.live.pcs[0].closed, true, 'the session that never started is closed');
+    assert.deepEqual(wire(h.live.sent(0)).filter((x) => x.startsWith('item:') || x === 'create'), [], 'nothing was sent into it');
+    note.querySelector('button').click();
+    await h.advance(3000);
+    assert.equal(h.live.creates.length, 2, 'Try again opens a fresh session');
+    started(h);
+    await h.advance(3000);
+    const w = wire(h.live.sent(1));
+    assert.ok(w.indexOf('update') >= 0 && w.indexOf('item:user:stuck question') > w.indexOf('update'), JSON.stringify(w));
+    assert.deepEqual(h.live.pcs.map((p) => wire(p.dc.sent).filter((x) => x === 'item:user:stuck question').length), [0, 1], 'sent once, on the session that started');
+});
+
+test('the connection fails before session.started: the recovery session carries the queued message, once, after its update', async () => {
+    const h = harness();
+    h.app.sendTextMessage('q2');
+    await h.advance(1000);
+    h.live.failPc('failed');
+    await h.advance(3000);
+    assert.deepEqual(h.live.creates.map((c) => c.kind), ['user', 'recover']);
+    started(h);
+    await h.advance(3000);
+    assert.deepEqual(h.live.pcs.map((p) => wire(p.dc.sent).filter((x) => x === 'item:user:q2').length), [0, 1]);
+    const w = wire(h.live.sent(1));
+    assert.ok(w.indexOf('item:user:q2') > w.indexOf('update') && w.indexOf('update') >= 0, JSON.stringify(w));
+    assert.equal(h.failedNote(), null);
+});
