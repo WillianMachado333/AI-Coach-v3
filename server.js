@@ -35,7 +35,7 @@ const agentHistory = require('./lib/agentHistory');
 // the shared 'admin' subject every session carries.
 function historyKey(sess) { return (sess && (sess.actor || sess.sub)) || 'admin'; }
 const runtimeConfig = require('./lib/runtimeConfig');
-const { LANGUAGE_RULE } = require('./lib/coachUiRules');
+const { LANGUAGE_RULE, STARTUP_SAFETY } = require('./lib/coachUiRules');
 const injectedDataStore = require('./lib/injectedDataStore');
 const coachClipboard = require('./lib/coachClipboard');
 const userSettings = require('./lib/userSettings');
@@ -122,6 +122,7 @@ const { createHealthPayload } = require('./lib/health');
 const goLive = require('./lib/goLive');
 const { guardRequest, failRequest } = require('./lib/requestGuard');
 const failureStats = require('./lib/failureStats');
+const firstAnswerWatch = require('./lib/firstAnswerWatch');
 // A request body as an object. Empty → {}; JSON that is not an object (null,
 // a number, a string, an array) → {} too, so reading a field from it can never
 // throw. A body of `null` crashed the whole process on several endpoints
@@ -835,6 +836,13 @@ async function handleRequest(req, res) {
                             modelSource: p.model ? 'client' : 'server-config',
                             backendModel: p.backendModel || (p.voiceMode === 'live' ? LIVE_BACKEND_MODEL : null)
                         }));
+                        // REG-16 watch: was this connection's first answer
+                        // made without the composed prompt? (no user text)
+                        {
+                            const first = firstAnswerWatch.onUsage(sid, p);
+                            if (first && first.thin) console.warn(`[SERVER] ⚠️ REG-16 thin first answer: ${sid} connection ${p.connectionId || '?'} read ${first.inputTokens} input tokens (< ${firstAnswerWatch.THRESHOLD}: the turn likely reached the model before the session was configured)`);
+                            else if (first) logAt('info', `[SERVER] first answer: ${sid} connection ${p.connectionId || '?'} read ${first.inputTokens} input tokens`);
+                        }
                         // Recorded first (the money is spent), then: past a limit?
                         guardVerdict = liveGuard.onUsage(p);
                         break;
@@ -2397,7 +2405,7 @@ async function handleRequest(req, res) {
             return;
         }
 
-        const payload = JSON.stringify({ ...createHealthPayload({ failures: failureStats.snapshot() }), goLive: goLive.isOn() });
+        const payload = JSON.stringify({ ...createHealthPayload({ failures: failureStats.snapshot() }), goLive: goLive.isOn(), firstAnswers: firstAnswerWatch.snapshot() });
         res.writeHead(200, {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',
@@ -3432,6 +3440,12 @@ async function handleRequest(req, res) {
                 const encoded = req.headers['x-erica-live-instructions'];
                 if (encoded) shortInstructions = Buffer.from(String(encoded), 'base64').toString('utf8');
             } catch (_) { /* keep default */ }
+            // REG-16: the session carries the minimal safety rules from its
+            // creation, whatever the client sent, in case a turn ever reaches
+            // it before the client's session.update (lib/coachUiRules.js).
+            if (!shortInstructions.includes(STARTUP_SAFETY)) shortInstructions = `${shortInstructions}
+
+${STARTUP_SAFETY}`;
 
             try {
                 const openaiRes = await fetch('https://api.openai.com/v1/live/sessions', {
@@ -3458,7 +3472,7 @@ async function handleRequest(req, res) {
                                     // generic fallback, not the real prompt.
                                     instructions: 'Help the user with their coaching conversation. ' +
                                         'Use the available tools to ground answers in real data. ' +
-                                        'Return concise, spoken-friendly results.',
+                                        'Return concise, spoken-friendly results. ' + STARTUP_SAFETY,
                                     // Tool schemas arrive via the client's session.update right
                                     // after connecting — same "minimal at creation, real config
                                     // pushed by the client once connected" shape as the Realtime

@@ -54,13 +54,13 @@ test('sendTextMessage opens the turn (the loader-removed path is gone) and the q
     assert.match(send, /const held = this\._liveBusy\(\);\s*if \(!this\._sendUserItem\(itemMessage\)\)/, 'held is what _sendUserItem will do');
     assert.match(send, /this\._turns\(\)\.send\(\{ id: userMessageId, message: itemMessage, session: this\._sessionSeq, held \}\)/);
     const flush = method('_sendPendingTextMessage');
-    assert.match(flush, /if \(!this\._channelOpen\(\)\) \{[\s\S]*this\._pendingTextMessages\.push\(pending\);[\s\S]*return;/);
+    assert.match(flush, /if \(!this\._sessionReadyForTurns\(\)\) \{[\s\S]*this\._pendingTextMessages\.push\(pending\);[\s\S]*return;/);
 });
 
 // Review of PR #55 (b211f1e).
 test('a queued send shows its bubble at the tap and the send reuses its id; queued messages are not history', () => {
     const send = method('sendTextMessage');
-    const queuedPath = send.slice(send.indexOf('if (!this.isConnected || channelDead) {'), send.indexOf('// Clear on-hold flag'));
+    const queuedPath = send.slice(send.indexOf('if (!this.isConnected || channelDead || awaitingLiveConfig) {'), send.indexOf('// Clear on-hold flag'));
     assert.match(queuedPath, /this\._pendingTextMessages\.push\(pending\);\s*this\._showUserTextBubble\(pending\.id, displayText, attachments, queuedAt\);/);
     assert.match(send, /const userMessageId = queued \? queued\.id : this\._newUserTextId\(userTimestamp\);/);
     assert.match(send, /if \(queued\) \{ this\._pendingTextMessages\.push\(queued\); return; \}/, 'a queued send that cannot go out goes back in the queue, not to a refusal');

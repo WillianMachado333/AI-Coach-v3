@@ -3469,7 +3469,11 @@ class VoiceChatBot {
         // Detect dead connection: isConnected may be true but dataChannel degraded
         // (common after on-hold period where WebRTC silently drops)
         const channelDead = !this.dataChannel || this.dataChannel.readyState !== 'open';
-        if (!this.isConnected || channelDead) {
+        // A Live session connected but not configured yet (session.started and
+        // its session.update still to come): the message waits in the queue,
+        // which session.started flushes, and no other session opens (REG-16).
+        const awaitingLiveConfig = !channelDead && this.isConnected && !this._sessionReadyForTurns();
+        if (!this.isConnected || channelDead || awaitingLiveConfig) {
             if (channelDead && this.isConnected) {
                 console.log('[Erica] DataChannel dead while isConnected=true — forcing reconnect...');
                 this.isConnected = false;
@@ -3503,7 +3507,7 @@ class VoiceChatBot {
             // reconnects on its own the message waits for that session: a
             // connect of its own would reset the call's reconnect budget,
             // and offline its failures count toward maintenance.html.
-            if (!this.isConnecting && !this._autoReconnecting) {
+            if (!awaitingLiveConfig && !this.isConnecting && !this._autoReconnecting) {
                 this.connect({ skipOpeningLine: true })
                     .then(() => {
                         this._sendPendingTextMessage();
@@ -7657,6 +7661,8 @@ class VoiceChatBot {
         const sentOk = this.sendMessage(config);
         this.lastSessionConfig.sentOk = sentOk;
         this.lastSessionConfig.sentAt = Date.now();
+        // From here user turns may go to this session (_sessionReadyForTurns).
+        this._liveConfiguredFor = sentOk ? this.pc : null;
         console.log('[Erica][Live] session.update (delegation.responses) sent:', sentOk, 'instructions length:', fullInstructions.length);
         if (sentOk) this._injectHistoryIntoSession('live session configured');
         if (sentOk) this._flushHostEvents();
@@ -7666,7 +7672,9 @@ class VoiceChatBot {
      * Send any queued text messages that were typed before the connection was ready.
      */
     _sendPendingTextMessage() {
-        if (!this._pendingTextMessages || !this._pendingTextMessages.length || !this.isConnected) return;
+        // Not before the session is configured (REG-16): session.started
+        // configures it and calls this again.
+        if (!this._pendingTextMessages || !this._pendingTextMessages.length || !this._sessionReadyForTurns()) return;
         const messages = this._pendingTextMessages.splice(0);
         console.log('[Erica] Sending', messages.length, 'queued message(s)');
         // Send each with a small stagger so they arrive in order
@@ -7677,7 +7685,7 @@ class VoiceChatBot {
                 // the next one. A flush never opens a session itself (a content
                 // close re-queued and re-sent it into one dying session after
                 // another); the turn watch decides whether one opens.
-                if (!this._channelOpen()) {
+                if (!this._sessionReadyForTurns()) {
                     this._pendingTextMessages.push(pending);
                     return;
                 }
@@ -10349,6 +10357,17 @@ class VoiceChatBot {
         return (eff && eff.character) || (this.currentVoiceProfile && this.currentVoiceProfile.character) || 'Erica';
     }
 
+    // REG-16 (QA retest, 10 Nov 2026): a GPT-Live session gets its
+    // instructions, tools and history from the session.update that
+    // configureLiveSession() sends on session.started. WebRTC "connected"
+    // (isConnected) and the open data channel come earlier, and a user turn
+    // sent in that window was answered by a model with none of it (invented
+    // links, no courses, no page, no crisis rules). User turns wait for this.
+    _sessionReadyForTurns() {
+        if (!this._channelOpen()) return false;
+        return this.voiceApiMode !== 'live' || (!!this.pc && this._liveConfiguredFor === this.pc);
+    }
+
     _channelOpen() {
         return !!(this.isConnected && this.dataChannel && this.dataChannel.readyState === 'open');
     }
@@ -10593,7 +10612,7 @@ class VoiceChatBot {
         if (!resend.length) return 0;
         setTimeout(() => {
             // That session died meanwhile: the turn watch already has it.
-            if (seq !== this._sessionSeq || !this._channelOpen()) return;
+            if (seq !== this._sessionSeq || !this._sessionReadyForTurns()) return;
             resend.forEach((entry) => this._sendUserItem(entry.message));
             // In a call she may be mid-utterance (Try again with the channel
             // open): what she says from her next word is a reply that began
@@ -10638,7 +10657,9 @@ class VoiceChatBot {
         const ui = window.uiLayout;
         if (ui && typeof ui.clearTurnFailed === 'function') ui.clearTurnFailed(this);
         if (!this._turns().retry()) return;
-        if (this._channelOpen()) { this._resendOpenTurns(); return; }
+        // An open session re-sends now; a Live one not configured yet does it
+        // on session.started (REG-16).
+        if (this._channelOpen()) { if (this._sessionReadyForTurns()) this._resendOpenTurns(); return; }
         this.isConnected = false;
         // A session on its way (a connect, a call's reconnect) re-sends it
         // when it starts.
@@ -10707,6 +10728,7 @@ class VoiceChatBot {
                 // a closed speech gate gives it some now, not before it exists.
                 if (this._gate && this._gate.state === 'on') this._speechGateBlip(this._gate, 'a new Live session expires within ~30 s if no audio reaches it');
                 this._liveSessionStartedAt = Date.now();
+                this._liveConfiguredFor = null;
                 this.configureLiveSession();
                 if (typeof this.hideLoader === 'function') this.hideLoader();
                 if (typeof this.setMicButtonState === 'function') this.setMicButtonState('enabled');
