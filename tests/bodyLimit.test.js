@@ -13,7 +13,8 @@ const http = require('node:http');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { guardRequest } = require('../lib/requestGuard');
-const { enforceBodyLimit, limitFor } = require('../lib/bodyLimit');
+const bodyLimit = require('../lib/bodyLimit');
+const { enforceBodyLimit, limitFor } = bodyLimit;
 const failureStats = require('../lib/failureStats');
 
 const root = path.join(__dirname, '..');
@@ -35,6 +36,7 @@ function send(port, route, size, { chunked = false, agent = keepAlive() } = {}) 
 }
 
 async function withLimitedServer(route, fn) {
+    bodyLimit._reset();
     const warns = [];
     const log = { warn: (...a) => warns.push(a.join(' ')), error() {}, log() {} };
     const server = http.createServer((req, res) => {
@@ -54,7 +56,8 @@ test('the limits: the routes that had one keep it, everything else gets the defa
     assert.equal(limitFor('/api/admin/attachments'), 8 * MB);
     assert.equal(limitFor('/oauth/register'), 64 * KB);
     assert.equal(limitFor('/mcp'), 1 * MB);
-    for (const r of ['/api/session-log', '/api/conversation-history-save', '/api/erica-preparation', '/admin/injected-data/safety-rules/upsert']) assert.equal(limitFor(r), 5 * MB, r);
+    assert.equal(limitFor('/api/conversation-history-save'), 10 * MB, 'the whole conversation, growing across visits: room to grow');
+    for (const r of ['/api/session-log', '/api/summarize', '/api/erica-preparation', '/admin/injected-data/safety-rules/upsert']) assert.equal(limitFor(r), 5 * MB, r);
     process.env.ERICA_MAX_BODY_BYTES = String(2 * MB);
     try { assert.equal(limitFor('/api/session-log'), 2 * MB); } finally { delete process.env.ERICA_MAX_BODY_BYTES; }
 });
@@ -75,6 +78,7 @@ test('over the limit by Content-Length, or as it arrives (chunked): a 413 the cl
         assert.ok(routeSaw <= 8 * KB, `the route saw at most the limit (${routeSaw})`);
         assert.equal(warns.filter((w) => /413 POST \/api\/user-settings: body over the 8 KB limit/.test(w)).length, 2);
         assert.equal(failureStats.snapshot().requestFailed, 0, 'a 413 is the client\'s error, not a failure');
+        assert.deepEqual(bodyLimit.snapshot(), { '/api/user-settings': 2 }, 'counted by route for /api/health');
     });
     failureStats._reset();
 });
@@ -127,11 +131,15 @@ test('HTTP, the real server: session-log over 5 MB and user-settings over 8 KB g
         assert.equal((await send(port, '/api/session-log', 6 * MB, { chunked: true })).status, 413);
         assert.equal((await send(port, '/api/user-settings', 14 * KB)).status, 413);
         assert.equal((await send(port, '/api/navigator/infer', 215 * KB)).status, 413);
+        assert.notEqual((await send(port, '/api/conversation-history-save', 6 * MB, { chunked: true })).status, 413, 'a 6 MB history is not refused');
+        assert.equal((await send(port, '/api/conversation-history-save', 11 * MB, { chunked: true })).status, 413);
         const health = await new Promise((resolve) => http.get({ host: '127.0.0.1', port, path: '/api/health' }, (res) => {
             let t = ''; res.on('data', (c) => { t += c; }); res.on('end', () => resolve(JSON.parse(t)));
         }));
         assert.equal(health.status, 'ok');
         assert.equal(out.split('\n').filter((l) => /⚠️ 413 POST/.test(l)).length, 3);
+        assert.equal(out.split('\n').filter((l) => /🔴 413 POST \/api\/conversation-history-save: body over the 10 MB limit .*NOT being saved/.test(l)).length, 1, 'a refused history save is a red line');
+        assert.deepEqual(health.bodyTooLarge, { '/api/session-log': 1, '/api/user-settings': 1, '/api/navigator/infer': 1, '/api/conversation-history-save': 1 }, 'counted by route');
     } finally { child.kill(); }
 });
 

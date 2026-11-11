@@ -123,7 +123,8 @@ const goLive = require('./lib/goLive');
 const { guardRequest, failRequest } = require('./lib/requestGuard');
 const failureStats = require('./lib/failureStats');
 const firstAnswerWatch = require('./lib/firstAnswerWatch');
-const { enforceBodyLimit } = require('./lib/bodyLimit');
+const bodyLimit = require('./lib/bodyLimit');
+const { enforceBodyLimit } = bodyLimit;
 // A request body as an object. Empty → {}; JSON that is not an object (null,
 // a number, a string, an array) → {} too, so reading a field from it can never
 // throw. A body of `null` crashed the whole process on several endpoints
@@ -2408,7 +2409,7 @@ async function handleRequest(req, res) {
             return;
         }
 
-        const payload = JSON.stringify({ ...createHealthPayload({ failures: failureStats.snapshot() }), goLive: goLive.isOn(), firstAnswers: firstAnswerWatch.snapshot() });
+        const payload = JSON.stringify({ ...createHealthPayload({ failures: failureStats.snapshot() }), goLive: goLive.isOn(), firstAnswers: firstAnswerWatch.snapshot(), bodyTooLarge: bodyLimit.snapshot() });
         res.writeHead(200, {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',
