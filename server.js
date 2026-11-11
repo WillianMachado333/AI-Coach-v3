@@ -3638,6 +3638,11 @@ ${STARTUP_SAFETY}`;
     });
 }
 
+// A deploy stops this process with SIGTERM: close cleanly and exit 0, so
+// Railway's "Deployment crashed" alert only fires for a real crash.
+const { installGracefulShutdown } = require('./lib/shutdown'); // here, next to its one use: no shared require-block edits
+installGracefulShutdown(server, { graceMs: Number(process.env.ERICA_SHUTDOWN_GRACE_MS) || 5000 });
+
 server.listen(PORT, () => {
     console.log(`Server running at http://localhost:${PORT}/`);
     console.log('Press Ctrl+C to stop the server');
