@@ -35,6 +35,9 @@ globalThis.fetch = async (url, init = {}) => {
     }
     created++;
     const id = 'ls_test_' + created;
-    record({ kind: 'create', id });
+    // What the server asked the session to start with (instructions only).
+    let session = null;
+    try { const b = JSON.parse(String(init.body || '{}')).session || {}; session = { instructions: b.instructions || null, backendInstructions: (b.delegation && b.delegation.responses && b.delegation.responses.instructions) || null }; } catch (_) { session = null; }
+    record({ kind: 'create', id, session });
     return new Response(JSON.stringify({ session: { id, model: 'gpt-live-1' }, transport: { type: 'webrtc', sdp: 'v=0\r\n' } }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
