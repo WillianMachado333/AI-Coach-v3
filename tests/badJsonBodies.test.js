@@ -90,7 +90,7 @@ test('HTTP: null, a number, an array, a string or {} as the body never stops the
 test('the safety net: an error a handler does not catch is a 500 with a red log line, not a dead process', () => {
     assert.match(serverSrc, /handleRequest\(req, res\)\.catch\(\(err\) => failRequest\(req, res, err\)\);/);
     assert.match(serverSrc, /const \{ guardRequest, failRequest \} = require\('\.\/lib\/requestGuard'\);/);
-    assert.match(serverSrc, /guardRequest\(req, res\);\s*handleRequest\(req, res\)/, 'the body listeners are guarded too (lib/requestGuard.js)');
+    assert.match(serverSrc, /guardRequest\(req, res\);\s*(?:if \(!enforceBodyLimit\(req, res\)\) return;\s*)?handleRequest\(req, res\)/, 'the body listeners are guarded too (lib/requestGuard.js)');
     assert.match(serverSrc, /function bodyObject\(text\) \{/);
     assert.doesNotMatch(serverSrc, /JSON\.parse\(body\)/, 'every request body goes through bodyObject');
 });

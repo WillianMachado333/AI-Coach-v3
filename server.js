@@ -123,6 +123,8 @@ const goLive = require('./lib/goLive');
 const { guardRequest, failRequest } = require('./lib/requestGuard');
 const failureStats = require('./lib/failureStats');
 const firstAnswerWatch = require('./lib/firstAnswerWatch');
+const bodyLimit = require('./lib/bodyLimit');
+const { enforceBodyLimit } = bodyLimit;
 // A request body as an object. Empty → {}; JSON that is not an object (null,
 // a number, a string, an array) → {} too, so reading a field from it can never
 // throw. A body of `null` crashed the whole process on several endpoints
@@ -707,9 +709,11 @@ const PREP_PATH = process.env.PREP_PATH || '/_functions/ericaPreparation';
 // The body listeners (req.on('data'/'end')) run outside that promise, so
 // guardRequest sends their errors to the same failRequest. Every failure is
 // counted, and /api/health says "degraded" for a while after one
-// (lib/requestGuard.js, lib/failureStats.js).
+// (lib/requestGuard.js, lib/failureStats.js). Every body has a size limit:
+// over it, a 413 and the route never sees the rest (lib/bodyLimit.js).
 const server = http.createServer((req, res) => {
     guardRequest(req, res);
+    if (!enforceBodyLimit(req, res)) return;
     handleRequest(req, res).catch((err) => failRequest(req, res, err));
 });
 
@@ -2405,7 +2409,7 @@ async function handleRequest(req, res) {
             return;
         }
 
-        const payload = JSON.stringify({ ...createHealthPayload({ failures: failureStats.snapshot() }), goLive: goLive.isOn(), firstAnswers: firstAnswerWatch.snapshot() });
+        const payload = JSON.stringify({ ...createHealthPayload({ failures: failureStats.snapshot() }), goLive: goLive.isOn(), firstAnswers: firstAnswerWatch.snapshot(), bodyTooLarge: bodyLimit.snapshot() });
         res.writeHead(200, {
             'Content-Type': 'application/json',
             'Cache-Control': 'no-store',
