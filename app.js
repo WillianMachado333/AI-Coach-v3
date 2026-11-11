@@ -1114,15 +1114,88 @@ class VoiceChatBot {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
+    // NEW-3 (QA retest, 10 Nov 2026). The server remembers which ids were
+    // prepared from which address in memory (#64, #74). Every deploy or
+    // restart forgets that, and so does a new address (a phone moving from
+    // Wi-Fi to mobile data). Until the page was reloaded, the open coach then
+    // got 403 on history, settings, notes, activity and its own search. Now
+    // such a refusal makes one quiet bind-only preparation, and the refused
+    // call is sent again, once.
+    async _notPreparedRefusal(res, inBody = false) {
+        if (!res || typeof res.clone !== 'function') return false;
+        if (res.status !== 403 && !(inBody && res.ok)) return false;
+        const body = await res.clone().json().catch(() => null);
+        if (!body) return false;
+        return res.status === 403 ? body.reason === 'not_prepared_from_this_address' : body.userDataRefused === 'not_prepared_from_this_address';
+    }
+
+    /** One bind-only preparation shared by every refused call; true when the address is bound again. */
+    _rebindPreparation(sentAt) {
+        // Refused because it was sent before the last re-preparation landed: just repeat it.
+        if (this._rebindOk && this._rebindDoneAt && sentAt < this._rebindDoneAt) return Promise.resolve(true);
+        if (this._rebindInFlight) return this._rebindInFlight;
+        // Prepared again less than a minute ago and refused anyway: the server
+        // does not see the address it bound (another replica, an address that
+        // keeps changing). Do not loop; say so.
+        if (this._rebindDoneAt && Date.now() - this._rebindDoneAt < 60000) {
+            console.warn('[Erica] 🔗 Still refused right after preparing again — this call stays refused');
+            return Promise.resolve(false);
+        }
+        // The same identity the refused calls send (settings, notes), so the
+        // binding is made for exactly the ids that were refused.
+        const ident = this._coachIdentity();
+        if (!ident.userId && !ident.objectId) return Promise.resolve(false);
+        this._rebindInFlight = fetch(this.apiUrl('/api/erica-preparation'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                caller: new URLSearchParams(window.location.search).get('caller') || 'app',
+                bindOnly: true,
+                ...ident
+            })
+        })
+            .then((r) => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                console.log('[Erica] 🔗 Prepared again after a "not prepared from this address" refusal (server restart or new address); repeating the call');
+                return true;
+            })
+            .catch((e) => {
+                console.warn('[Erica] 🔗 Could NOT prepare again — the refused call stays refused:', e?.message || e);
+                return false;
+            })
+            .then((ok) => {
+                this._rebindOk = ok;
+                this._rebindDoneAt = Date.now();
+                this._rebindInFlight = null;
+                return ok;
+            });
+        return this._rebindInFlight;
+    }
+
+    /** send() once; on a "not prepared from this address" refusal, prepare again and send() once more. */
+    async _withRebind(send, { inBody = false } = {}) {
+        const sentAt = Date.now();
+        const res = await send();
+        if (!(await this._notPreparedRefusal(res, inBody))) return res;
+        if (!(await this._rebindPreparation(sentAt))) return res;
+        return send();
+    }
+
+    /** fetch() for the person's own data (settings, notes, activity): repairs a lost binding once. */
+    memberFetch(url, options) {
+        return this._withRebind(() => fetch(url, options));
+    }
+
     /**
      * Fetch helper that retries on HTTP 429 using exponential backoff + jitter.
      * This is important for Wix Functions which may throttle bursty traffic.
+     * A "not prepared from this address" refusal is repaired once (_withRebind).
      */
     async fetchWithBackoff(url, options, { label = 'request', retries = 4 } = {}) {
         let attempt = 0;
         while (true) {
             attempt++;
-            const res = await fetch(url, options);
+            const res = await this._withRebind(() => fetch(url, options));
 
             if (res.status !== 429 || attempt > retries) {
                 return res;
@@ -3865,7 +3938,7 @@ class VoiceChatBot {
                 ? { userId: activityUserId }
                 : { objectId: activityObjectId };
             console.log('[Erica.activitySync] 📡 POST /api/user-activity', body);
-            const resp = await fetch(this.apiUrl('/api/user-activity'), {
+            const resp = await this.memberFetch(this.apiUrl('/api/user-activity'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body)
@@ -8100,11 +8173,12 @@ class VoiceChatBot {
                     console.log('[Erica] 🔎 search_knowledge:', { scope, hasUserId: !!userId, hasObjectId: !!objectId, queryPreview: query.slice(0, 120) });
                     try {
                         const searchUrl = this.apiUrl('/api/knowledge-search');
-                        const kresp = await this._fetchWithTimeout(searchUrl, {
+                        // 'user_data' is refused with a 403; 'all' answers without the person's store and says so in the body.
+                        const kresp = await this._withRebind(() => this._fetchWithTimeout(searchUrl, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ query, scope, userId, objectId })
-                        }, limits.toolMs, 'search_knowledge');
+                        }, limits.toolMs, 'search_knowledge'), { inBody: true });
 
                         if (!kresp.ok) {
                             const errText = await kresp.text();
@@ -9147,7 +9221,7 @@ class VoiceChatBot {
         if (!identity.userId && !identity.objectId) return; // no identity → no notes (retried on the next flush)
         const pc = this.pc;
         this._clipboardInjectedFor = pc;
-        fetch(this.apiUrl('/api/clipboard/block'), {
+        this.memberFetch(this.apiUrl('/api/clipboard/block'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sessionId: this.sessionId || null, ...identity })
@@ -9240,7 +9314,7 @@ class VoiceChatBot {
             return;
         }
         st.inFlight = true;
-        fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+        this.memberFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
             .then((r) => r.json().catch(() => ({})).then((data) => ({ status: r.status, data })))
             .then(({ status, data }) => {
                 if (data && data.ok && (!data.skipped || data.skipped === 'duplicate' || data.skipped === 'no_user_turns')) {
@@ -9529,7 +9603,7 @@ class VoiceChatBot {
             const early = typeof performance !== 'undefined' && performance.now() < 4000;
             for (let i = 0; early && i < 10 && !ident.userId && !ident.objectId; i++) { await this.sleep(150); ident = this._coachIdentity(); }
             if (!ident.userId && !ident.objectId) return { scope: 'none', settings: null };
-            const res = await fetch(this.apiUrl('/api/user-settings'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ident) });
+            const res = await this.memberFetch(this.apiUrl('/api/user-settings'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ident) });
             if (!res.ok) { console.warn(`[Erica] 🎙️ Coach settings NOT loaded — HTTP ${res.status}; defaults apply`); return { scope: 'none', settings: null }; }
             return res.json();
         })().catch((e) => { console.warn('[Erica] 🎙️ Coach settings NOT loaded — defaults apply:', e?.message || e); return { scope: 'none', settings: null }; });
@@ -9541,7 +9615,7 @@ class VoiceChatBot {
         this._coachSettings = { scope: (this._coachSettings && this._coachSettings.scope) || 'pending', settings: { ...cur, ...set } };
         const ident = this._coachIdentity();
         if (!ident.userId && !ident.objectId) { console.warn('[Erica] 🎙️ Coach settings kept for this page only — no identity to store them under'); return Promise.resolve(null); }
-        return fetch(this.apiUrl('/api/user-settings'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...ident, set, by }) })
+        return this.memberFetch(this.apiUrl('/api/user-settings'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...ident, set, by }) })
             .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
             .then((j) => { if (j && j.settings) this._coachSettings = { scope: j.scope, settings: j.settings }; return j; })
             .catch((e) => { console.warn('[Erica] 🎙️ Coach settings NOT saved — they last only for this page:', e?.message || e); return null; });
