@@ -1,12 +1,13 @@
-// The Coach Studio CLI (cli/coach-studio.mjs): the way Dreamina connects an
-// agent, for the Studio. An assistant with a terminal installs a small program
+// The Coach Studio CLI (cli/coach-studio.ps1 on Windows, cli/coach-studio.sh on
+// macOS and Linux; nothing to install first): the way Dreamina connects an
+// agent, for the Studio. An assistant with a terminal installs a small script
 // and a Skill with one pasted command, `login` prints a link and a code, the
 // person allows it in the browser where they are signed in to the Studio, and
-// the program then calls the Studio's tools. Server side it is the OAuth
+// the script then calls the Studio's tools. Server side it is the OAuth
 // device flow (RFC 8628) on lib/mcpAuth.js: same token families, scopes
 // capped by role, revocation and audit as every other connection.
 //
-// Real HTTP, the real CLI as a child process. The browser leg (the Wix
+// Real HTTP, the real scripts as child processes. The browser leg (the Wix
 // sign-in) is a signed Studio cookie, as in tests/mcp.test.js.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -209,175 +210,212 @@ test('starts are limited per address and pending sign-ins are capped; a device c
     assert.equal(wrong.status, 401);
 });
 
-// ---- the CLI, as a child process ----------------------------------------------
+// ---- the program, as a child process -------------------------------------------
+// Two scripts, nothing to install first: PowerShell on Windows, bash + curl on
+// macOS and Linux. Each runs the same scenarios where it can run.
 
-function cli(args, { input, env = {} } = {}) {
+const HOME = path.join(tmp, 'home');
+function exec(command, args, { input, env = {} } = {}) {
     return new Promise((resolve) => {
-        const home = path.join(tmp, 'home');
-        const child = spawn(process.execPath, [path.join(root, 'cli', 'coach-studio.mjs'), ...args], {
-            env: { ...process.env, COACH_STUDIO_HOME: home, COACH_STUDIO_URL: base, ...env }, cwd: root, stdio: ['pipe', 'pipe', 'pipe'],
+        const child = spawn(command, args, {
+            env: { ...process.env, COACH_STUDIO_HOME: HOME, COACH_STUDIO_URL: base, ...env }, cwd: root, stdio: ['pipe', 'pipe', 'pipe'],
         });
         let out = ''; let err = '';
+        const timer = setTimeout(() => child.kill(), 90000);
         child.stdout.on('data', (c) => { out += c; });
         child.stderr.on('data', (c) => { err += c; });
-        child.on('close', (code) => resolve({ code, out, err }));
+        child.on('close', (code) => { clearTimeout(timer); resolve({ code, out, err }); });
         if (input !== undefined) child.stdin.end(input); else child.stdin.end();
     });
 }
+function bashAvailable() { const r = spawnSync('bash', ['-c', 'command -v curl'], { encoding: 'utf8' }); return r.status === 0; }
+
+const psDriver = {
+    name: 'PowerShell',
+    credFile: 'credentials.json', pendingFile: 'pending.json',
+    run: (args, o) => exec('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'cli', 'coach-studio.ps1'), ...args], o),
+    tokens: (home) => { const c = JSON.parse(fs.readFileSync(path.join(home, 'credentials.json'), 'utf8')); return { access: c.access_token, refresh: c.refresh_token }; },
+    expireAccess: (home) => { const f = path.join(home, 'credentials.json'); const c = JSON.parse(fs.readFileSync(f, 'utf8')); c.access_exp = 1; fs.writeFileSync(f, JSON.stringify(c)); },
+};
+const kv = (file, key) => ((fs.readFileSync(file, 'utf8').split('\n').find((l) => l.startsWith(key + '=')) || '').slice(key.length + 1));
+const shDriver = {
+    name: 'bash',
+    credFile: 'credentials', pendingFile: 'pending',
+    run: (args, o) => exec('bash', [path.join(root, 'cli', 'coach-studio.sh'), ...args], o),
+    tokens: (home) => ({ access: kv(path.join(home, 'credentials'), 'access_token'), refresh: kv(path.join(home, 'credentials'), 'refresh_token') }),
+    expireAccess: (home) => { const f = path.join(home, 'credentials'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/^access_exp=.*$/m, 'access_exp=1')); },
+};
+const drivers = [];
+if (process.platform === 'win32') drivers.push(psDriver);
+if (bashAvailable()) drivers.push(shDriver);
+
 const codeFrom = (out) => out.match(/user_code=([A-Z]{4}-[A-Z]{4})/)[1];
 const noSecrets = (text) => assert.doesNotMatch(text, /cs[adr]_[A-Za-z0-9_-]{20,}/, 'a token or device code was printed');
 
-test('the CLI end to end: login prints the link and code, waits, connects once allowed; status, tools and call work; a refresh and a logout too', async () => {
-    const home = path.join(tmp, 'home');
-    fs.rmSync(home, { recursive: true, force: true });
-
-    const before = await cli(['status']);
-    assert.equal(before.code, 1);
-    assert.match(before.err, /STATUS: not connected/);
-
-    // 1. Start: link and code, ends waiting (exit 2), nothing connected yet.
-    const start = await cli(['login', '--no-wait', '--device-name', 'qa-box']);
-    assert.equal(start.code, 2, start.err);
-    assert.match(start.out, /Open this link in the browser where you are signed in to Coach Studio/);
-    assert.ok(start.out.includes(base + '/oauth/device?user_code='), start.out);
-    assert.match(start.out, /STATUS: waiting/);
-    const userCode = codeFrom(start.out);
-    assert.ok(start.out.includes('The page must show the code ' + userCode));
-    assert.ok(!fs.existsSync(path.join(home, 'credentials.json')));
-    noSecrets(start.out + start.err);
-
-    // 2. Waiting without being allowed: exit 2, say how to go on.
-    const idle = await cli(['login', '--check']);
-    assert.equal(idle.code, 2);
-    assert.match(idle.out, /STATUS: waiting/);
-
-    // 3. The person allows it in the browser; the next check connects.
-    const a = await approve('eric@tt.com', userCode, { scopes: ['write:content'] });
-    assert.match(a.html, /connected/i);
-    fastForward();
-    const done = await cli(['login', '--check']);
-    assert.equal(done.code, 0, done.out + done.err);
-    assert.match(done.out, /STATUS: connected/);
-    assert.match(done.out, /Permissions: read:ops write:content/);
-    assert.ok(!fs.existsSync(path.join(home, 'pending.json')), 'the pending sign-in is gone');
-    noSecrets(done.out + done.err);
-
-    // 4. Using it.
-    const st = await cli(['status']);
-    assert.equal(st.code, 0, st.err);
-    assert.match(st.out, /STATUS: connected/);
-    assert.match(st.out, /Tools available: \d+/);
-    noSecrets(st.out);
-    const tl = await cli(['tools']);
-    assert.match(tl.out, /^health {2}\[read\]/m);
-    assert.match(tl.out, /edit_injected_data {2}\[WRITE\]/m);
-    const h = await cli(['call', 'health']);
-    assert.equal(h.code, 0, h.out + h.err);
-    assert.doesNotThrow(() => JSON.parse(h.out));
-    const viaStdin = await cli(['call', 'read_config', '-'], { input: '{"what":"injected"}' });
-    assert.equal(viaStdin.code, 0, viaStdin.out + viaStdin.err);
-    const argsFile = path.join(tmp, 'args.json');
-    fs.writeFileSync(argsFile, '{"what":"injected"}');
-    assert.equal((await cli(['call', 'read_config', '--args-file', argsFile])).code, 0);
-    const badJson = await cli(['call', 'read_config', '{what:injected}']);
-    assert.equal(badJson.code, 1);
-    assert.match(badJson.err, /not valid JSON.*--args-file/s);
-    const noScope = await cli(['call', 'read_session', '{"sessionId":"s-vTEST1"}']);
-    assert.equal(noScope.code, 1, 'a tool the connection has no permission for is an error, not silence');
-    assert.match(noScope.out, /needs the read:people permission/);
-
-    // 5. An access token past its hour is refreshed by itself (the refresh token rotates).
-    const credFile = path.join(home, 'credentials.json');
-    const c0 = JSON.parse(fs.readFileSync(credFile, 'utf8'));
-    fs.writeFileSync(credFile, JSON.stringify({ ...c0, access_exp: 1 }));
-    const refreshed = await cli(['status']);
-    assert.equal(refreshed.code, 0, refreshed.err);
-    const c1 = JSON.parse(fs.readFileSync(credFile, 'utf8'));
-    assert.notEqual(c1.access_token, c0.access_token);
-    assert.notEqual(c1.refresh_token, c0.refresh_token);
-
-    // 6. Revoked in the Studio: the CLI says it is signed out, and tells what to do.
-    const fam = mcpAuth.listFamilies().find((f) => f.clientName === 'Coach Studio CLI (qa-box)');
-    assert.ok(fam, 'listed as Coach Studio CLI (qa-box)');
-    mcpAuth.revokeFamily(fam.id, 'eric@tt.com');
-    const revoked = await cli(['status']);
-    assert.equal(revoked.code, 1);
-    assert.match(revoked.err, /STATUS: signed out/);
-    assert.match(revoked.err, /Run `login` again/);
-
-    // 7. logout forgets it.
-    const out = await cli(['logout']);
-    assert.match(out.out, /STATUS: signed out/);
-    assert.ok(!fs.existsSync(credFile));
+test('at least one script can run here (PowerShell on Windows, bash + curl elsewhere)', () => {
+    assert.ok(drivers.length >= 1, 'neither PowerShell nor bash with curl is available: the CLI scripts are not being tested');
 });
 
-test('login --wait: allowed while it waits, it connects by itself; denied says denied; an expired code says expired', async () => {
-    const home = path.join(tmp, 'home');
-    fs.rmSync(home, { recursive: true, force: true });
+for (const d of drivers) {
+    test(`${d.name}: end to end: login prints the link and code, waits, connects once allowed; status, tools and call work; a refresh and a logout too`, async () => {
+        const home = HOME;
+        fs.rmSync(home, { recursive: true, force: true });
 
-    // Allowed during the wait.
-    const waiting = cli(['login', '--wait', '30']);
-    const seen = await new Promise((resolve) => {
-        const t = setInterval(() => { const d = [...mcpAuth._internal.devices.values()][0]; if (d) { clearInterval(t); resolve(d.userCode); } }, 50);
+        const before = await d.run(['status']);
+        assert.equal(before.code, 1);
+        assert.match(before.err, /STATUS: not connected/);
+
+        // 1. Start: link and code, ends waiting (exit 2), nothing connected yet.
+        const start = await d.run(['login', '--no-wait', '--device-name', 'qa-box']);
+        assert.equal(start.code, 2, start.out + start.err);
+        assert.match(start.out, /Open this link in the browser where you are signed in to Coach Studio/);
+        assert.ok(start.out.includes(base + '/oauth/device?user_code='), start.out);
+        assert.match(start.out, /STATUS: waiting/);
+        const userCode = codeFrom(start.out);
+        assert.ok(start.out.includes('The page must show the code ' + userCode));
+        assert.ok(!fs.existsSync(path.join(home, d.credFile)));
+        noSecrets(start.out + start.err);
+
+        // 2. Waiting without being allowed: exit 2, say how to go on.
+        const idle = await d.run(['login', '--check']);
+        assert.equal(idle.code, 2, idle.out + idle.err);
+        assert.match(idle.out, /STATUS: waiting/);
+
+        // 3. The person allows it in the browser; the next check connects.
+        const a = await approve('eric@tt.com', userCode, { scopes: ['write:content'] });
+        assert.match(a.html, /connected/i);
+        fastForward();
+        const done = await d.run(['login', '--check']);
+        assert.equal(done.code, 0, done.out + done.err);
+        assert.match(done.out, /STATUS: connected/);
+        assert.match(done.out, /Permissions: read:ops write:content/);
+        assert.ok(!fs.existsSync(path.join(home, d.pendingFile)), 'the pending sign-in is gone');
+        noSecrets(done.out + done.err);
+
+        // 4. Using it.
+        const st = await d.run(['status']);
+        assert.equal(st.code, 0, st.out + st.err);
+        assert.match(st.out, /STATUS: connected/);
+        assert.match(st.out, /Tools available: \d+/);
+        noSecrets(st.out);
+        const tl = await d.run(['tools']);
+        assert.match(tl.out, /^health {2}\[read\]/m, tl.out + tl.err);
+        assert.match(tl.out, /^edit_injected_data {2}\[WRITE\]/m);
+        const h = await d.run(['call', 'health']);
+        assert.equal(h.code, 0, h.out + h.err);
+        assert.doesNotThrow(() => JSON.parse(h.out), 'the answer is JSON');
+        assert.match(h.out, /uptime|deployed|build|status/i);
+        const viaStdin = await d.run(['call', 'read_config', '--stdin'], { input: '{"what":"injected"}' });
+        assert.equal(viaStdin.code, 0, viaStdin.out + viaStdin.err);
+        const argsFile = path.join(tmp, 'args.json');
+        fs.writeFileSync(argsFile, '{"what":"injected"}');
+        const viaFile = await d.run(['call', 'read_config', '--args-file', argsFile]);
+        assert.equal(viaFile.code, 0, viaFile.out + viaFile.err);
+        assert.equal(viaFile.out.trim(), viaStdin.out.trim(), 'the same answer by stdin and by file');
+        const badJson = await d.run(['call', 'read_config', '{what:injected}']);
+        assert.equal(badJson.code, 1, badJson.out + badJson.err);
+        assert.match(badJson.err, /not valid JSON.*--args-file/s);
+        const noScope = await d.run(['call', 'read_session', '{"sessionId":"s-vTEST1"}']);
+        assert.equal(noScope.code, 1, 'a tool the connection has no permission for is an error, not silence');
+        assert.match(noScope.out, /needs the read:people permission/);
+        noSecrets(h.out + viaStdin.out + noScope.out + badJson.err);
+
+        // 5. An access token past its hour is refreshed by itself (the refresh token rotates).
+        const t0 = d.tokens(home);
+        d.expireAccess(home);
+        const refreshed = await d.run(['status']);
+        assert.equal(refreshed.code, 0, refreshed.out + refreshed.err);
+        const t1 = d.tokens(home);
+        assert.notEqual(t1.access, t0.access);
+        assert.notEqual(t1.refresh, t0.refresh);
+
+        // 6. Revoked in the Studio: it says it is signed out, and what to do.
+        const fam = mcpAuth.listFamilies().find((f) => f.clientName === 'Coach Studio CLI (qa-box)');
+        assert.ok(fam, 'listed as Coach Studio CLI (qa-box)');
+        mcpAuth.revokeFamily(fam.id, 'eric@tt.com');
+        const revoked = await d.run(['status']);
+        assert.equal(revoked.code, 1, revoked.out + revoked.err);
+        assert.match(revoked.err, /STATUS: signed out/);
+        assert.match(revoked.err, /Run `login` again/);
+
+        // 7. logout forgets it.
+        const out = await d.run(['logout']);
+        assert.match(out.out, /STATUS: signed out/);
+        assert.ok(!fs.existsSync(path.join(home, d.credFile)));
     });
-    await approve('eric@tt.com', seen.slice(0, 4) + '-' + seen.slice(4));
-    const r = await waiting;
-    assert.equal(r.code, 0, r.out + r.err);
-    assert.match(r.out, /STATUS: connected/);
-    noSecrets(r.out + r.err);
-    // Read-only: a tool that writes is not even listed.
-    const readOnly = await cli(['tools']);
-    assert.match(readOnly.out, /^health {2}\[read\]/m);
-    assert.doesNotMatch(readOnly.out, /\[WRITE\]/);
 
-    // Denied.
-    fs.rmSync(home, { recursive: true, force: true });
-    mcpAuth._internal.reset();
-    const s2 = await cli(['login', '--no-wait']);
-    await approve('eric@tt.com', codeFrom(s2.out), { decision: 'deny' });
-    fastForward();
-    const d = await cli(['login', '--check']);
-    assert.equal(d.code, 1);
-    assert.match(d.out, /STATUS: denied/);
+    test(`${d.name}: login --wait: allowed while it waits, it connects by itself; denied says denied; an expired code says expired`, async () => {
+        const home = HOME;
+        fs.rmSync(home, { recursive: true, force: true });
+        mcpAuth._internal.reset();
 
-    // Expired.
-    mcpAuth._internal.reset();
-    const s3 = await cli(['login', '--no-wait']);
-    assert.equal(s3.code, 2);
-    mcpAuth._internal.devices.forEach((rec) => { rec.exp = Date.now() - 1; });
-    const e = await cli(['login', '--check']);
-    assert.equal(e.code, 1);
-    assert.match(e.out, /STATUS: expired/);
-});
+        // Allowed during the wait.
+        const waiting = d.run(['login', '--wait', '40']);
+        const seen = await new Promise((resolve) => {
+            const t = setInterval(() => { const dev = [...mcpAuth._internal.devices.values()][0]; if (dev) { clearInterval(t); resolve(dev.userCode); } }, 50);
+        });
+        await approve('eric@tt.com', seen.slice(0, 4) + '-' + seen.slice(4));
+        const r = await waiting;
+        assert.equal(r.code, 0, r.out + r.err);
+        assert.match(r.out, /STATUS: connected/);
+        noSecrets(r.out + r.err);
+        // Read-only: a tool that writes is not even listed.
+        const readOnly = await d.run(['tools']);
+        assert.match(readOnly.out, /^health {2}\[read\]/m);
+        assert.doesNotMatch(readOnly.out, /\[WRITE\]/);
 
-test('without a server address the CLI says so; --help lists the commands; an unknown command is an error', async () => {
-    const lonely = await cli(['status'], { env: { COACH_STUDIO_URL: '', COACH_STUDIO_HOME: path.join(tmp, 'empty-home') } });
-    assert.equal(lonely.code, 1);
-    // The raw file has the placeholder and no config: it asks for an address.
-    assert.match(lonely.err, /No server address|STATUS: not connected|Could not reach/);
-    const h = await cli(['--help']);
-    assert.equal(h.code, 0);
-    for (const word of ['login', 'status', 'tools', 'call', 'logout']) assert.ok(h.out.includes(word), word);
-    const u = await cli(['frobnicate']);
-    assert.equal(u.code, 1);
-    assert.match(u.err, /Unknown command/);
-});
+        // Denied.
+        fs.rmSync(home, { recursive: true, force: true });
+        mcpAuth._internal.reset();
+        const s2 = await d.run(['login', '--no-wait']);
+        await approve('eric@tt.com', codeFrom(s2.out), { decision: 'deny' });
+        fastForward();
+        const den = await d.run(['login', '--check']);
+        assert.equal(den.code, 1, den.out + den.err);
+        assert.match(den.out, /STATUS: denied/);
+
+        // Expired.
+        mcpAuth._internal.reset();
+        const s3 = await d.run(['login', '--no-wait']);
+        assert.equal(s3.code, 2);
+        mcpAuth._internal.devices.forEach((rec) => { rec.exp = Date.now() - 1; });
+        const exp = await d.run(['login', '--check']);
+        assert.equal(exp.code, 1, exp.out + exp.err);
+        assert.match(exp.out, /STATUS: expired/);
+    });
+
+    test(`${d.name}: without a server address it says so; help lists the commands; an unknown command is an error`, async () => {
+        const empty = { COACH_STUDIO_URL: '', COACH_STUDIO_HOME: path.join(tmp, 'empty-home-' + d.name) };
+        const lonely = await d.run(['login', '--no-wait'], { env: empty });
+        assert.equal(lonely.code, 1, lonely.out + lonely.err);
+        assert.match(lonely.err, /No server address/);
+        const h = await d.run(['--help'], { env: empty });
+        assert.equal(h.code, 0);
+        for (const word of ['login', 'status', 'tools', 'call', 'logout']) assert.ok(h.out.includes(word), word);
+        const u = await d.run(['frobnicate'], { env: empty });
+        assert.equal(u.code, 1);
+        assert.match(u.err, /Unknown command/);
+    });
+}
 
 // ---- what the Studio serves, and what it shows ------------------------------
 
-test('/cli/* serves the program, the Skill and both installers with this Studio\'s own address in them', async () => {
-    for (const f of ['coach-studio.mjs', 'SKILL.md', 'install.sh', 'install.ps1']) {
+test('/cli/* serves the scripts, the Skill and both installers with this Studio\'s own address in them, LF only and plain ASCII', async () => {
+    for (const f of ['coach-studio.ps1', 'coach-studio.sh', 'SKILL.md', 'install.sh', 'install.ps1']) {
         const r = await fetch(base + '/cli/' + f);
         assert.equal(r.status, 200, f);
         assert.equal(r.headers.get('cache-control'), 'no-store');
         const text = await r.text();
         assert.ok(!text.includes('__ORIGIN__'), f + ' still has the placeholder');
         assert.ok(!text.includes('\r'), f + ' has Windows line endings (bash would choke on them)');
+        // Windows PowerShell 5.1 reads a file with no byte-order mark as the local code page: one fancy character would be garbled.
+        assert.match(text, /^[\x00-\x7F]*$/, f + ' has a character outside ASCII');
         if (f !== 'SKILL.md') assert.ok(text.includes(base), f + ' does not carry the address');
     }
     assert.match(await (await fetch(base + '/cli/SKILL.md')).text(), /^---\nname: coach-studio\ndescription: /);
     assert.equal((await fetch(base + '/cli/install.sh', { method: 'POST' })).status, 405);
-    assert.equal((await fetch(base + '/cli/server.js')).status, 404, 'only these four files');
+    assert.equal((await fetch(base + '/cli/server.js')).status, 404, 'only these files');
+    assert.equal((await fetch(base + '/cli/coach-studio.mjs')).status, 404, 'there is no Node program: nothing to install first');
     assert.equal((await fetch(base + '/cli/..%2Flib%2Fadmin.js')).status, 404);
 });
 
@@ -390,43 +428,35 @@ test('the AI apps page carries the text to paste into an assistant, with this ad
     assert.ok(html.includes(`irm ${base}/cli/install.ps1 | iex`));
     assert.match(html, /read the Skill and guide me through sign-in and authorization/);
     assert.match(html, /onclick="navigator\.clipboard\.writeText\(document\.getElementById\('cli-prompt'\)\.innerText\)/);
-    assert.match(html, /Needs Node\.js 18/);
+    assert.match(html, /Nothing to install first: it uses PowerShell on Windows, and bash and curl on macOS and Linux/);
+    assert.doesNotMatch(html, /Node\.js/, 'no Node.js requirement for the person');
 });
 
 // Async on purpose: the Studio under test runs in THIS process, and a spawnSync would stop it from answering the installer.
-function run(command, args, env) {
-    return new Promise((resolve) => {
-        const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
-        let stdout = ''; let stderr = '';
-        const timer = setTimeout(() => child.kill(), 60000);
-        child.stdout.on('data', (c) => { stdout += c; });
-        child.stderr.on('data', (c) => { stderr += c; });
-        child.on('close', (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
-    });
-}
-function bashAvailable() { const r = spawnSync('bash', ['-c', 'command -v curl && command -v node'], { encoding: 'utf8' }); return r.status === 0; }
+function run(command, args, env) { return exec(command, args, { env }).then((r) => ({ status: r.code, stdout: r.out, stderr: r.err })); }
 
-test('install.sh: the pasted command downloads the program and the Skill, writes the address, and puts the Skill where Claude Code looks', { skip: !bashAvailable() && 'bash, curl or node missing' }, async () => {
+test('install.sh: the pasted command downloads the script and the Skill, writes the address, and puts the Skill where Claude Code looks', { skip: !bashAvailable() && 'bash or curl missing' }, async () => {
     const home = path.join(tmp, 'sh-home');
     fs.rmSync(home, { recursive: true, force: true });
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
-    const r = await run('bash', ['-c', `curl -fsSL ${base}/cli/install.sh | bash`], { HOME: home });
+    const r = await run('bash', ['-c', `curl -fsSL ${base}/cli/install.sh | bash`], { HOME: home, COACH_STUDIO_HOME: '' });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     const dir = path.join(home, '.coach-studio');
-    assert.ok(fs.existsSync(path.join(dir, 'coach-studio.mjs')));
+    assert.ok(fs.existsSync(path.join(dir, 'coach-studio.sh')));
     assert.ok(fs.existsSync(path.join(dir, 'SKILL.md')));
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')), { server: base });
+    assert.equal(fs.readFileSync(path.join(dir, 'config'), 'utf8').trim(), 'server=' + base);
     assert.ok(fs.existsSync(path.join(home, '.claude', 'skills', 'coach-studio', 'SKILL.md')), 'the Skill for Claude Code');
     assert.match(r.stdout, /Coach Studio CLI installed/);
-    // The installed copy works: it knows the address from config.json alone.
-    const installed = await run(process.execPath, [path.join(dir, 'coach-studio.mjs'), 'status'], { COACH_STUDIO_URL: '', COACH_STUDIO_HOME: dir });
+    assert.doesNotMatch(r.stdout + r.stderr, /node/i, 'no Node anywhere');
+    // The installed copy knows the address from its config alone, and runs.
+    const installed = await run('bash', [path.join(dir, 'coach-studio.sh'), 'status'], { COACH_STUDIO_URL: '', COACH_STUDIO_HOME: dir });
     assert.equal(installed.status, 1);
     assert.match(installed.stderr, /STATUS: not connected/);
-    // Without Claude Code's folder it installs the program and the Skill file, and nothing else.
+    // Without Claude Code's folder it installs the script and the Skill file, and nothing else.
     const bare = path.join(tmp, 'sh-home-bare');
     fs.rmSync(bare, { recursive: true, force: true });
     fs.mkdirSync(bare, { recursive: true });
-    const r2 = await run('bash', ['-c', `curl -fsSL ${base}/cli/install.sh | bash`], { HOME: bare });
+    const r2 = await run('bash', ['-c', `curl -fsSL ${base}/cli/install.sh | bash`], { HOME: bare, COACH_STUDIO_HOME: '' });
     assert.equal(r2.status, 0, r2.stderr);
     assert.ok(!fs.existsSync(path.join(bare, '.claude')), 'does not create .claude');
 });
@@ -439,11 +469,15 @@ test('install.ps1: the PowerShell installer does the same on Windows', { skip: p
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
     const script = path.join(tmp, 'install-from-studio.ps1');
     fs.writeFileSync(script, await (await fetch(base + '/cli/install.ps1')).text());
-    const r = await run('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { USERPROFILE: home, HOME: home });
+    const r = await run('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { USERPROFILE: home, HOME: home, COACH_STUDIO_HOME: '' });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     const dir = path.join(home, '.coach-studio');
-    assert.ok(fs.existsSync(path.join(dir, 'coach-studio.mjs')));
+    assert.ok(fs.existsSync(path.join(dir, 'coach-studio.ps1')));
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')), { server: base });
     assert.ok(fs.existsSync(path.join(home, '.claude', 'skills', 'coach-studio', 'SKILL.md')));
     assert.match(r.stdout, /Coach Studio CLI installed/);
+    assert.doesNotMatch(r.stdout + r.stderr, /node/i, 'no Node anywhere');
+    const installed = await run('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(dir, 'coach-studio.ps1'), 'status'], { COACH_STUDIO_URL: '', COACH_STUDIO_HOME: dir, USERPROFILE: home, HOME: home });
+    assert.equal(installed.status, 1, installed.stdout + installed.stderr);
+    assert.match(installed.stderr, /STATUS: not connected/);
 });

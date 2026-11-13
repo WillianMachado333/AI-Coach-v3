@@ -5,14 +5,12 @@ description: Read and manage Talent Transformation's AI coach (Erica) through Co
 
 # Coach Studio
 
-Coach Studio is where Talent Transformation looks after its AI coach, Erica. This skill gives you the same tools the Studio has, through a small program on this computer. The person signs in once with a link; their Studio role decides what you can do.
+Coach Studio is where Talent Transformation looks after its AI coach, Erica. This skill gives you the same tools the Studio has, through a small script on this computer. The person signs in once with a link; their Studio role decides what you can do. Nothing needs installing: the script uses PowerShell on Windows and bash with curl on macOS and Linux.
 
-The program is `coach-studio.mjs` in `.coach-studio` under the person's home folder (the server address is already set):
+The script is in the `.coach-studio` folder under the person's home folder (the server address is already set). Use the form for this computer; below, `cs` stands for it.
 
-- macOS / Linux: `node ~/.coach-studio/coach-studio.mjs <command>`
-- Windows PowerShell: `node "$HOME\.coach-studio\coach-studio.mjs" <command>`
-
-Below, `cs` stands for that whole command.
+- **Windows (PowerShell):** `powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\.coach-studio\coach-studio.ps1" <command>`
+- **macOS / Linux:** `bash ~/.coach-studio/coach-studio.sh <command>`
 
 ## Sign in (once)
 
@@ -27,8 +25,11 @@ Never print, open, copy or send anything under `.coach-studio` other than what t
 ## Use it
 
 - `cs tools` lists the tools. `[read]` ones only look; `[WRITE]` ones change something.
-- `cs call TOOL '{"key":"value"}'` runs one. In PowerShell, quotes inside a command-line argument get lost: put the JSON in a file and use `--args-file FILE`, or pipe it in: `'{"limit":5}' | node "$HOME\.coach-studio\coach-studio.mjs" call TOOL -`.
+- `cs call TOOL` runs one with no arguments. With arguments, give JSON:
+  - macOS / Linux: `cs call TOOL '{"key":"value"}'`
+  - Windows: quotes inside a command-line argument get lost, so write the JSON to a file and add `--args-file FILE`, or pipe it in with `--stdin`: `'{"key":"value"}' | powershell -NoProfile -ExecutionPolicy Bypass -File "$HOME\.coach-studio\coach-studio.ps1" call TOOL --stdin`
 - Good first calls: `health`, `read_config`, `pipeline_summary`, `cost_summary`. Say what you found in a few lines.
+- On macOS / Linux without `jq`, a result comes as the raw answer: the tool's output is the `text` inside `result.content`.
 
 ## Rules
 
