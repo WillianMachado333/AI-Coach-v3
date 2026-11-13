@@ -133,6 +133,17 @@ Reaching the limit mid-call ends the call like a hang-up and shows V2's limit me
 | `/admin` | Wix sign-in works and the Studio loads (production: needs the OAuth callback, section 4) |
 | `POST /api/conversation-history-fetch` for an id never prepared | 403 |
 
+## 5b. Coach Studio CLI (an assistant with a terminal)
+
+Claude Code, Codex and similar assistants connect to the Studio without opening any settings. On **AI apps** (`/admin/connected-apps`) the Studio shows a text to paste into the assistant's chat: it runs the installer (`curl -fsSL <origin>/cli/install.sh | bash`, or `irm <origin>/cli/install.ps1 | iex`), reads the Skill, and then `login` prints a link and a code. The person opens the link in the browser where they are signed in to the Studio, checks the code, ticks the permissions and allows. The program then calls the same tools the MCP connector has.
+
+- **What is served:** `/cli/coach-studio.ps1` (Windows), `/cli/coach-studio.sh` (macOS / Linux), `/cli/SKILL.md`, `/cli/install.sh` and `/cli/install.ps1`, from the `cli/` folder, with this Studio's own address filled in (`PUBLIC_ORIGIN`, else the Railway domain). What is installed from staging talks to staging, and from production to production. They are public: they hold no secret.
+- **What it needs:** nothing installed first. The program is a PowerShell script on Windows and a bash script (with curl) on macOS and Linux, both already there. Two small scripts to keep in step: a change to one command goes in both. The installer writes only `~/.coach-studio/` and, if `~/.claude` exists, copies the Skill into `~/.claude/skills/coach-studio/`. It does not touch PATH.
+- **Sign-in:** the OAuth device flow (RFC 8628) in `lib/mcpAuth.js`. Codes are kept in memory for 10 minutes (a restart only means starting again), at most 10 starts per address per 10 minutes and 10 wrong codes per person per 10 minutes. The token is the same kind a Claude or ChatGPT connection gets: scopes capped by the person's Studio role, listed on AI apps as `Coach Studio CLI (<computer name>)`, revocable there, audited as `mcp` with `flow: device`.
+- ⚠️ **The risk to know:** someone could start a sign-in and send the person its link ("log in here"). The page shows the code, says to continue only if they started it themselves, and offers only `read:ops` ticked, so a person who allows it without checking gives that stranger a read-only view. Tell the team to open the link only from their own assistant.
+- **Check after a deploy:** `curl <origin>/cli/install.sh` answers 200 with the origin in it; `/.well-known/oauth-authorization-server` lists `device_authorization_endpoint`.
+- **To disconnect someone:** revoke their `Coach Studio CLI` row on AI apps. Their next call is refused, and the program says `STATUS: signed out`.
+
 ## 6. Rollback
 
 Pick the first one that fits.
