@@ -750,12 +750,16 @@ async function handleRequest(req, res) {
         }
     }
 
+    // The Coach Studio CLI and its Skill, for an assistant with a terminal
+    // (Claude Code, Codex): the install scripts and the files they fetch.
+    if (typeof req.url === 'string' && req.url.startsWith('/cli/') && require('./lib/cliAssets').handle(req, res)) return;
+
     // Remote MCP connector for the Coach Studio (#38): the OAuth metadata and
     // endpoints (lib/mcpAuth.js, sign-in = the Studio's) and POST /mcp
     // (lib/mcpServer.js, the Studio tool registry over MCP).
     if (typeof req.url === 'string' && (req.url.startsWith('/.well-known/oauth-') || req.url.startsWith('/oauth/') || req.url === '/mcp' || req.url.startsWith('/mcp?'))) {
         try {
-            if (await mcpAuth.handle(req, res, { identity: admin.studioIdentity, audit: auditLog })) return;
+            if (await mcpAuth.handle(req, res, { identity: admin.studioIdentity, audit: auditLog, ip: clientIp(req) })) return;
             if (await mcpServer.handle(req, res)) return;
         } catch (e) {
             console.error('[SERVER] MCP error:', e?.message || e);
