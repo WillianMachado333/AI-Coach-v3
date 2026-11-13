@@ -210,6 +210,45 @@ test('starts are limited per address and pending sign-ins are capped; a device c
     assert.equal(wrong.status, 401);
 });
 
+// Willian, 13 Nov, on staging: not signed in, he opened the link, signed in with Wix and landed on the
+// dashboard. The login only remembered the MCP consent screen, not this code page.
+test('not signed in: the link goes to the Studio login, and after the Wix sign-in comes back to the code page (not the dashboard)', async () => {
+    const wixOauth = require('../lib/wixOauth');
+    const d = (await startDevice()).body;
+    const target = '/oauth/device?user_code=' + d.user_code;
+    const link = await fetch(base + target, { redirect: 'manual' });
+    const loginUrl = link.headers.get('location');
+    assert.equal(loginUrl, '/admin/login?next=' + encodeURIComponent(target));
+    // The login page remembers where to go back to.
+    const login = await fetch(base + loginUrl);
+    assert.equal(login.status, 200);
+    const remembered = login.headers.get('set-cookie');
+    assert.match(remembered, /^cs_next=%2Foauth%2Fdevice%3Fuser_code%3D[B-Z]{4}-[B-Z]{4};/);
+    // The Wix sign-in completes (stubbed: Wix is the one thing a test cannot do) and the person lands on the code page.
+    const real = { complete: wixOauth.completeLogin, read: wixOauth.readPkce };
+    wixOauth.completeLogin = async () => ({ memberId: 'm-eric', email: 'eric@tt.com', name: 'Eric' });
+    wixOauth.readPkce = () => ({ ok: true });
+    try {
+        const done = await fetch(base + '/auth/wix/complete', { method: 'POST', headers: { ...FORM, cookie: remembered.split(';')[0] + '; cs_wix_pkce=x' }, body: form({ code: 'c', state: 's' }), redirect: 'manual' });
+        assert.equal(done.status, 302);
+        assert.equal(done.headers.get('location'), target, 'back to the code page, not /admin/');
+        const cookies = done.headers.getSetCookie().map((c) => c.split(';')[0]);
+        assert.ok(cookies.includes('cs_next='), 'the bookmark is used once');
+        const session = cookies.find((c) => c.startsWith('admin_session='));
+        assert.ok(session, 'signed in');
+        const page = await fetch(base + target, { headers: { cookie: session } });
+        assert.ok((await page.text()).includes(`data-device-code="${d.user_code}"`), 'the code is there to allow');
+    } finally { wixOauth.completeLogin = real.complete; wixOauth.readPkce = real.read; }
+});
+
+test('the login only goes back to the consent screen and the CLI code page on this site: nothing else, never another site', async () => {
+    const cookieFor = async (next) => (await fetch(base + '/admin/login?next=' + encodeURIComponent(next))).headers.get('set-cookie') || '';
+    for (const ok of ['/oauth/device', '/oauth/device?user_code=ABCD-EFGH', '/oauth/authorize?client_id=x&state=y']) assert.match(await cookieFor(ok), /^cs_next=/, ok);
+    for (const bad of ['https://evil.example/', '//evil.example/oauth/device', '/oauth/device/../../admin', '/oauth/deviceX', '/oauth/devices?x=1', '/admin/', '/oauth/device?x=1 2', '/oauth/token']) {
+        assert.doesNotMatch(await cookieFor(bad), /cs_next=/, bad);
+    }
+});
+
 // ---- the program, as a child process -------------------------------------------
 // Two scripts, nothing to install first: PowerShell on Windows, bash + curl on
 // macOS and Linux. Each runs the same scenarios where it can run.
