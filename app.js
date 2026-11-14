@@ -9938,8 +9938,11 @@ class VoiceChatBot {
         box.addEventListener('pointercancel', end);
     }
 
+    // What the preview says: the coach's own text (voiceCards.json preview,
+    // V2's userFacingContext) when the card has one, else the greeting.
     _cardPreviewText(card) {
-        return `Hi, I'm ${card.name}. I'm glad you're here.`;
+        const text = card && typeof card.preview === 'string' ? card.preview.trim() : '';
+        return text || `Hi, I'm ${card.name}. I'm glad you're here.`;
     }
 
     _prefetchCardPreview(card) {
@@ -10141,10 +10144,12 @@ class VoiceChatBot {
             row.setAttribute('role', 'option');
             row.setAttribute('aria-selected', card === current ? 'true' : 'false');
             row.setAttribute('data-card', card.id);
-            row.innerHTML = `<img src="${this.apiUrl(card.thumb)}" alt="" draggable="false"><span class="coach-dd-name"></span>`
+            row.innerHTML = `<img src="${this.apiUrl(card.thumb)}" alt="" draggable="false"><span class="coach-dd-text"><span class="coach-dd-name"></span><span class="coach-dd-style"></span></span>`
                 + '<svg class="coach-dd-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>'
                 + `<button type="button" class="coach-dd-play" tabindex="-1">${VOICE_CARD_ICONS}</button>`;
             row.querySelector('.coach-dd-name').textContent = card.name;
+            // The one-word style (the card id: Supportive, Guidance, ...), as in V2's list.
+            row.querySelector('.coach-dd-style').textContent = card.id;
             const play = row.querySelector('.coach-dd-play');
             play.setAttribute('aria-label', `Hear ${card.name}`);
             play.addEventListener('click', (e) => { e.stopPropagation(); this._previewDropdownCard(card, row); });
