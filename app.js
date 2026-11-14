@@ -8464,6 +8464,7 @@ class VoiceChatBot {
 
     // User-turn item: sent now, or held while a call is pending.
     _sendUserItem(message) {
+        this._liveAskedAt = Date.now();
         if (!this._liveBusy()) return this.sendMessage(message);
         if (!this._liveHeldItems) this._liveHeldItems = [];
         this._liveHeldItems.push(message);
@@ -8585,6 +8586,7 @@ class VoiceChatBot {
         if (!wanted) return;
         console.log(`[Erica][Live] ▶ flushing ${held.length} held turn(s) and one response.create (${reason})`);
         held.forEach((message) => this.sendMessage(message));
+        if (held.length) this._liveAskedAt = Date.now();
         // They reach the model only now: the reply that just finished did not
         // answer them, and their 60 s start here (lib/turnWatch.js).
         this._turns().delivered(held);
@@ -10504,6 +10506,13 @@ class VoiceChatBot {
         return !!(this.isRecording || this._connectForCall);
     }
 
+    // TT-2233, text chat: the backend has taken (session.delegation.created)
+    // or answered (its text) the message sent last. The voice layer's words
+    // for that message are then not a reply of their own.
+    _liveBackendAnswering() {
+        return !!this._liveBackendAt && this._liveBackendAt >= (this._liveAskedAt || 0);
+    }
+
     // GPT-Live's safety filter closed the session ('content'). What tripped
     // it is what session.input carried (staging probe, 2026-10-28), so
     // nothing that is in the window now goes into a session.input again —
@@ -10829,6 +10838,8 @@ class VoiceChatBot {
             case 'session.delegation.created': {
                 const coach = this._gateCoach();
                 if (coach) coach.delegation(Date.now());
+                // The backend now answers the message just sent (_liveBackendAnswering).
+                this._liveBackendAt = Date.now();
                 break;
             }
 
@@ -10872,9 +10883,19 @@ class VoiceChatBot {
                 this._liveSpoken.push({ at: Date.now(), text: message.delta });
                 if (this._liveSpoken.length > 400) this._liveSpoken.splice(0, this._liveSpoken.length - 400);
                 this._ungateLiveAudio('output_transcript');
-                if (typeof this.hideLoader === 'function') this.hideLoader();
+                // TT-2233: in a text chat nobody hears the voice layer, and
+                // the backend's answer is the reply. Her words (a paraphrase,
+                // a cut-off sentence, "Mm-hmm.") used to render as a bubble of
+                // their own next to it, and upsertMessage never merged the two
+                // (live-bot-* against live-deleg-*). They are held, and the
+                // finalizer below decides: dropped if the backend answers,
+                // rendered if she was the only one to answer. A call is as
+                // before. Decided once per utterance.
+                const heldChat = this._liveBotItemId ? !!this._liveBotHeld : !this._inCall();
+                if (!heldChat && typeof this.hideLoader === 'function') this.hideLoader();
                 if (!this._liveBotItemId) {
                     this._liveBotItemId = `live-bot-${Date.now()}`;
+                    this._liveBotHeld = heldChat;
                     this._liveBotTurnKey = this._liveBotItemId;
                     // A new utterance (not the continuation of one already playing).
                     if (!this._liveUtteranceStarts) this._liveUtteranceStarts = [];
@@ -10890,13 +10911,22 @@ class VoiceChatBot {
                 this._liveBotTranscript = (this._liveBotTranscript || '') + message.delta;
                 {
                     const shown = this._nonSpeechFiltered(this._liveBotTranscript, 'coach');
-                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, false, Date.now(), { turnKey: this._liveBotTurnKey, voiceLayer: true });
+                    if (this._liveBotHeld) {
+                        // Held: a reply has started for the turn watch (a session
+                        // that dies now cuts it off), but the dots stay until
+                        // something shows.
+                        if (shown) this._turns().output({ key: this._liveBotTurnKey, final: false, held: true });
+                    } else if (shown) this.updateBotMessage(this._liveBotItemId, shown, false, Date.now(), { turnKey: this._liveBotTurnKey, voiceLayer: true });
                 }
                 clearTimeout(this._liveBotFinalizeTimer);
                 this._liveBotFinalizeTimer = setTimeout(() => {
                     const shown = this._nonSpeechFiltered(this._liveBotTranscript, 'coach', true);
-                    if (shown) this.updateBotMessage(this._liveBotItemId, shown, true, Date.now(), { turnKey: this._liveBotTurnKey, voiceLayer: true });
+                    if (shown && this._liveBotHeld && !this._inCall() && this._liveBackendAnswering()) {
+                        // Not silent: the backend's answer is the reply.
+                        console.log('[Erica][Live] voice-layer words held back, backend answers:', shown.slice(0, 160));
+                    } else if (shown) this.updateBotMessage(this._liveBotItemId, shown, true, Date.now(), { turnKey: this._liveBotTurnKey, voiceLayer: true });
                     this._liveBotItemId = null;
+                    this._liveBotHeld = false;
                     this._liveBotTurnKey = null;
                     this._liveBotTurnSplit = false;
                     this._liveBotTranscript = '';
@@ -10956,6 +10986,7 @@ class VoiceChatBot {
                 } else if (inner.type === 'response.output_text.delta' && typeof inner.delta === 'string') {
                     if (!this._liveDelegatedText) this._liveDelegatedFirstTextAt = Date.now();
                     this._liveDelegatedText = (this._liveDelegatedText || '') + inner.delta;
+                    this._liveBackendAt = Date.now();
                     if (!this.isRecording) {
                         if (typeof this.hideLoader === 'function') this.hideLoader();
                         if (!this._liveDelegatedItemId) {
