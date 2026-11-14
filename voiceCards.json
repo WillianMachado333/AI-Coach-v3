@@ -1,14 +1,14 @@
 {
   "version": "1.1",
-  "note": "The image cards shown when a person first starts voice mode (a horizontal carousel: 4 visible on a phone, swipe for the rest). Picking a card picks the coach's face, name and voice; the coaching style is separate (the in-chat Navigator). id = the companionId whose face and name the card uses; order = display order.",
+  "note": "The image cards shown when a person first starts voice mode (a horizontal carousel: 4 visible on a phone, swipe for the rest). Picking a card picks the coach's face, name and voice; the coaching style is separate (the in-chat Navigator). label and preview are the V2 coach texts (voiceProfiles.json, verbatim): the list shows the card id as the one-word style, and the preview reads the preview text; neither applies the style. id = the companionId whose face and name the card uses; order = display order.",
   "cards": [
-    { "id": "Supportive", "name": "Erica", "thumb": "companions/Erica-thumb.png", "voice": "marin" },
-    { "id": "Guidance", "name": "Jasmine", "thumb": "companions/Jasmine-thumb.png", "voice": "coral" },
-    { "id": "Empowering", "name": "Michael", "thumb": "companions/Michael-thumb.png", "voice": "cedar" },
-    { "id": "Discovery", "name": "Sean", "thumb": "companions/Sean-thumb.png", "voice": "ash" },
-    { "id": "Strengths", "name": "Steve", "thumb": "companions/Steve-thumb.png", "voice": "verse" },
-    { "id": "Exploratory", "name": "Evan", "thumb": "companions/Evan-thumb.png", "voice": "echo" },
-    { "id": "Directive", "name": "Sarah", "thumb": "companions/Sarah-thumb.png", "voice": "sage" },
-    { "id": "Nurturing", "name": "Emma", "thumb": "companions/Emma-thumb.png", "voice": "alloy" }
+    { "id": "Supportive", "name": "Erica", "thumb": "companions/Erica-thumb.png", "voice": "marin", "label": "Calm, Reassuring Coach", "preview": "During our conversations, we will slow down and create a safe, caring space. I will check in on how you feel, build trust, and help you move forward at a steady pace." },
+    { "id": "Guidance", "name": "Jasmine", "thumb": "companions/Jasmine-thumb.png", "voice": "coral", "label": "Encourages learning by doing", "preview": "During our conversations, we will focus on learning by doing. I will share examples, clarify expectations, and support you as you try things yourself and learn from experience." },
+    { "id": "Empowering", "name": "Michael", "thumb": "companions/Michael-thumb.png", "voice": "cedar", "label": "Build your confidence", "preview": "During our conversations, I will help you build confidence and ownership. I will offer options, reflect your strengths, and support you in choosing and committing to your decisions." },
+    { "id": "Discovery", "name": "Sean", "thumb": "companions/Sean-thumb.png", "voice": "ash", "label": "Questions that bring clarity", "preview": "During our conversations, I will ask thoughtful questions to help you think clearly. We will explore assumptions, explain your thinking, and pause to build understanding before moving forward." },
+    { "id": "Strengths", "name": "Steve", "thumb": "companions/Steve-thumb.png", "voice": "verse", "label": "Build on your strengths", "preview": "During our conversations, we will focus on what you do well. I will help you use your strengths, learn from past successes, and stay motivated while facing challenges honestly." },
+    { "id": "Exploratory", "name": "Evan", "thumb": "companions/Evan-thumb.png", "voice": "echo", "label": "Curious and explores ideas", "preview": "During our conversations, we will explore ideas openly and creatively. I will encourage curiosity, then help you narrow choices into simple steps, so your ideas turn into action." },
+    { "id": "Directive", "name": "Sarah", "thumb": "companions/Sarah-thumb.png", "voice": "sage", "label": "Directive, clear, actionable", "preview": "During our conversations, we will move fast and focus on results. I will help you clarify goals, choose next steps, and take action quickly while keeping things practical and focused." },
+    { "id": "Nurturing", "name": "Emma", "thumb": "companions/Emma-thumb.png", "voice": "alloy", "label": "Warm and understanding", "preview": "During our conversations, we will focus on connection and feelings. I will listen closely, reflect emotions, and help you explore relationships and boundaries gently and safely." }
   ]
 }
