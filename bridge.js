@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-10-full-page';
+    var VERSION = '2026-11-18-outside-click-minimise';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -243,6 +243,7 @@
     var IFRAME_ID = 'ct-bridge-iframe';
 
     var state = 'icon'; // 'icon' | 'expanded'
+    var openedRecently = false; // the first 400 ms after the chat opened (attachOutsideClickMinimise)
 
     // --- CleverTap event pings (HOST_EVENT) ---
     // The site already tells CleverTap where the user goes ("Visited Article
@@ -703,6 +704,8 @@
         if (state === 'expanded') return;
         wakeCoach(); // any way of opening loads the coach first
         state = 'expanded';
+        openedRecently = true;
+        setTimeout(function () { openedRecently = false; }, 400);
         var container = document.getElementById(CONTAINER_ID);
         mergeStyle(container, {
             transform: 'scale(1)',
@@ -733,6 +736,33 @@
     function toggleChat() {
         if (state === 'expanded') collapseToIcon();
         else expandToChat();
+    }
+
+    // A click on the page outside the open chat folds it to the icon (Eric,
+    // at a convention, 18 Nov 2026: the minimise button in the chat header was
+    // not always there to press, so the chat could not be put away). A click
+    // inside the coach's iframe never reaches this document, so what arrives
+    // here is the page, the icon or the bridge's own overlays; the icon and
+    // the overlays (every id starting with ct-bridge) are left to their own
+    // handlers. Only real clicks count: the coach pressing the site's own
+    // buttons (runHostAction) is a script click and does not fold the chat.
+    // The first 400 ms after it opened are ignored, so a click that is
+    // already on its way cannot close what a nudge just opened.
+    function isBridgeNode(node) {
+        for (var n = node; n; n = n.parentNode || n.host) {
+            if (typeof n.id === 'string' && n.id.indexOf('ct-bridge') === 0) return true;
+        }
+        return false;
+    }
+    function attachOutsideClickMinimise() {
+        if (window.__ctBridgeOutsideAttached) return; // re-injected script: one listener
+        window.__ctBridgeOutsideAttached = true;
+        document.addEventListener('click', function (e) {
+            if (state !== 'expanded' || openedRecently) return;
+            if (!e || e.isTrusted === false) return;
+            if (isBridgeNode(e.target)) return;
+            collapseToIcon();
+        }, true);
     }
 
     // Colour the ring around the corner icon to reflect connection state.
@@ -1189,10 +1219,12 @@
         document.addEventListener('DOMContentLoaded', function () {
             setTimeout(injectUI, 500);
             attachElementFocusListeners();
+            attachOutsideClickMinimise();
         });
     } else {
         setTimeout(injectUI, 500);
         attachElementFocusListeners();
+        attachOutsideClickMinimise();
     }
 
     console.log('[CTBridge] Loaded (version ' + VERSION + ')');
