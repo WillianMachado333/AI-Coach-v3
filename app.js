@@ -1735,11 +1735,12 @@ class VoiceChatBot {
                     // starter pills, bundled history) — and it warms the caches the
                     // first connect() reads.
                     const prepIdentifier = this.getUserIdFromURL() || this.getEmailFromURL() || null;
-                    this.fetchEricaPreparation(prepIdentifier)
+                    const standbyReady = this.fetchEricaPreparation(prepIdentifier)
                         // The card, name and style this person has: shown in the
                         // header now, not only once a session opens.
                         .then(() => this._loadVoiceCards()).then(() => this._applyStoredCoachSettings())
                         .catch((e) => console.warn('[Erica] Live standby: preparation prefetch failed —', e?.message || e));
+                    this._askUrlQuestionOnStandby(standbyReady);
                     // Same for the host's report cache: ask once now, so the first
                     // connect doesn't wait out the timeout on pages that never answer.
                     this.requestReportContextFromParent().then((ctx) => {
@@ -1752,6 +1753,32 @@ class VoiceChatBot {
         } catch (_) {
             // Silently fail
         }
+    }
+
+    // TT-2239 (Diksha, 18 Nov 2026): a question in the URL (?question=...: what
+    // the app's quiz, report and Well-being pages send to the AI Coach tab, and
+    // the site's Ask buttons) was read only by connect(), and a Live page in
+    // standby never calls it before the first message. The app opened the coach,
+    // nothing was sent, nothing was answered. In standby the question goes the
+    // way a typed one does (it opens the session), once the preparation is in,
+    // or sits in the composer when the link says autosubmit=n.
+    _askUrlQuestionOnStandby(ready) {
+        const question = !this._urlQuestionSent ? this.getUrlQuestion() : null;
+        if (!question) return;
+        this._urlQuestionSent = true;
+        this.openingLineSent = true; // the question starts the conversation, as in connect()
+        Promise.resolve(ready).then(() => {
+            if (this.getUrlAutoSubmit()) {
+                console.log('[Erica] Live standby: sending the URL question:', question);
+                this.sendTextMessage(question);
+            } else {
+                console.log('[Erica] Live standby: placing the URL question in the input (autosubmit=n):', question);
+                if (this.textInput) {
+                    this.textInput.value = question;
+                    this.updateTextButtonVisibility();
+                }
+            }
+        });
     }
 
     flushPendingBotMessages(insertAfterMessage) {
