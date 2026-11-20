@@ -151,3 +151,52 @@ test('the cache-busting versions moved with the files that changed', () => {
     assert.match(html, /<script src="lib\/coachUiRules\.js\?v=20261119a"><\/script>/);
     assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=20261119a">/);
 });
+
+// ---- Escape and the site's popups -------------------------------------------------
+// CleverTap's SDK closes its popup on Escape and Wix lightboxes close on it: the
+// same key must not also fold the coach.
+const withPopup = (b, tag, id) => {
+    const el = b.doc.createElement(tag);
+    if (id) el.id = id;
+    b.doc.body.appendChild(el);
+    return el;
+};
+
+for (const [name, tag, id] of [
+    ['a Wix lightbox', 'div', 'popups-wrapper'],
+    ['a CleverTap image-only popup', 'div', 'wzrkImageOnlyDiv'],
+    ['a CleverTap wzrk wrapper', 'div', 'wzrk_wrapper'],
+    ['a CleverTap push prompt', 'div', 'pnWrapper'],
+    ['a CleverTap intent preview', 'div', 'intentPreview'],
+    ['a CleverTap web popup', 'ct-web-popup-pip', ''],
+]) {
+    test(`page: Escape with ${name} open is the popup's, not the coach's; once it is gone Escape folds the chat`, () => {
+        const b = open();
+        const popup = withPopup(b, tag, id);
+        press(b, { key: 'Escape' });
+        assert.equal(state(b), 'expanded');
+        popup.remove();
+        press(b, { key: 'Escape' });
+        assert.equal(state(b), 'icon');
+    });
+}
+
+test('page: a popup element with no size (hidden) does not take Escape', () => {
+    const b = open();
+    const popup = withPopup(b, 'div', 'wzrkImageOnlyDiv');
+    popup.getBoundingClientRect = () => ({ width: 0, height: 0 });
+    press(b, { key: 'Escape' });
+    assert.equal(state(b), 'icon');
+});
+
+test('page: a popup that has a size takes Escape; the inbox element sitting in the page does not', () => {
+    const shown = open();
+    const popup = withPopup(shown, 'div', 'popups-wrapper');
+    popup.getBoundingClientRect = () => ({ width: 300, height: 200 });
+    press(shown, { key: 'Escape' });
+    assert.equal(state(shown), 'expanded');
+    const inbox = open();
+    withPopup(inbox, 'ct-web-inbox', '');
+    press(inbox, { key: 'Escape' });
+    assert.equal(state(inbox), 'icon', 'the inbox can sit in the page closed');
+});
