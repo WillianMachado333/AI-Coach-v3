@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-18-outside-click-minimise';
+    var VERSION = '2026-11-19-outside-click-and-escape-minimise';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -761,6 +761,14 @@
             if (state !== 'expanded' || openedRecently) return;
             if (!e || e.isTrusted === false) return;
             if (isBridgeNode(e.target)) return;
+            collapseToIcon();
+        }, true);
+        // Escape on the page does the same (Eric, TT-2238). With the focus
+        // inside the coach the key never reaches this document: the coach asks
+        // for the fold itself (MINIMIZE_TO_ICON).
+        document.addEventListener('keydown', function (e) {
+            if (state !== 'expanded' || openedRecently) return;
+            if (!e || e.key !== 'Escape' || e.isTrusted === false || e.isComposing) return;
             collapseToIcon();
         }, true);
     }

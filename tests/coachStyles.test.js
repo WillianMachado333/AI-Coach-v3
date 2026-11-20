@@ -107,7 +107,7 @@ test('the decision: picking a coach still changes only the face, name and voice;
 test('app.js and styles.css are cache-busted for this change', () => {
     assert.doesNotMatch(html, /styles\.css\?v=20261028a/, 'styles.css changed: its ?v= must too');
     assert.doesNotMatch(html, /app\.js\?v=20261114a/, 'app.js changed: its ?v= must too');
-    assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=20261114b">/);
-    // Any later app.js change bumps it again: checked as "not the old one", not as one value.
+    // Any later change bumps them again: checked as "not the old one", not as one value.
+    assert.match(html, /<link rel="stylesheet" href="styles\.css\?v=2026\d{4}[a-z]+">/);
     assert.match(html, /<script src="app\.js\?v=2026\d{4}[a-z]+"><\/script>/);
 });
