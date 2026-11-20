@@ -115,3 +115,88 @@ test('the coach\'s own minimise request still works', () => {
     b.postToBridge({ type: 'MINIMIZE_TO_ICON' }, COACH);
     assert.equal(state(b), 'icon');
 });
+
+// ---- The site's popups (Willian, 19 Nov 2026) --------------------------------
+// Closing a promotion popup is a real click outside the coach, and it folded the
+// coach too. The popups the site has: Wix lightboxes, the cookie banner and
+// CleverTap's web popups (ids, tags and close classes as the SDK creates them).
+const nested = (b, tag, attrs = {}, depth = 2) => {
+    // popup root > box > ... > the element that is clicked
+    const root = b.doc.createElement(tag);
+    if (attrs.id) root.id = attrs.id;
+    if (attrs.hook) root.setAttribute('data-hook', attrs.hook);
+    b.doc.body.appendChild(root);
+    let leaf = root;
+    for (let i = 0; i < depth; i++) {
+        const child = b.doc.createElement('div');
+        leaf.appendChild(child);
+        leaf = child;
+    }
+    const button = b.doc.createElement('button');
+    leaf.appendChild(button);
+    return { root, button };
+};
+
+const POPUPS = [
+    ['Wix lightbox root', 'div', { id: 'POPUPS_ROOT' }],
+    ['Wix lightbox wrapper', 'div', { id: 'popups-wrapper' }],
+    ['CleverTap wzrk_wrapper', 'div', { id: 'wzrk_wrapper' }],
+    ['CleverTap push prompt', 'div', { id: 'pnWrapper' }],
+    ['CleverTap image-only popup', 'div', { id: 'wzrkImageOnlyDiv' }],
+    ['CleverTap intent preview', 'div', { id: 'intentPreview' }],
+    ['CleverTap wizParDiv0', 'div', { id: 'wizParDiv0' }],
+    ['CleverTap intentOpacityDiv2', 'div', { id: 'intentOpacityDiv2' }],
+    ['CleverTap web popup (image only)', 'ct-web-popup-imageonly', {}],
+    ['CleverTap web popup (pip)', 'ct-web-popup-pip', {}],
+    ['CleverTap web inbox', 'ct-web-inbox', {}],
+    ['cookie banner', 'div', { hook: 'consent-banner-root' }],
+];
+for (const [name, tag, attrs] of POPUPS) {
+    test(`popups: a click inside the ${name} does not fold the chat`, () => {
+        const b = open();
+        const { button } = nested(b, tag, attrs);
+        clickDocument(b, button);
+        assert.equal(state(b), 'expanded');
+        // The page next to it still folds the chat: that use is kept.
+        clickDocument(b, pageElement(b));
+        assert.equal(state(b), 'icon');
+    });
+}
+
+test('popups: the close class of a CleverTap popup is spared wherever it sits', () => {
+    const b = open();
+    for (const cls of ['wzrkClose', 'CT_InterstitialClose', 'CT_InterstitialCTA', 'jsCT_CTA']) {
+        const el = b.doc.createElement('div');
+        el.classList.add(cls);
+        b.doc.body.appendChild(el);
+        clickDocument(b, el);
+        assert.equal(state(b), 'expanded', cls);
+    }
+});
+
+test('popups: a click on a shadow root\'s content arrives as its host element, and is spared too', () => {
+    const b = open();
+    const host = b.doc.createElement('ct-web-popup-pip');
+    b.doc.body.appendChild(host);
+    const inner = { id: '', tagName: 'BUTTON', parentNode: null, host }; // inside the shadow tree: no parent, a host
+    clickDocument(b, inner);
+    assert.equal(state(b), 'expanded');
+});
+
+test('popups: once the popup is gone, a click on the page folds the chat again', () => {
+    const b = open();
+    const { root, button } = nested(b, 'div', { id: 'POPUPS_ROOT' });
+    clickDocument(b, button);
+    assert.equal(state(b), 'expanded', 'closing the popup');
+    root.remove();
+    clickDocument(b, pageElement(b));
+    assert.equal(state(b), 'icon', 'the page, popup gone');
+});
+
+test('popups: elements that merely look like a popup do not shield a click', () => {
+    for (const id of ['popups', 'POPUPS', 'wzrk', 'wizPar', 'popup-wrapper', 'my-ct-web-popup', 'xwzrk_wrapper']) {
+        const b = open();
+        clickDocument(b, pageElement(b, id));
+        assert.equal(state(b), 'icon', 'a plain page element with the id "' + id + '" still folds the chat');
+    }
+});
