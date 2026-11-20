@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-18-outside-click-minimise';
+    var VERSION = '2026-11-19-popup-clicks-spared';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -744,13 +744,50 @@
     // inside the coach's iframe never reaches this document, so what arrives
     // here is the page, the icon or the bridge's own overlays; the icon and
     // the overlays (every id starting with ct-bridge) are left to their own
-    // handlers. Only real clicks count: the coach pressing the site's own
+    // handlers, and so are the site's popups (isPagePopupNode). Only real
+    // clicks count: the coach pressing the site's own
     // buttons (runHostAction) is a script click and does not fold the chat.
     // The first 400 ms after it opened are ignored, so a click that is
     // already on its way cannot close what a nudge just opened.
     function isBridgeNode(node) {
         for (var n = node; n; n = n.parentNode || n.host) {
             if (typeof n.id === 'string' && n.id.indexOf('ct-bridge') === 0) return true;
+        }
+        return false;
+    }
+
+    // The site's own popups (Willian, 19 Nov 2026: closing a promotion popup
+    // also folded the coach). The close button of a popup is a real click
+    // outside the coach, but it belongs to the popup: it is left alone, and so
+    // is anything else inside one. The list is the site's own: the lightboxes
+    // of the Wix page (#POPUPS_ROOT, #popups-wrapper), the cookie banner, and
+    // CleverTap's web popups, with the ids, tags and close classes its SDK
+    // creates (clevertap.min.js) and that the site's custom code already hides
+    // inside the app. A shadow root's click arrives as its host element.
+    var POPUP_IDS = {
+        POPUPS_ROOT: 1, 'popups-wrapper': 1,
+        wzrk_wrapper: 1, pnWrapper: 1, wzrkImageOnlyDiv: 1, intentPreview: 1
+    };
+    var POPUP_ID_PREFIXES = ['wizParDiv', 'intentOpacityDiv'];
+    var POPUP_TAGS = { 'ct-web-popup-imageonly': 1, 'ct-web-popup-pip': 1, 'ct-web-inbox': 1 };
+    var POPUP_CLASSES = ['wzrkClose', 'CT_InterstitialClose', 'CT_InterstitialCTA', 'jsCT_CTA'];
+    function isPagePopupNode(node) {
+        for (var n = node; n; n = n.parentNode || n.host) {
+            if (typeof n.tagName !== 'string') continue;
+            if (POPUP_TAGS[n.tagName.toLowerCase()]) return true;
+            var id = typeof n.id === 'string' ? n.id : '';
+            if (id) {
+                if (POPUP_IDS[id]) return true;
+                for (var i = 0; i < POPUP_ID_PREFIXES.length; i++) {
+                    if (id.indexOf(POPUP_ID_PREFIXES[i]) === 0) return true;
+                }
+            }
+            if (n.classList && typeof n.classList.contains === 'function') {
+                for (var c = 0; c < POPUP_CLASSES.length; c++) {
+                    if (n.classList.contains(POPUP_CLASSES[c])) return true;
+                }
+            }
+            if (typeof n.getAttribute === 'function' && n.getAttribute('data-hook') === 'consent-banner-root') return true;
         }
         return false;
     }
@@ -761,6 +798,7 @@
             if (state !== 'expanded' || openedRecently) return;
             if (!e || e.isTrusted === false) return;
             if (isBridgeNode(e.target)) return;
+            if (isPagePopupNode(e.target)) return;
             collapseToIcon();
         }, true);
     }
