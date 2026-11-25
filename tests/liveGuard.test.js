@@ -209,6 +209,7 @@ test('client: a cut ends the connection once, logs it, leaves the page in standb
             textInput: { disabled: true }, callButton: { disabled: true }, disconnects: 0,
             disconnect: async function () { this.disconnects++; this.isRecording = false; },
             setMicButtonState: function (s) { this.mic = s; }, updateTextButtonVisibility: () => {}, _postConnectionState: function () { this.posted = true; },
+            _reportBridgeReady: function (ready) { this.bridgeReady = ready; },
             _enterStandby: method('_enterStandby', ''), _turns: () => ({ fail: (cause) => { app.turnFailed = cause; } }),
         };
         return app;
