@@ -709,6 +709,23 @@
           }
         } catch(e) { console.warn('[EricaBridge] iOS error:', e); }
       }
+
+      /**
+       * Native bridge, inbound: the app sends a message as if the person typed it
+       * (Quizzes, Report and Well-being screens). Safe to call at any time: before
+       * the coach is ready (it has not said 'ericaConnected' yet) the text waits
+       * and goes as soon as it is. Returns false only for an empty text.
+       */
+      window.ericaSendText = function (text) {
+        if (typeof text !== 'string' || !text.trim()) return false;
+        var bot = window._erica;
+        console.log('[EricaBridge] ericaSendText:', text);
+        // Always through the coach's queue: it waits for a session that is
+        // still opening instead of opening a second one.
+        (window.__ericaPendingTexts = window.__ericaPendingTexts || []).push(text);
+        if (bot && bot._bridgeReady && typeof bot._flushBridgeTexts === 'function') bot._flushBridgeTexts();
+        return true;
+      };
     </script>
 
     <!-- Signed identity from the Wix host (#28): first, so every /api/ call carries it. -->
@@ -723,7 +740,7 @@
     <script src="lib/speechGate.js?v=20261002a"></script>
     <script src="lib/turnWatch.js?v=20261114a"></script>
     <script src="uiLayout.js?v=20261119a"></script>
-    <script src="app.js?v=20261119a"></script>
+    <script src="app.js?v=20261125a"></script>
 </body>
 
 </html>

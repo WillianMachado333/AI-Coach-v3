@@ -1746,6 +1746,12 @@ class VoiceChatBot {
                     this.requestReportContextFromParent().then((ctx) => {
                         if (!ctx) this._reportContextUnanswered = true;
                     }).catch(() => { });
+                    // TT-2239: the app sends a question from its Quizzes, Report and
+                    // Well-being screens only after the coach says 'ericaConnected'.
+                    // Standby takes a message (it opens the session itself), so the
+                    // app hears 'ready' once the preparation is in, or after 3 s.
+                    Promise.race([standbyReady, new Promise((resolve) => setTimeout(resolve, 3000))])
+                        .then(() => { if (this._liveStandby || this.isConnected) this._reportBridgeReady(true); });
                     return;
                 }
                 this.connect({ skipOpeningLine }).catch(() => { });
@@ -1755,13 +1761,13 @@ class VoiceChatBot {
         }
     }
 
-    // TT-2239 (Diksha, 18 Nov 2026): a question in the URL (?question=...: what
-    // the app's quiz, report and Well-being pages send to the AI Coach tab, and
-    // the site's Ask buttons) was read only by connect(), and a Live page in
-    // standby never calls it before the first message. The app opened the coach,
-    // nothing was sent, nothing was answered. In standby the question goes the
-    // way a typed one does (it opens the session), once the preparation is in,
-    // or sits in the composer when the link says autosubmit=n.
+    // A question in the URL (?question=...: the site's and marketing's Ask links)
+    // was read only by connect(), and a Live page in standby never calls it
+    // before the first message: nothing was sent, nothing was answered. In
+    // standby the question goes the way a typed one does (it opens the
+    // session), once the preparation is in, or sits in the composer when the
+    // link says autosubmit=n. The mobile app does not use this path: it waits
+    // for 'ericaConnected' and then sends the text by script (_reportBridgeReady).
     _askUrlQuestionOnStandby(ready) {
         const question = !this._urlQuestionSent ? this.getUrlQuestion() : null;
         if (!question) return;
@@ -3541,6 +3547,19 @@ class VoiceChatBot {
             ? attachmentsPayload
             : (typeof this.getReadyAttachments === 'function' ? this.getReadyAttachments() : []);
         if (!text && !attachments.length) return;
+        // A text from outside the composer (the app's ericaSendText or
+        // _erica.sendTextMessage, a pill, a URL question) that repeats the
+        // previous one within 5 s is the same send twice: an app that sends
+        // again on every 'ericaConnected' must not post the question twice.
+        if (!fromComposer && !queued && typeof textPayload === 'string' && attachmentsPayload === null) {
+            const now = Date.now();
+            if (text === this._lastExternalText && now - (this._lastExternalTextAt || 0) < 5000) {
+                console.log('[Erica] Ignoring the same message sent again within 5 s:', text);
+                return;
+            }
+            this._lastExternalText = text;
+            this._lastExternalTextAt = now;
+        }
         const attachmentNames = attachments.map((attachment) => attachment.name).filter(Boolean);
         const displayText = [text, attachmentNames.length ? `[Attached: ${attachmentNames.join(', ')}]` : '']
             .filter(Boolean).join('\n\n');
@@ -5264,6 +5283,9 @@ class VoiceChatBot {
             const queued = (this._pendingTextMessages || []).length;
             console.warn(`[Erica] Session NOT reopened after the quiet reconnect${queued ? ` — connecting again for ${queued} queued message(s)` : ''}`);
             if (queued) this.connect({ skipOpeningLine: true }).then(() => this._sendPendingTextMessage()).catch((e) => console.error('[Erica] Reconnect error:', e));
+            // GPT-Live with nothing to send and no call: back to standby, which
+            // takes the next message (and tells the app it may send again).
+            else if (this.voiceApiMode === 'live' && !this._inCall() && !this.isConnected && !this.isConnecting) this._enterStandby();
         }
         return open;
     }
@@ -10716,6 +10738,8 @@ class VoiceChatBot {
         const ui = window.uiLayout;
         if (ui && typeof ui.updateStatusDot === 'function') ui.updateStatusDot(this, 'standby');
         this._postConnectionState();
+        // Standby takes a message: the app may send (after a disconnect() too).
+        this._reportBridgeReady(true);
     }
 
     // A session is up (after the history went in): the open turn's
@@ -12026,7 +12050,15 @@ class VoiceChatBot {
         if (!this.isConnected) {
             console.log('[Erica] Not connected — reconnecting before starting voice...');
             this.isOnHold = false;
-            await this.connect();
+            // The session about to open is for a call (the app's startRecording()
+            // from standby): its voice layer gets the user's words too, as in
+            // toggleMicTrack (_liveHistoryPlan).
+            this._connectForCall = true;
+            try {
+                await this.connect();
+            } finally {
+                this._connectForCall = false;
+            }
             await new Promise(resolve => setTimeout(resolve, 800));
             if (!this.isConnected) {
                 console.warn('[Erica] Reconnect did not complete — cannot start recording');
@@ -12464,6 +12496,71 @@ class VoiceChatBot {
         } catch (_) { /* non-fatal */ }
     }
 
+    // Native bridge (iOS/Android): 'ericaConnected' means the coach takes a
+    // message now (window.ericaSendText or _erica.sendTextMessage), and
+    // 'ericaDisconnected' that it does not. The app waits for the first before
+    // it sends a question from its Quizzes, Report and Well-being screens.
+    // A GPT-Live page in standby takes a message (sending one opens the
+    // session), so standby reports ready too (TT-2239: the app waited for a
+    // session that only a message opens). Analytics keep counting real
+    // sessions in updateStatus. Text that arrived through window.ericaSendText
+    // before the coach was ready goes once it is.
+    // Not ready is told to the app only if it lasts: a disconnect that goes
+    // straight back to standby (a cost cut, a quiet reconnect) would otherwise
+    // say Disconnected and Connected back to back, and an app that sends on
+    // every Connected would post its question twice. The flag drops at once,
+    // so ericaSendText holds texts meanwhile.
+    _reportBridgeReady(ready) {
+        if (ready) {
+            if (this._bridgeNotReadyTimer) {
+                clearTimeout(this._bridgeNotReadyTimer);
+                this._bridgeNotReadyTimer = null;
+                this._bridgeReady = true; // the app was never told otherwise
+            } else if (!this._bridgeReady) {
+                this._bridgeReady = true;
+                this._postBridgeAction('ericaConnected', { standby: !this.isConnected });
+            }
+            setTimeout(() => this._flushBridgeTexts(), 0);
+            return;
+        }
+        if (!this._bridgeReady) return;
+        this._bridgeReady = false;
+        this._bridgeNotReadyTimer = setTimeout(() => {
+            this._bridgeNotReadyTimer = null;
+            if (!this._bridgeReady) this._postBridgeAction('ericaDisconnected');
+        }, 1500);
+    }
+
+    _postBridgeAction(action, extra = {}) {
+        try {
+            if (typeof messageToApp === 'function') {
+                messageToApp({
+                    action,
+                    coach: this.selectedCompanionId || null,
+                    userId: this.getUserIdFromURL ? this.getUserIdFromURL() : null,
+                    ...extra
+                });
+            }
+        } catch (_) { /* never let the bridge break the coach */ }
+    }
+
+    // Texts the app sent before the coach was ready. Not into a session that
+    // is still opening (its channel or configuration not there yet): a send
+    // then would open a second session over it. They wait for it (up to 10 s),
+    // then go the usual way, which opens a session from standby.
+    _flushBridgeTexts(attempt = 0) {
+        const waiting = window.__ericaPendingTexts;
+        if (!this._bridgeReady || !Array.isArray(waiting) || !waiting.length) return;
+        const opening = this.isConnecting || (this.isConnected && !this._sessionReadyForTurns());
+        if (opening && attempt < 40) {
+            setTimeout(() => this._flushBridgeTexts(attempt + 1), 250);
+            return;
+        }
+        waiting.splice(0).forEach((text) => {
+            try { this.sendTextMessage(text); } catch (e) { console.warn('[Erica] ericaSendText: could not send —', e?.message || e); }
+        });
+    }
+
     updateStatus(connected) {
         // Update Internal State
         this.isConnected = connected;
@@ -12480,29 +12577,16 @@ class VoiceChatBot {
 
             if (isNowConnected && !wasConnected) {
                 this._lastReportedConnected = true;
-                // Analytics + iframe (Wix/web)
+                // Analytics + iframe (Wix/web): real sessions only
                 this.trackCoachEvent('AI Coach Connected', {});
-                // Native bridge (iOS/Android) — keep action format for backward compat
-                if (typeof messageToApp === 'function') {
-                    messageToApp({
-                        action: 'ericaConnected',
-                        coach: this.selectedCompanionId || null,
-                        userId: this.getUserIdFromURL ? this.getUserIdFromURL() : null
-                    });
-                }
             } else if (isNowDisconnected && wasConnected) {
                 this._lastReportedConnected = false;
                 // Analytics + iframe (Wix/web)
                 this.trackCoachEvent('AI Coach Disconnected', {});
-                // Native bridge (iOS/Android) — keep action format for backward compat
-                if (typeof messageToApp === 'function') {
-                    messageToApp({
-                        action: 'ericaDisconnected',
-                        coach: this.selectedCompanionId || null,
-                        userId: this.getUserIdFromURL ? this.getUserIdFromURL() : null
-                    });
-                }
             }
+            // Native bridge (iOS/Android): whether the coach takes a message now.
+            if (isNowConnected) this._reportBridgeReady(true);
+            else if (isNowDisconnected) this._reportBridgeReady(false);
         } catch (_) {
             // Never let event dispatch break the connection flow
         }

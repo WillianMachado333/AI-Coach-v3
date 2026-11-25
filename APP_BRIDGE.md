@@ -361,9 +361,39 @@ function messageToApp(payload) {
 }
 ```
 
+### Connection signals: `ericaConnected` / `ericaDisconnected`
+
+Besides the CleverTap events, `messageToApp()` sends two action payloads that tell the app whether the coach takes a message **now**:
+
+```json
+{ "action": "ericaConnected", "coach": "Supportive", "userId": "<Wix member id or null>", "standby": true }
+{ "action": "ericaDisconnected", "coach": "Supportive", "userId": "<Wix member id or null>" }
+```
+
+- `ericaConnected` means: the coach accepts a message. Send it with `window.ericaSendText(text)` (below).
+- Coach V3 (GPT-Live) opens no session when the page loads: it waits in **standby** until the first message or call, and sending a message opens the session. Standby counts as ready, so `ericaConnected` arrives once the page is prepared (within about 3 s of load), with `"standby": true`. Before TT-2239 (Nov 2026) it arrived only when a session opened, which never happened in standby: an app that waited for it before sending the question never sent it.
+- It is sent once per change: after a conversation ends the coach goes back to standby and stays ready, with no new event. `ericaDisconnected` comes only when the coach cannot take a message for more than 1.5 s (it was disconnected, or a reconnect failed); `ericaConnected` follows when it can again. A short reconnect (a coach switch, a session renewed) sends neither.
+- `coach` is the picked coach card, and can be `null` (the default coach, or in standby before a coach is known); `userId` is `null` for a guest.
+- The "AI Coach Connected" / "AI Coach Disconnected" analytics events still count real sessions only.
+
 ### Inbound: Native -> Web
 
-Native apps can interact with state via `window.EricaStateBridge`:
+**Sending a message** (the Quizzes, Report and Well-being screens):
+
+```javascript
+// Android
+webView.evaluateJavascript("window.ericaSendText(" + JSONObject.quote(text) + ")", null);
+// iOS: pass the text as a JSON string literal
+webView.evaluateJavaScript("window.ericaSendText(\(jsonStringLiteral))")
+```
+
+- It shows in the chat as sent by the person, and the coach answers. Safe to call at any time, even before `ericaConnected`: until the coach is ready the text waits, and goes as soon as it is. So the app does not need to wait for `ericaConnected` at all.
+- Call it **once** per message, and do not send it again on a later `ericaConnected`. As a safety net, the same text sent again within 5 seconds is ignored.
+- `window._erica.sendTextMessage(text)` (older integrations) still works once the page has loaded.
+- Alternative without script: load the coach URL with the question in the query string, `?question=<encodeURIComponent(text)>` (a full load or reload; changing only the hash or the history does not send it).
+- Other inbound calls: `startRecording()` on `window._erica` starts a voice call; `window.ericaGoBack()` handles the back button.
+
+Native apps can also interact with state via `window.EricaStateBridge`:
 
 | Method | Description |
 |--------|-------------|
