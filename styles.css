@@ -11,6 +11,13 @@
     width: 44px;
 }
 
+/* TT-2237 (Eric, 16 Nov 2026): the paper clip confuses people, so the attach
+   button is hidden. The attachment code stays (the hidden file input, the
+   tiles): deleting this rule brings the button back. The textarea takes the
+   button's place on the left. */
+#attachmentButton { display: none; }
+#attachmentButton ~ #userTextInput { padding-left: 16px; }
+
 /* A one-row composer: a wrapped placeholder made the textarea scroll
    internally once attach + dictation + send shared the pill on a phone. */
 #userTextInput::placeholder {

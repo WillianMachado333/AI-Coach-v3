@@ -473,9 +473,12 @@
             setMoreMenuOpen(app, false);
         });
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && isMoreMenuOpen(app)) {
+            if (e.key !== 'Escape') return;
+            if (isMoreMenuOpen(app)) {
                 setMoreMenuOpen(app, false);
+                return;
             }
+            minimiseOnEscape(app, e);
         });
 
         // Call panel buttons
@@ -2052,6 +2055,26 @@
         });
     }
 
+    // TT-2238 (Eric, 16 Nov 2026: "I cannot click away ... or use the escape
+    // key"): in the site's corner panel Escape asks the page (bridge.js) to
+    // fold the chat back to the icon. Keys inside the iframe never reach the
+    // page, so the coach says so itself. Whatever is open inside the coach
+    // takes Escape first: the more menu (above), the coach list (it handles
+    // the key), the photo viewer, the first call's voice step, the coach picker.
+    function minimiseOnEscape(app, e) {
+        const rules = window.coachUiRules;
+        if (!rules || typeof rules.escapeMinimises !== 'function') return;
+        if (window.parent === window) return; // not embedded: nothing to fold
+        const voiceStep = document.getElementById('voiceStep');
+        const picker = document.getElementById('voiceMenuOverlay');
+        const insideOpen = !!document.querySelector('.image-lightbox')
+            || !!(voiceStep && !voiceStep.classList.contains('hidden'))
+            || !!(picker && picker.style.display === 'flex')
+            || !!app._coachDropdownOpen;
+        if (!rules.escapeMinimises(e, insideOpen)) return;
+        try { window.parent.postMessage({ type: 'MINIMIZE_TO_ICON' }, '*'); } catch (_) { /* no parent */ }
+    }
+
     function openImageLightbox(src, alt) {
         const overlay = document.createElement('div');
         overlay.className = 'image-lightbox';
@@ -3329,6 +3352,7 @@
         showCallEnded,
         hideCallEnded,
         renderTurnIndicator,
+        minimiseOnEscape,
         showTurnFailed,
         clearTurnFailed,
         showSafetyCard,
