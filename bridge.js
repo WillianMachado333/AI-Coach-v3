@@ -31,7 +31,7 @@
     'use strict';
 
     // --- Config ---
-    var VERSION = '2026-11-19-popup-clicks-spared';
+    var VERSION = '2026-11-19-popup-clicks-spared-and-escape-minimise';
 
     // The coach lives on the host that served this file. document.currentScript
     // is only set while this script first runs, so read it now. Fallbacks: a
@@ -791,6 +791,26 @@
         }
         return false;
     }
+    // Escape belongs to an open popup of the site first: CleverTap's SDK closes
+    // its popup on it (it clicks the close button), and Wix lightboxes close on
+    // it, so the same key must not also fold the coach. "Open" is a popup that
+    // is in the page and has a size; the inbox element (ct-web-inbox) is left
+    // out because it can sit in the page closed.
+    var POPUP_OPEN_SELECTORS = [
+        '#popups-wrapper', '#wzrk_wrapper', '#pnWrapper', '#wzrkImageOnlyDiv', '#intentPreview',
+        '[id^="wizParDiv"]', '[id^="intentOpacityDiv"]',
+        'ct-web-popup-imageonly', 'ct-web-popup-pip', '[data-hook="consent-banner-root"]'
+    ];
+    function pagePopupOpen() {
+        for (var i = 0; i < POPUP_OPEN_SELECTORS.length; i++) {
+            var el = null;
+            try { el = document.querySelector(POPUP_OPEN_SELECTORS[i]); } catch (_) { el = null; }
+            if (!el) continue;
+            var r = typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null;
+            if (!r || r.width > 0 || r.height > 0) return true;
+        }
+        return false;
+    }
     function attachOutsideClickMinimise() {
         if (window.__ctBridgeOutsideAttached) return; // re-injected script: one listener
         window.__ctBridgeOutsideAttached = true;
@@ -799,6 +819,16 @@
             if (!e || e.isTrusted === false) return;
             if (isBridgeNode(e.target)) return;
             if (isPagePopupNode(e.target)) return;
+            collapseToIcon();
+        }, true);
+        // Escape on the page does the same (Eric, TT-2238), unless a popup of
+        // the site is open and takes the key. With the focus inside the coach
+        // the key never reaches this document: the coach asks for the fold
+        // itself (MINIMIZE_TO_ICON).
+        document.addEventListener('keydown', function (e) {
+            if (state !== 'expanded' || openedRecently) return;
+            if (!e || e.key !== 'Escape' || e.isTrusted === false || e.isComposing) return;
+            if (pagePopupOpen()) return;
             collapseToIcon();
         }, true);
     }
